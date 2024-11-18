@@ -1,0 +1,37 @@
+averaged_data = all_data_df.groupby(['Trotter_Step', 'Reservoir Count', 'N_C']).agg(
+    Average_Fidelity=('Avg_Fidelity', 'mean'),
+    Std_Dev=('Avg_Fidelity', 'std'),
+    Count=('Avg_Fidelity', 'count'),  # For calculating standard error
+    Test_Results=('Test Results', lambda x: [np.array(lst) for lst in x])  # Keep Test Results as list of arrays
+).reset_index()
+
+# Add a new column for Standard Error
+averaged_data['Standard_Error'] = averaged_data['Std_Dev'] / averaged_data['Count'].pow(0.5)
+
+# Optional: Drop 'Count' if you no longer need it
+averaged_data = averaged_data.drop(columns=['Count'])
+
+# Preview the result
+print(averaged_data.head())
+reservoir_count = 1
+
+trot = 1
+N_ctrl = 1
+# Filter the row based on your conditions
+tes = averaged_data[
+    (averaged_data['N_C'] == N_ctrl) & 
+    (averaged_data['Reservoir Count'] == reservoir_count) & 
+    (averaged_data['Trotter_Step'] == trot)
+]
+
+# Access the values of Average_Fidelity and Std_Dev as floats
+average_fidelity = float(tes['Average_Fidelity'].values[0])
+std_dev = float(tes['Std_Dev'].values[0])
+# Access the Test_Results as a list of arrays
+test_results = tes['Test_Results'].values[0]  # This will be a list of arrays
+
+# Print the results
+print("Average Fidelity:", average_fidelity)
+print("Standard Deviation:", std_dev)
+print("Test Results (List of Arrays):", np.mean(test_results))
+# averaged_data.head()
