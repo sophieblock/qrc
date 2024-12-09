@@ -1,0 +1,70 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Define a threshold for eigenvalues
+threshold = 1e-10
+
+# Function to compute ranks based on eigenvalues above the threshold
+def compute_rank(eigval_list, threshold):
+    return [len([val for val in eigvals if val > threshold]) for eigvals in eigval_list]
+
+# Add a column for ranks (list of ranks per test for each row)
+df_all['ranks'] = df_all['all_qfim_eigvals'].apply(lambda eigval_list: compute_rank(eigval_list, threshold))
+
+# Group by Trotter_Step, N_reserv, and N_ctrl
+grouped = df_all.groupby(['Trotter_Step', 'N_reserv', 'N_ctrl'])
+
+# Compute max and mean rank for each group
+results = grouped['ranks'].apply(lambda x: {
+    'max_rank': max([max(r) for r in x]),  # Maximum rank across all tests
+    'mean_rank': np.mean([np.mean(r) for r in x])  # Average rank across all tests
+}).apply(pd.Series).reset_index()
+
+# Fix the column names (if necessary)
+results = results.rename(columns={0: 'value', 'level_3': 'metric'})
+
+# Pivot to flatten the structure
+results = results.pivot(index=['Trotter_Step', 'N_reserv', 'N_ctrl'], columns='metric', values='value').reset_index()
+
+# Check the structure
+print(results.head())
+print(results.columns)
+
+# Visualization
+plt.figure(figsize=(10, 6))
+
+# Iterate through unique values of N_ctrl
+for n_ctrl in sorted(results['N_ctrl'].unique()):
+    subset = results[results['N_ctrl'] == n_ctrl]
+    plt.plot(subset['Trotter_Step'], subset['max_rank'], label=f'Max G_C (N_ctrl={n_ctrl})')
+    plt.plot(subset['Trotter_Step'], subset['mean_rank'], linestyle='--', label=f'Mean G_C (N_ctrl={n_ctrl})')
+
+plt.xlabel('Trotter Step (T)')
+plt.ylabel('Rank (G_C)')
+plt.title('Comparison of Max and Mean G_C (Quantum Dimension)')
+plt.legend()
+plt.grid()
+plt.show()
+
+# Choose a specific N_ctrl and N_reserv value for plotting
+chosen_n_ctrl = 2  # Replace with your desired N_ctrl value
+chosen_n_reserv = 2  # Replace with your desired N_reserv value
+
+# Filter results for the chosen N_ctrl and N_reserv
+subset = results[(results['N_ctrl'] == chosen_n_ctrl) & (results['N_reserv'] == chosen_n_reserv)]
+
+# Plotting
+plt.figure(figsize=(10, 6))
+plt.plot(subset['Trotter_Step'], subset['max_rank'], label=f'Max G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})')
+plt.plot(subset['Trotter_Step'], subset['mean_rank'], linestyle='--', label=f'Mean G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})')
+
+plt.xlabel('Trotter Step (T)')
+plt.ylabel('Rank (G_C)')
+plt.title(f'Comparison of Max and Mean G_C (Quantum Dimension) for N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv}')
+plt.legend()
+plt.grid()
+plt.show()
