@@ -1,70 +1,138 @@
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+
+# Define thresholds
+thresholds = [1e-10, 1e-11, 1e-12, 1e-13]
+
+# Initialize empty columns in the DataFrame for each threshold
+for threshold in thresholds:
+    df_all[f'ranks_threshold_{threshold}'] = df_all['all_qfim_eigvals'].apply(
+        lambda eigval_list: [len([val for val in eigvals if val > threshold]) for eigvals in eigval_list]
+    )
+
+# Create results DataFrame for each threshold
+results_list = []
+for threshold in thresholds:
+    # Group by Trotter_Step, N_reserv, and N_ctrl
+    grouped = df_all.groupby(['Trotter_Step', 'N_reserv', 'N_ctrl'])
+
+    # Compute max and mean rank for the current threshold
+    results = grouped[f'ranks_threshold_{threshold}'].apply(
+        lambda x: {
+            f'max_rank_threshold_{threshold}': max([max(r) for r in x]),  # Max rank across all tests
+            f'mean_rank_threshold_{threshold}': np.mean([rank for sublist in x for rank in sublist])  # Mean rank across all tests
+        }
+    ).apply(pd.Series).reset_index()
+
+    results_list.append(results)
+
+# Merge results for all thresholds into one DataFrame
+results_combined = results_list[0]
+for results in results_list[1:]:
+    results_combined = pd.merge(results_combined, results, on=['Trotter_Step', 'N_reserv', 'N_ctrl'], how='outer')
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
 # Define a threshold for eigenvalues
-threshold = 1e-10
+# threshold = 1e-10
 
-# Function to compute ranks based on eigenvalues above the threshold
-def compute_rank(eigval_list, threshold):
-    return [len([val for val in eigvals if val > threshold]) for eigvals in eigval_list]
 
-# Add a column for ranks (list of ranks per test for each row)
-df_all['ranks'] = df_all['all_qfim_eigvals'].apply(lambda eigval_list: compute_rank(eigval_list, threshold))
+df_all['ranks'] = df_all['all_qfim_eigvals'].apply(
+    lambda eigval_list: [len([val for val in eigvals if val > threshold]) for eigvals in eigval_list]
+)
 
 # Group by Trotter_Step, N_reserv, and N_ctrl
 grouped = df_all.groupby(['Trotter_Step', 'N_reserv', 'N_ctrl'])
 
 # Compute max and mean rank for each group
-results = grouped['ranks'].apply(lambda x: {
-    'max_rank': max([max(r) for r in x]),  # Maximum rank across all tests
-    'mean_rank': np.mean([np.mean(r) for r in x])  # Average rank across all tests
-}).apply(pd.Series).reset_index()
+results = grouped['ranks'].apply(
+    lambda x: {
+        'max_rank': max([max(r) for r in x]),  # Max rank across all tests
+        'mean_rank': np.mean([rank for sublist in x for rank in sublist])  # Mean rank across all tests
+    }
+).apply(pd.Series).reset_index()
 
-# Fix the column names (if necessary)
+# Fix column names for clarity
 results = results.rename(columns={0: 'value', 'level_3': 'metric'})
 
-# Pivot to flatten the structure
+# Pivot the results for easier plotting
 results = results.pivot(index=['Trotter_Step', 'N_reserv', 'N_ctrl'], columns='metric', values='value').reset_index()
 
-# Check the structure
-print(results.head())
-print(results.columns)
-
-# Visualization
-plt.figure(figsize=(10, 6))
-
-# Iterate through unique values of N_ctrl
-for n_ctrl in sorted(results['N_ctrl'].unique()):
-    subset = results[results['N_ctrl'] == n_ctrl]
-    plt.plot(subset['Trotter_Step'], subset['max_rank'], label=f'Max G_C (N_ctrl={n_ctrl})')
-    plt.plot(subset['Trotter_Step'], subset['mean_rank'], linestyle='--', label=f'Mean G_C (N_ctrl={n_ctrl})')
-
-plt.xlabel('Trotter Step (T)')
-plt.ylabel('Rank (G_C)')
-plt.title('Comparison of Max and Mean G_C (Quantum Dimension)')
-plt.legend()
-plt.grid()
-plt.show()
-
-# Choose a specific N_ctrl and N_reserv value for plotting
-chosen_n_ctrl = 2  # Replace with your desired N_ctrl value
-chosen_n_reserv = 2  # Replace with your desired N_reserv value
+# Plotting for specific N_ctrl and N_reserv
+chosen_n_ctrl = 1  # Replace with your desired N_ctrl value
+chosen_n_reserv = 1  # Replace with your desired N_reserv value
 
 # Filter results for the chosen N_ctrl and N_reserv
 subset = results[(results['N_ctrl'] == chosen_n_ctrl) & (results['N_reserv'] == chosen_n_reserv)]
-
+print(subset)
 # Plotting
 plt.figure(figsize=(10, 6))
-plt.plot(subset['Trotter_Step'], subset['max_rank'], label=f'Max G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})')
-plt.plot(subset['Trotter_Step'], subset['mean_rank'], linestyle='--', label=f'Mean G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})')
+plt.plot(
+    subset['Trotter_Step'], 
+    subset['max_rank'], 
+    label=f'Max G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})', 
+    marker='o'
+)
+plt.plot(
+    subset['Trotter_Step'], 
+    subset['mean_rank'], 
+    linestyle='--', 
+    label=f'Mean G_C (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})', 
+    marker='x'
+)
 
-plt.xlabel('Trotter Step (T)')
-plt.ylabel('Rank (G_C)')
-plt.title(f'Comparison of Max and Mean G_C (Quantum Dimension) for N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv}')
-plt.legend()
+plt.xlabel('Trotter Step (T)', fontsize=14)
+plt.ylabel('Rank (G_C)', fontsize=14)
+plt.title(f'Comparison of Max and Mean G_C for $N_C={chosen_n_ctrl}, N_R={chosen_n_reserv}$', fontsize=16)
+plt.legend(fontsize=12)
+plt.grid(alpha=0.6)
+plt.show()
+
+# Initialize the plot
+plt.figure(figsize=(10, 6))
+
+# Loop through thresholds and compute ranks
+for i, threshold in enumerate(thresholds):
+    # Compute ranks for the current threshold
+    df_all['ranks'] = df_all['all_qfim_eigvals'].apply(lambda eigval_list: 
+        [len([val for val in eigvals if val > threshold]) for eigvals in eigval_list]
+    )
+    
+    # Group by Trotter_Step, N_reserv, and N_ctrl
+    grouped = df_all.groupby(['Trotter_Step', 'N_reserv', 'N_ctrl'])
+
+    # Compute max and mean rank for each group
+    results = grouped['ranks'].apply(lambda x: {
+        'max_rank': max([max(r) for r in x]),  # Maximum rank across all tests
+        'mean_rank': np.mean([np.mean(r) for r in x])  # Average rank across all tests
+    }).apply(pd.Series).reset_index()
+    # Compute max and mean rank for each group
+    results = grouped['ranks'].apply(
+        lambda x: {
+            'max_rank': max([max(r) for r in x]),  # Max rank across all tests
+            'mean_rank': np.mean([rank for sublist in x for rank in sublist])  # Mean rank across all tests
+        }
+    ).apply(pd.Series).reset_index()
+
+    # Fix column names (if necessary)
+    results = results.rename(columns={0: 'value', 'level_3': 'metric'})
+
+    # Pivot to flatten the structure
+    results = results.pivot(index=['Trotter_Step', 'N_reserv', 'N_ctrl'], columns='metric', values='value').reset_index()
+
+    # Filter results for N_ctrl=1 and N_reserv=1
+    subset = results[(results['N_ctrl'] == 1) & (results['N_reserv'] == 1)]
+
+    # Plot max and mean G_C
+    plt.plot(subset['Trotter_Step'], subset['max_rank'], label=f'Max G_C (threshold={threshold})', color=colors[i])
+    plt.plot(subset['Trotter_Step'], subset['mean_rank'], linestyle='--', label=f'Mean G_C (threshold={threshold})', color=colors[i])
+
+# Add labels, legend, and title
+plt.xlabel('Trotter Step (T)', fontsize=14)
+plt.ylabel('Rank (G_C)', fontsize=14)
+plt.title('Comparison of Max and Mean G_C for Different Thresholds', fontsize=16)
+plt.legend(fontsize=12)
 plt.grid()
+
+# Show the plot
 plt.show()
