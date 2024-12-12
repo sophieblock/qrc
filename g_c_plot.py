@@ -1,4 +1,82 @@
+import pennylane as qml
+import os
 
+import pickle
+import re
+import seaborn as sns
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from qiskit import *
+from jax import numpy as np
+import sympy
+import matplotlib.pyplot as plt
+import base64
+from jax import numpy as jnp
+import pickle
+
+ # Using pennylane's wrapped numpy
+from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
+import jax
+import numpy as old_np
+from jax import random
+import scipy
+import pickle
+import base64
+import time
+import os
+import ast
+import pandas as pd
+from pathlib import Path
+from qiskit.circuit.library import *
+from qiskit import *
+from qiskit.quantum_info import *
+import autograd
+from pennylane.wires import Wires
+import matplotlib.cm as cm
+from functools import partial
+from pennylane import numpy as penny_np
+from jax import config
+import optax
+from pennylane.transforms import transform
+from typing import Sequence, Callable, Union, List
+from itertools import chain
+from functools import partial, singledispatch
+from pennylane.circuit_graph import LayerData
+from pennylane.queuing import WrappedObj
+from pennylane.transforms import transform
+from pennylane.operation import Operation, AnyWires
+from pennylane.ops import PauliRot
+from pennylane.operation import (
+    has_gen,
+    gen_is_multi_term_hamiltonian,
+    has_grad_method,
+    has_nopar,
+    has_unitary_gen,
+    is_measurement,
+    is_trainable,
+    not_tape,
+)
+from jax import jit
+import numpy
+import pennylane as qml
+from pennylane.operation import AnyWires, Operation
+from pennylane.typing import TensorLike
+from pennylane.ops import functions
+from pennylane.ops import Evolution
+from parametrized_hamiltonian import ParametrizedHamiltonian
+from parametrized_ham_pytree import ParametrizedHamiltonianPytree
+from hard_ham import HardwareHamiltonian
+from evolution2 import Evolution
+#from pennylane.pulse import ParametrizedEvolution, ParametrizedHamiltonian,HardwareHamiltonian
+from jax.experimental.ode import odeint
+from pennylane.devices.qubit.apply_operation import _evolve_state_vector_under_parametrized_evolution,apply_parametrized_evolution
+has_jax = True
+diable_jit = False
+config.update('jax_disable_jit', diable_jit)
+#config.parse_flags_with_absl()
+config.update("jax_enable_x64", True)
+os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 def quantum_fun(gate, input_state, qubits):
     '''
@@ -324,7 +402,6 @@ def compute_initial_learning_rate(gradients, scale_factor=0.01, min_lr=1e-3, max
 
     initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
     return initial_lr
-
 def optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,num_datasets, key):
     datasets = []
     print(f"Pre-processing a batch of {num_datasets} training sets for selection... ")
@@ -588,42 +665,65 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     
     
     jit_circuit = jax.jit(circuit)
-    vcircuit = jax.vmap(jit_circuit, in_axes=(None, 0))
-    def batched_cost_helper(params, X, y):
-        # Process the batch of states
-        batched_output_states = vcircuit(params, X)
-        
-        # Compute fidelity for each pair in the batch and then average
-        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
-        fidelities = jnp.clip(fidelities, 0.0, 1.0)
-        average_fidelity = jnp.mean(fidelities)
+    # Compute loss and gradients per input
+    @jit
+    def per_input_loss_and_grad(params, input_state, target_state):
+        """
+        Compute the loss and gradient for a single input-output pair.
+        """
+        def single_loss_fn(p):
+            output_state = jit_circuit(p, input_state)
+            fidelity = qml.math.fidelity(output_state, target_state)
+            return 1 - fidelity  # Infidelity
+        loss, grad = jax.value_and_grad(single_loss_fn)(params)
+        return loss, grad
+
+    # Vectorized version for the entire batch
+    batched_loss_and_grad_fn = jax.vmap(per_input_loss_and_grad, in_axes=(None, 0, 0))
+
+    @jit
+    def update(params, opt_state, input_states, target_states):
+        """
+        Update parameters using batched loss and gradients.
+        """
+        # Compute per-input losses and gradients
+        per_input_losses, per_input_grads = batched_loss_and_grad_fn(params, input_states, target_states)
+
+        # Compute batch-averaged loss and gradients
+        batch_loss = jnp.mean(per_input_losses)
+        batch_grads = jnp.mean(per_input_grads, axis=0)
+
+        # Perform the parameter update
+        updates, opt_state = opt.update(batch_grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+
+        return new_params, opt_state, batch_loss, batch_grads, per_input_losses, per_input_grads
+    
+
+    # @jit
+    # def cost_per_state(params, input_state, target_state):
+    #     output_state = jit_circuit(params, input_state)
+    #     fidelity = qml.math.fidelity(output_state, target_state)
+    #     return 1 - fidelity  # Minimizing infidelity
+    # cost_per_state_fn = jax.value_and_grad(cost_per_state, argnums=0)
+    # vcircuit = jax.vmap(cost_per_state_fn, in_axes=(None, 0, 0))
+    
+
+    # @jit
+    # def update(params, opt_state, input_states, target_states):
+    #     """
+    #     Update parameters using batched loss and gradients.
+    #     """
        
-        return 1 - average_fidelity  # Minimizing infidelity
-    @jit
-    def cost_func(params,input_states, target_states):
-        params = jnp.asarray(params, dtype=jnp.float64)
-        X = jnp.asarray(input_states, dtype=jnp.complex128)
-        y = jnp.asarray(target_states, dtype=jnp.complex128)
-        # Process the batch of states
-        loss = batched_cost_helper(params, X, y)
-        loss = jnp.maximum(loss, 0.0)  # Apply the cutoff to avoid negative costs
+    #     batched_costs,batched_gradients = vcircuit(params, input_states, target_states)
+    #     loss = jnp.mean(batched_costs)
+    #     grads = jnp.mean(batched_gradients, axis=0)
+    #     updates, opt_state = opt.update(grads, opt_state, params)
+    #     new_params = optax.apply_updates(params, updates)
+    #     return new_params, opt_state, loss, grads
 
-        return loss
    
-
-    @jit
-    def cost_per_state(params, input_state, target_state):
-        output_state = jit_circuit(params, input_state)
-        fidelity = qml.math.fidelity(output_state, target_state)
-        return 1 - fidelity  # Minimizing infidelity
-
     
-    def collect_gradients(params, input_states, target_states):
-        grad_fn = jax.value_and_grad(cost_per_state, argnums=0)
-        costs,gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
-        return costs, gradients
-    
-
     def final_test(params,test_in,test_targ):
         params = jnp.asarray(params, dtype=jnp.float64)
         X = jnp.asarray(test_in, dtype=jnp.complex128)
@@ -635,22 +735,20 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
 
         return fidelities
 
-
+    
 
     
     if opt_lr == None:
         s = time.time()
-        init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
+        batched_costs, batched_gradients = batched_loss_and_grad_fn(params, input_states, target_states)
+        init_loss = jnp.mean(batched_costs)
+        init_grads = jnp.mean(batched_gradients, axis=0)
         e = time.time()
         dt = e - s
         print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
         opt_lr,grad_norm = get_initial_learning_rate(init_grads)
         print(f"Adjusted initial learning rate: {opt_lr}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm}")
-        """
-        #opt_lr = 0.01
-        """
-
-    
+     
     
 
 
@@ -661,18 +759,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     opt = optax.adam(learning_rate=opt_lr)
     #opt = optax.chain( optax.clip_by_global_norm(1.0), optax.novograd(learning_rate=opt_lr, b1=0.9, b2=0.1, eps=1e-6))
     
-    @jit
-    def update(params, opt_state, input_states, target_states):
-        params = jnp.asarray(params, dtype=jnp.float64)
-        input_states = jnp.asarray(input_states, dtype=jnp.complex128)
-        target_states = jnp.asarray(target_states, dtype=jnp.complex128)
-        loss, grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
-        updates, opt_state = opt.update(grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-        # Ensure outputs are float64
-        loss = jnp.asarray(loss, dtype=jnp.float64)
-        grads = jnp.asarray(grads, dtype=jnp.float64)
-        return new_params, opt_state, loss, grads
+   
     
     print("Number of trainable parameters: ", len(params))
 
@@ -713,7 +800,10 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     add_more=True
     num_states_to_replace = 5
     while epoch < num_epochs or improvement:
-        params, opt_state, cost,grad = update(params, opt_state, input_states, target_states)
+        params, opt_state, cost, grad, per_input_losses, per_input_grads = update(
+            params, opt_state, input_states, target_states
+        )
+        # params, opt_state, cost,grad = update(params, opt_state, input_states, target_states)
         if epoch > 1:
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
@@ -748,13 +838,13 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         
         # Logging
         
-        if epoch == 0 or (epoch + 1) % 100 == 0:
+        if epoch == 0 or (epoch + 1) % 50 == 0:
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
             e = time.time()
             epoch_time = e - s
             
-            print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
+            print(f'Epoch {epoch + 1} --- cost: {cost:.3e}, '
                   f'a: {acceleration:.2e} '
                 f'Var(grad): {var_grad:.1e}, '
                 f'Mean(grad): {mean_grad:.1e}, '
@@ -765,7 +855,9 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
             
             improvement = True
             consecutive_improvement_count += 1
-            current_cost_check = cost_func(params, input_states, target_states)
+            # batched_costs,batched_gradients  = batched_loss_and_grad_fn(params, input_states, target_states)
+            current_cost_check = jnp.mean(per_input_losses)
+            
             if current_cost_check < backup_cost:
                 # print(f"Epoch {epoch}: Valid improvement found. Updating backup params: {backup_cost:.2e} > {current_cost_check:.2e}")
                 backup_cost = current_cost_check
@@ -802,7 +894,6 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
             mean_grad = jnp.mean(np.abs(grad_circuit))
             var_grad = jnp.var(grad_circuit,ddof=1)
            
-
             # print(f"params: {type(params)}, {params.dtype}")
             # print(f"params: {params}")
             if replace_states:
@@ -907,9 +998,13 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
                 # Concatenate the new states (add_a, add_b) with the existing input_states and target_states
                 # Add new states (instead of replacing existing states)
                 # print(f"***Adding {num_states_to_replace} new states at epoch {epoch}***")
-                new_costs_per_state,gradients_new_states = collect_gradients(params, input_states=second_A,target_states=second_b)
-                costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
-                
+                # new_costs_per_state, gradients_new_states = batched_loss_and_grad_fn(params, second_A, second_b)
+
+                _,_,_,_,new_costs_per_state, gradients_new_states = update(
+                    params, opt_state, second_A, second_b
+                )
+                # costs_per_state, gradients_per_state= batched_loss_and_grad_fn(params,input_states, target_states)
+                costs_per_state, gradients_per_state=  per_input_losses, per_input_grads
                 print(f"Epoch {epoch}:  cost: {cost:.5f}")
                 print(f"***flat landscape*** roc: {acceleration:.2e} mean(grad): {mean_grad:.2e}, Var(Grad): {var_grad:.2e}***")
                 # print(f"og shape: {gradients_per_state.shape}, costs_per_state.shape: {costs_per_state.shape}")
@@ -1034,6 +1129,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
 
 
 
+
 if __name__ == '__main__':
 
 
@@ -1052,25 +1148,25 @@ if __name__ == '__main__':
     # run below 
     N_ctrl = 2
     
-    # trots = [1,2,3,4,5]
-    res = [1]
+    trots = [1,2,3,4,5,6,7,8,9,10]
+    res = [1,2,3]
 
-    trots = [4,6,8,10,12]
+    #trots = [9,10]
 
     
-    # trots = [12]
+    #trots = [time_steps]
     #res = [N_reserv]
     
     num_epochs = 1000
     N_train = 10
-    base_folder = f'./analog_results_trainable_global/noise_opt_cost_adaptive_training/'
+    base_folder = f'./analog_results_trainable_global/noise_opt_cost_adaptive_trainingset/'
     bath_factor = 0.1
     #folder = f'./analog_results_trainable_global/trainsize_{N_train}_optimize_trainset/'
 
     gates_random = []
-    baths = [False,True,True]
-    num_baths = [0,1,2]
-
+    baths = [True,True]
+    num_baths = [1,2]
+    key = jax.random.PRNGKey(10)
 
     for i in range(10):
         U = random_unitary(2**N_ctrl, i).to_matrix()
@@ -1088,7 +1184,7 @@ if __name__ == '__main__':
     
 
     for gate_idx,gate in enumerate(gates_random):
-        
+
         if True:
 
             for time_steps in trots:
@@ -1103,11 +1199,11 @@ if __name__ == '__main__':
                     #folder = f'./param_initialization/Nc{N_ctrl}_Nr{N_reserv}_dt{time_steps}/fixed_params4/test7/'
                     for num_bath,bath in zip(num_baths,baths):
                         folder = os.path.join(base_folder, f"{num_bath}_num_baths/trainsize_{N_train}/")
-                        params_key_seed= gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
+                        params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps* N_reserv 
 
                         params_key = jax.random.PRNGKey(params_key_seed)
                         main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
-
+                        # print(f"main_params: {main_params}")
                         params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                         
                         
@@ -1115,11 +1211,13 @@ if __name__ == '__main__':
                         init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
                         
     
+
                         # Combine the two parts
                         params = jnp.concatenate([time_step_params, main_params])
+                        # params = jnp.asarray([0.4033546149730682, 1.4487122297286987, 2.3020467758178711, 2.9035964012145996, 0.9584765434265137, 1.7428307533264160, -1.3020169734954834, -0.8775904774665833, 2.4736261367797852, -0.4999605417251587, -0.8375297188758850, 1.7014273405075073, -0.8763229846954346, -3.1250307559967041, 1.1915868520736694, -0.4640290737152100, -1.0656110048294067, -2.6777451038360596, -2.7820897102355957, -2.3751690387725830, 0.1393062919378281])
+
+                        
+                        run_test(params,init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,random_key = params_subkey2,bath_factor = bath_factor)
 
 
-
-                        run_test(params, init_params_dict,num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,random_key = params_subkey2,bath_factor=bath_factor)
-
-
+                      
