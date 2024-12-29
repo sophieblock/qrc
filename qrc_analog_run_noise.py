@@ -89,46 +89,93 @@ def quantum_fun(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
-def generate_dataset(gate, n_qubits, training_size, key, global_size=3000):
-    '''
+# def generate_dataset(gate, n_qubits, training_size, key, global_size=3000):
+#     '''
+#     Generate the dataset of input and output states according to the gate provided,
+#     while ensuring the first `training_size` states are consistent across calls.
+    
+#     Parameters:
+#         gate: The quantum gate to apply.
+#         n_qubits: Number of qubits in the system.
+#         training_size: Number of training states to generate.
+#         key: JAX random key for reproducibility.
+#         global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
+#     '''
+#     global GLOBAL_KEY_POOL, GLOBAL_KEY_USED
+
+#     # Extend the global key pool if necessary
+#     if len(GLOBAL_KEY_POOL) < len(GLOBAL_KEY_USED) + training_size:
+#         additional_keys_needed = len(GLOBAL_KEY_USED) + training_size - len(GLOBAL_KEY_POOL)
+#         extend_global_key_pool(key, additional_keys_needed)
+
+#     # Generate random state vectors from the global pool
+#     X = []
+#     unused_keys = (k for k in GLOBAL_KEY_POOL if tuple(k.tolist()) not in GLOBAL_KEY_USED)
+#     for i, subkey in zip(range(training_size), unused_keys):
+#         GLOBAL_KEY_USED.add(tuple(subkey.tolist()))  # Mark the key as used
+#         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
+#         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
+
+#         # Use the seed to generate the random state vector
+#         state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
+#     qubits = Wires(list(range(n_qubits)))
+#     dev_data = qml.device('default.qubit', wires=qubits)
+#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
+
+
+#     y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
+#     y = np.stack(y)
+#     return np.asarray(X), np.asarray(y)
+
+def generate_dataset(gate, n_qubits, training_size, key, global_size=3000, new_set=False):
+    """
     Generate the dataset of input and output states according to the gate provided,
     while ensuring the first `training_size` states are consistent across calls.
-    
+
     Parameters:
         gate: The quantum gate to apply.
         n_qubits: Number of qubits in the system.
         training_size: Number of training states to generate.
         key: JAX random key for reproducibility.
         global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
-    '''
+        new_set: If True, generate an entirely new dataset. Default is False.
+    """
     global GLOBAL_KEY_POOL, GLOBAL_KEY_USED
 
-    # Extend the global key pool if necessary
-    if len(GLOBAL_KEY_POOL) < len(GLOBAL_KEY_USED) + training_size:
-        additional_keys_needed = len(GLOBAL_KEY_USED) + training_size - len(GLOBAL_KEY_POOL)
-        extend_global_key_pool(key, additional_keys_needed)
+    if new_set:
+        # Generate a fresh random key pool
+        GLOBAL_KEY_POOL = jax.random.split(key, num=global_size)
+        GLOBAL_KEY_USED = set()  # Reset used keys
+    elif len(GLOBAL_KEY_POOL) < global_size:
+        # Extend the global key pool if necessary
+        extend_global_key_pool(key, global_size - len(GLOBAL_KEY_POOL))
 
-    # Generate random state vectors from the global pool
+    # Always use the first `training_size` keys deterministically
+    selected_keys = GLOBAL_KEY_POOL[:training_size]
+
+    # Determine which keys are new (unused so far)
+    new_keys = [k for k in selected_keys if tuple(k.tolist()) not in GLOBAL_KEY_USED]
+
+    # Mark the new keys as used
+    for k in new_keys:
+        GLOBAL_KEY_USED.add(tuple(k.tolist()))
+
+    # Generate random state vectors
     X = []
-    unused_keys = (k for k in GLOBAL_KEY_POOL if tuple(k.tolist()) not in GLOBAL_KEY_USED)
-    for i, subkey in zip(range(training_size), unused_keys):
-        GLOBAL_KEY_USED.add(tuple(subkey.tolist()))  # Mark the key as used
-        subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
-        seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
-
-        # Use the seed to generate the random state vector
+    for i, subkey in enumerate(selected_keys):
+        folded_key = jax.random.fold_in(subkey, i)
+        seed_value = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
         state_vec = random_statevector(2**n_qubits, seed=seed_value).data
         X.append(np.asarray(state_vec, dtype=jnp.complex128))
+
+    # Generate output states using the circuit
     qubits = Wires(list(range(n_qubits)))
-    dev_data = qml.device('default.qubit', wires=qubits)
-    circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
+    dev_data = qml.device("default.qubit", wires=qubits)
+    circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
 
-
-    y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
-    y = np.stack(y)
-    return X, y
-
-
+    y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
+    return np.asarray(X), np.asarray(y)
 # def generate_dataset(gate, n_qubits, training_size, key, global_size=100):
 #     '''
 #     Generate the dataset of input and output states according to the gate provided.
@@ -668,7 +715,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,5,key)
     _, second_set_key = jax.random.split(random_key) 
     # test_in, test_targ = generate_dataset(gate, N_ctrl, 2000, key= second_set_key) 
-    second_A, second_b = generate_dataset(gate, N_ctrl, 500, key= second_set_key)
+    second_A, second_b = generate_dataset(gate, N_ctrl, 500, key= second_set_key, new_set = True)
     assert not any(np.allclose(x1, x2) for x1 in input_states for x2 in second_A), "Duplicate states found!"
 
     
@@ -1047,7 +1094,9 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
                 # Concatenate the new states (add_a, add_b) with the existing input_states and target_states
                 # Add new states (instead of replacing existing states)
                 # print(f"***Adding {num_states_to_replace} new states at epoch {epoch}***")
+                print(f"input_states shape: {input_states.shape} target_states shape: {target_states.shape}")
                 costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
+                print(f"second_A shape: {second_A.shape} second_b shape: {second_b.shape}")
                 new_costs_per_state,gradients_new_states = collect_gradients(params, input_states=second_A,target_states=second_b)
                 # costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
                 
@@ -1200,11 +1249,11 @@ if __name__ == '__main__':
     trots = [1,4,6,8,10,12,14]
 
     
-    trots = [6]
+    trots = [1]
     #res = [N_reserv]
     
     num_epochs = 1000
-    N_train = 10
+    N_train = 20
     base_folder = f'./analog_results_trainable_global/noise_opt_cost_adaptive_trainingset_test/'
     # base_folder = f'./analog_results_trainable_global/noise_opt_cost/'
     bath_factor = 0.1
