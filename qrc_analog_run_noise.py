@@ -89,45 +89,6 @@ def quantum_fun(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
-# def generate_dataset(gate, n_qubits, training_size, key, global_size=3000):
-#     '''
-#     Generate the dataset of input and output states according to the gate provided,
-#     while ensuring the first `training_size` states are consistent across calls.
-    
-#     Parameters:
-#         gate: The quantum gate to apply.
-#         n_qubits: Number of qubits in the system.
-#         training_size: Number of training states to generate.
-#         key: JAX random key for reproducibility.
-#         global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
-#     '''
-#     global GLOBAL_KEY_POOL, GLOBAL_KEY_USED
-
-#     # Extend the global key pool if necessary
-#     if len(GLOBAL_KEY_POOL) < len(GLOBAL_KEY_USED) + training_size:
-#         additional_keys_needed = len(GLOBAL_KEY_USED) + training_size - len(GLOBAL_KEY_POOL)
-#         extend_global_key_pool(key, additional_keys_needed)
-
-#     # Generate random state vectors from the global pool
-#     X = []
-#     unused_keys = (k for k in GLOBAL_KEY_POOL if tuple(k.tolist()) not in GLOBAL_KEY_USED)
-#     for i, subkey in zip(range(training_size), unused_keys):
-#         GLOBAL_KEY_USED.add(tuple(subkey.tolist()))  # Mark the key as used
-#         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
-#         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
-
-#         # Use the seed to generate the random state vector
-#         state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
-#     qubits = Wires(list(range(n_qubits)))
-#     dev_data = qml.device('default.qubit', wires=qubits)
-#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
-
-
-#     y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
-#     y = np.stack(y)
-#     return np.asarray(X), np.asarray(y)
-
 def generate_dataset(gate, n_qubits, training_size, key, global_size=3000, new_set=False):
     """
     Generate the dataset of input and output states according to the gate provided,
@@ -176,6 +137,8 @@ def generate_dataset(gate, n_qubits, training_size, key, global_size=3000, new_s
 
     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
     return np.asarray(X), np.asarray(y)
+
+
 # def generate_dataset(gate, n_qubits, training_size, key, global_size=100):
 #     '''
 #     Generate the dataset of input and output states according to the gate provided.
@@ -672,7 +635,7 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
     return acceleration
 def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,random_key, bath_factor):
     float32=''
-    stored_epoch = None
+    stored_epoch = 0
     opt_lr=None
     num_J = N_ctrl*N_reserv
     folder_gate = folder + f"bath_coupling_order_{bath_factor}/"+ str(num_bath) + '/'+gate_name + '/reservoirs_' + str(N_reserv) + '/trotter_step_' + str(time_steps) +'/'
@@ -685,7 +648,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 1
+    k = 3
     #print(list(Path(folder_gate).glob('*')))
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
@@ -715,7 +678,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,5,key)
     _, second_set_key = jax.random.split(random_key) 
     # test_in, test_targ = generate_dataset(gate, N_ctrl, 2000, key= second_set_key) 
-    second_A, second_b = generate_dataset(gate, N_ctrl, 500, key= second_set_key, new_set = True)
+    second_A, second_b = generate_dataset(gate, N_ctrl, 500, key= second_set_key, new_set=True) 
     assert not any(np.allclose(x1, x2) for x1 in input_states for x2 in second_A), "Duplicate states found!"
 
     
@@ -844,10 +807,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
         opt_lr,grad_norm = get_initial_learning_rate(init_grads)
         print(f"Adjusted initial learning rate: {opt_lr}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm}")
-        """
-        #opt_lr = 0.01
-        """
-
+        
     
     
 
@@ -897,8 +857,9 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     prev_cost, second_prev_cost = float('inf'), float('inf')
     acceleration = 0.0
     rocs = []
-    add_more=True
-    num_states_to_replace = 5
+    cond1,cond2,a_threshold = -float('inf'), -float('inf'), -float('inf') 
+    add_more=False
+    num_states_to_replace = N_train // 4
     while epoch < num_epochs or improvement:
         params, opt_state, cost,grad = update(params, opt_state, input_states, target_states)
         if epoch > 1:
@@ -980,199 +941,107 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         if np.abs(max(grad)) < 1e-14:
             break
         epoch += 1 
-        if epoch > 2 and add_more:
-        # if (epoch >= 100 and np.mean(np.abs(grad)) < cond1 
-            # and np.var(grad,ddof=1) < cond2 and add_more and epoch <= 0.9 * num_epochs and (not improvement or np.abs(acceleration) < a_threshold)):
-        
+        cond3 = np.var(grad,ddof=1) < cond2
+        cond4 = np.abs(acceleration) < a_threshold
+        cond5 = not improvement
+        cond6 = np.mean(np.abs(grad)) < cond1 
+        # if epoch > 2 and add_more:
+        if (epoch >= 100 and cond6
+            and cond3 and add_more and epoch <= 0.9 * num_epochs and (cond5 and cond4)):
+            print(f"Improvement: {improvement}")
+            if cond3:
+                print(f"cond3 True -> np.var(grad,ddof=1) < {cond2:.2e}")
+            if cond4:
+                print(f"cond4 True -> np.abs(acceleration) < {a_threshold:.2e}")
+            if cond6:
+                print(f"cond6 True -> np.mean(np.abs(grad)) < {cond1:.2e}")
             grad_circuit = grad
             stored_epoch = epoch
             mean_grad = jnp.mean(np.abs(grad_circuit))
             var_grad = jnp.var(grad_circuit,ddof=1)
            
 
-            # print(f"params: {type(params)}, {params.dtype}")
-            # print(f"params: {params}")
-            if replace_states:
-                gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
-                gradients_new_states = collect_gradients(params, input_states=second_A,target_states=second_b)
-                normalized_gradients_per_state = normalize_gradients(gradients_per_state)
-                # Calculate unbiased stats for comparison
-                meangrad_unbiased, vargrad_unbiased, grad_norm_unbiased = calculate_unbiased_stats(gradients_per_state)
-                meangrad_norm, vargrad_norm, grad_norm_norm = calculate_unbiased_stats(normalized_gradients_per_state)
-                
-                # Calculate stats for all training states
-                meangrad2, vargrad2, grad_norm2 = calculate_unbiased_stats(normalize_gradients(gradients_new_states))
-                # meangrad_norm, vargrad_norm, grad_norm_norm = calculate_gradient_stats_per_state(normalized_gradients_per_state)
-                sorted_vargrad_indices = np.argsort(vargrad2)[::-1]  # Sort descending by variance
-                sorted_meangrad_indices = np.argsort(meangrad2)[::-1]  # Sort descending by mean gradient
-                
-                
-                total_length = len(sorted_vargrad_indices)  
-                even_indices = np.linspace(0, total_length - 1, 1000, dtype=int)
-
-                sampled_vargrad_indices = sorted_vargrad_indices[even_indices]
-                # print(f"sampled_var indices: {sampled_vargrad_indices}")
-                sampled_meangrad_indices = sorted_meangrad_indices[even_indices]
-                
-                
-
-
-                max_var_indices_new_states = sampled_vargrad_indices[:num_states_to_replace]
-                max_meangrad_indices_new_states = sampled_meangrad_indices[:num_states_to_replace]
-
-
-                print(f"max_var_indices_new_states: {max_var_indices_new_states}")
-                print(f"max_meangrad_indices_new_states: {max_meangrad_indices_new_states}")
-                # Select the states from `second_A` and `second_B` based on `max_var_indices_new_states`
-                add_a = np.asarray(second_A[max_var_indices_new_states])
-                add_b = np.asarray(second_b[max_var_indices_new_states])
-                # normalized_grads_variance_new = jnp.var(normalized_gradients_per_state, axis=tuple(range(1, normalized_gradients_per_state.ndim)))
+           
+            # Concatenate the new states (add_a, add_b) with the existing input_states and target_states
+            # Add new states (instead of replacing existing states)
+            # print(f"***Adding {num_states_to_replace} new states at epoch {epoch}***")
+            costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
+            new_costs_per_state,gradients_new_states = collect_gradients(params, input_states=second_A,target_states=second_b)
+            # costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
             
-                
-                
-        
-
-                print(f"Epoch {epoch}:  cost: {cost:.5f}")
-                print(f"***flat landscape warning at epoch {epoch} w/ roc: {acceleration:.2e} mean(grad): {np.mean(np.abs(grad)):.2e}, Var(Grad): {np.var(grad,ddof=1):.2e}***")
-
-                for idx in range(len(input_states)):
-                    training_state_metrics[idx] = {
-                        'Var(Grad)': vargrad_unbiased[idx],
-                        'Mean(Grad)': meangrad_unbiased[idx],
-                        'Norm(Grad)': grad_norm_unbiased[idx],  # This is now calculated per state
-                        'Var(Grad)_norm': vargrad_norm[idx],
-                        'Mean(Grad)_norm': meangrad_norm[idx],
-                        'Norm(Grad)_norm': grad_norm_norm[idx]  # This is also per state now
-                    }
-                    # Single-line output per state
-                    # print(f"{idx} - ({vargrad_unbiased[idx]:.1e}), ({grad_norm_unbiased[idx]:.1e}), c: {meangrad_unbiased[idx]:.1e}")
-                    # print(f"{idx}: Var(Grad): ({vargrad[idx]:.1e},{vargrad_norm[idx]:.1e}) , Mean(Grad): ({meangrad[idx]:.1e},{meangrad_norm[idx]:.1e}), Var(NormGrad): {normalized_grads_variance[idx]:.1e}")
-
-
-                min_var_indices = np.argsort(vargrad_unbiased)[:num_states_to_replace]
-                print(f"    - indices selected on min variance: {min_var_indices}")
-                # min_varnorm_indices = np.argsort(vargrad_norm)[:num_states_to_replace]
-                # print(f"    - indices selected on minimum variance normgrad: {min_varnorm_indices}")
-
-                min_gradnorm_indices = np.argsort(grad_norm_unbiased)[:num_states_to_replace]
-                # print(f"    - indices selected on min gradient norm: {min_gradnorm_indices}")
-                min_mean_indices = np.argsort(meangrad_unbiased)[:num_states_to_replace]
-                print(f"    - indices selected on min mean gradients: {min_mean_indices}")
-                replacement_indices = min_var_indices
-                print(f"Selected states indices for replacement: {replacement_indices}")
-                
-                
-
-                # Log selected states based on calculated stats
-                print(f"\nVar(Grad) - Min: {vargrad_unbiased.min():.2e}, Max: {vargrad_unbiased.max():.2e}")
-                # print(f"    - states: {[f'{val:.2e}' for val in vargrad[min_var_indices]]}")
-                print(f"    - states: {[f's{i}: {vargrad_unbiased[i]:.1e}' for i in min_var_indices]}")
-                # print(f"    - states: {[f's{i}: {vargrad_unbiased[i]:.1e}' for i in min_gradnorm_indices]}")
-                # print(f"    - states: {[f's{i}: {vargrad_unbiased[i]:.1e}' for i in min_mean_indices]}")
-                # print(f"    - states: {[f'({idx}, {val:.2e})' for idx,val in zip(min_varnorm_indices,vargrad[min_varnorm_indices])]}")
-                print(f"\nMean(Grad) - Min: {meangrad_unbiased.min():.1e}, Max: {meangrad_unbiased.max():.2e}")
-                print(f"    - states: {[f's{i}: {meangrad_unbiased[i]:.1e}' for i in min_var_indices]}")
-                # print(f"    - states: {[f's{i}: {meangrad_unbiased[i]:.1e}' for i in min_gradnorm_indices]}")
-                # print(f"    - states: {[f's{i}: {meangrad_unbiased[i]:.1e}' for i in min_mean_indices]}")
-                
-                # print(f"\nNorm(Grad) - Min: {vargrad_norm.min():.2e}, Max: {vargrad_norm.max():.2e}")
-                # print(f"    - states: {[f'{val:.2e}' for val in vargrad_norm[min_var_indices]]}")
-                # print(f"    - states: {[f'{val:.2e}' for val in vargrad_norm[min_varnorm_indices]]}")
-                print(f"\nNew replacement states: ")
-                print(f"    Indices selected on max var: {max_var_indices_new_states}")
-                print(f"    - Var(Grad) ({vargrad2.min():.1e},{vargrad2.max():.1e}): {[f's{i}: {vargrad2[i]:.1e}' for i in max_var_indices_new_states]}")
-                print(f"    Indices selected on mac mean: {max_meangrad_indices_new_states}")
-                print(f"    - Mean(Grad) ({meangrad2.min():.1e},{meangrad2.max():.1e}): {[f's{i}: {meangrad2[i]:.1e}' for i in max_meangrad_indices_new_states]}")
-                # print(f"    Indices selected on gradnorm: {max_gradnorm_indices_new_states}")
-                # print(f"    - GradNorm ({grad_norm2.min():.1e},{grad_norm2.max():.1e}): {[f's{i}: {grad_norm2[i]:.1e}' for i in max_gradnorm_indices_new_states]}")
-                # Replace the states with the smallest variances with the new states
-                print(f"Replacing {num_states_to_replace} states with new states at epoch {epoch}")
-                for idx in replacement_indices:
-                    input_states = input_states.at[idx].set(add_a[replacement_indices == idx].squeeze(axis=0))
-                    target_states = target_states.at[idx].set(add_b[replacement_indices == idx].squeeze(axis=0))
-            else:
-                # Concatenate the new states (add_a, add_b) with the existing input_states and target_states
-                # Add new states (instead of replacing existing states)
-                # print(f"***Adding {num_states_to_replace} new states at epoch {epoch}***")
-                print(f"input_states shape: {input_states.shape} target_states shape: {target_states.shape}")
-                costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
-                print(f"second_A shape: {second_A.shape} second_b shape: {second_b.shape}")
-                new_costs_per_state,gradients_new_states = collect_gradients(params, input_states=second_A,target_states=second_b)
-                # costs_per_state,gradients_per_state = collect_gradients(params, input_states=input_states, target_states=target_states)
-                
-                print(f"Epoch {epoch}:  cost: {cost:.5f}")
-                print(f"***flat landscape*** roc: {acceleration:.2e} mean(grad): {mean_grad:.2e}, Var(Grad): {var_grad:.2e}***")
-                # print(f"og shape: {gradients_per_state.shape}, costs_per_state.shape: {costs_per_state.shape}")
-                # print(f"new shape: {gradients_new_states.shape}")
-                meangrad_unbiased, vargrad_unbiased, grad_norm_unbiased = calculate_unbiased_stats(gradients_per_state)
-                
-                # Calculate stats for all training states
-                meangrad_new, vargrad_new, grad_new = calculate_unbiased_stats(gradients_new_states)
-                
-                # meangrad_norm, vargrad_norm, grad_norm_norm = calculate_gradient_stats_per_state(normalized_gradients_per_state)
-                sorted_vargrad_indices = np.argsort(vargrad_new)[::-1]  # Sort descending by variance
-                sorted_meangrad_indices = np.argsort(meangrad_new)[::-1]  # Sort descending by mean gradient
-                
-                
-                # total_length = len(sorted_vargrad_indices)  
-                # even_indices = np.linspace(0, total_length - 1, 1000, dtype=int)
-
-                # sampled_vargrad_indices = sorted_vargrad_indices[even_indices]
-                
-                # sampled_meangrad_indices = sorted_meangrad_indices[even_indices]
-                
-                
-
-                max_var_indices_new_states = sorted_vargrad_indices[:num_states_to_replace]
-                max_meangrad_indices_new_states = sorted_meangrad_indices[:num_states_to_replace]
-
-
-                # print(f"max_var_indices_new_states: {max_var_indices_new_states}")
-                # print(f"max_meangrad_indices_new_states: {max_meangrad_indices_new_states}")
-                # Select the states from `second_A` and `second_B` based on `max_var_indices_new_states`
-                add_a = np.asarray(second_A[max_var_indices_new_states])
-                add_b = np.asarray(second_b[max_var_indices_new_states])
-
-
-                print(f"\nNew replacement states: ")
-                print(f"    Indices selected on max var: {max_var_indices_new_states}")
-                print(f"    - Costs: ({new_costs_per_state.min():.1e},{new_costs_per_state.max():.1e}): {[f's{i}: {new_costs_per_state[i]:.1e}' for i in max_var_indices_new_states]}")
-                print(f"    - Var(Grad) ({vargrad_new.min():.1e},{vargrad_new.max():.1e}): {[f's{i}: {vargrad_new[i]:.1e}' for i in max_var_indices_new_states]}")
-                print(f"    - Mean(Grad) ({meangrad_new.min():.1e},{meangrad_new.max():.1e}): {[f's{i}: {meangrad_new[i]:.1e}' for i in max_var_indices_new_states]}")
-                
-                # print(f"    Indices selected on mac mean: {max_meangrad_indices_new_states}")
-                # print(f"    - Mean(Grad) ({meangrad_new.min():.1e},{meangrad_new.max():.1e}): {[f's{i}: {meangrad_new[i]:.1e}' for i in max_meangrad_indices_new_states]}")
-                # normalized_grads_variance_new = jnp.var(normalized_gradients_per_state, axis=tuple(range(1, normalized_gradients_per_state.ndim)))
+            print(f"Epoch {epoch}:  cost: {cost:.5f}")
+            print(f"***flat landscape*** roc: {acceleration:.2e} mean(grad): {mean_grad:.2e}, Var(Grad): {var_grad:.2e}***")
+            # print(f"og shape: {gradients_per_state.shape}, costs_per_state.shape: {costs_per_state.shape}")
+            # print(f"new shape: {gradients_new_states.shape}")
+            meangrad_unbiased, vargrad_unbiased, grad_norm_unbiased = calculate_unbiased_stats(gradients_per_state)
             
-                
-                
+            # Calculate stats for all training states
+            meangrad_new, vargrad_new, grad_new = calculate_unbiased_stats(gradients_new_states)
+            
+            # meangrad_norm, vargrad_norm, grad_norm_norm = calculate_gradient_stats_per_state(normalized_gradients_per_state)
+            sorted_vargrad_indices = np.argsort(vargrad_new)[::-1]  # Sort descending by variance
+            sorted_meangrad_indices = np.argsort(meangrad_new)[::-1]  # Sort descending by mean gradient
+            
+            
+            # total_length = len(sorted_vargrad_indices)  
+            # even_indices = np.linspace(0, total_length - 1, 1000, dtype=int)
+
+            # sampled_vargrad_indices = sorted_vargrad_indices[even_indices]
+            
+            # sampled_meangrad_indices = sorted_meangrad_indices[even_indices]
+            
+            
+
+            max_var_indices_new_states = sorted_vargrad_indices[:num_states_to_replace]
+            max_meangrad_indices_new_states = sorted_meangrad_indices[:num_states_to_replace]
+
+
+            # print(f"max_var_indices_new_states: {max_var_indices_new_states}")
+            # print(f"max_meangrad_indices_new_states: {max_meangrad_indices_new_states}")
+            # Select the states from `second_A` and `second_B` based on `max_var_indices_new_states`
+            add_a = np.asarray(second_A[max_var_indices_new_states])
+            add_b = np.asarray(second_b[max_var_indices_new_states])
+
+
+            print(f"\nNew replacement states: ")
+            print(f"    Indices selected on max var: {max_var_indices_new_states}")
+            print(f"    - Costs: ({new_costs_per_state.min():.1e},{new_costs_per_state.max():.1e}): {[f's{i}: {new_costs_per_state[i]:.1e}' for i in max_var_indices_new_states]}")
+            print(f"    - Var(Grad) ({vargrad_new.min():.1e},{vargrad_new.max():.1e}): {[f's{i}: {vargrad_new[i]:.1e}' for i in max_var_indices_new_states]}")
+            print(f"    - Mean(Grad) ({meangrad_new.min():.1e},{meangrad_new.max():.1e}): {[f's{i}: {meangrad_new[i]:.1e}' for i in max_var_indices_new_states]}")
+            
+            # print(f"    Indices selected on max mean: {max_meangrad_indices_new_states}")
+            # print(f"    - Mean(Grad) ({meangrad_new.min():.1e},{meangrad_new.max():.1e}): {[f's{i}: {meangrad_new[i]:.1e}' for i in max_meangrad_indices_new_states]}")
+            # normalized_grads_variance_new = jnp.var(normalized_gradients_per_state, axis=tuple(range(1, normalized_gradients_per_state.ndim)))
         
-                sorted_gradnormns = np.argsort(grad_norm_unbiased)[::-1]  # Sort descending by mean gradient
-                # print(f"sorted_gradnormns: {sorted_gradnormns}")
+            
+            
+    
+            sorted_gradnormns = np.argsort(grad_norm_unbiased)[::-1]  # Sort descending by mean gradient
+            # print(f"sorted_gradnormns: {sorted_gradnormns}")
+            
+            for idx in sorted_gradnormns:
                 
-                for idx in sorted_gradnormns:
+                # print(f"s{idx} [cost {costs_per_state[idx]}] - v: ({vargrad_unbiased[idx]:.1e}), n: ({grad_norm_unbiased[idx]:.1e}), g: {meangrad_unbiased[idx]:.1e}")
+                training_state_metrics[int(idx)] = {
+                    'cost': costs_per_state[idx],
+                    'Var(Grad)': vargrad_unbiased[idx],
+                    'Mean(Grad)': meangrad_unbiased[idx],
+                    'Norm(Grad)': grad_norm_unbiased[idx],  # This is now calculated per state
                     
-                    # print(f"s{idx} [cost {costs_per_state[idx]}] - v: ({vargrad_unbiased[idx]:.1e}), n: ({grad_norm_unbiased[idx]:.1e}), g: {meangrad_unbiased[idx]:.1e}")
-                    training_state_metrics[int(idx)] = {
-                        'cost': costs_per_state[idx],
-                        'Var(Grad)': vargrad_unbiased[idx],
-                        'Mean(Grad)': meangrad_unbiased[idx],
-                        'Norm(Grad)': grad_norm_unbiased[idx],  # This is now calculated per state
-                       
-                    }
-                    # Single-line output per state
-                    
-                    # print(f"{idx}: Var(Grad): ({vargrad[idx]:.1e},{vargrad_norm[idx]:.1e}) , Mean(Grad): ({meangrad[idx]:.1e},{meangrad_norm[idx]:.1e}), Var(NormGrad): {normalized_grads_variance[idx]:.1e}")
+                }
+                # Single-line output per state
+                
+                # print(f"{idx}: Var(Grad): ({vargrad[idx]:.1e},{vargrad_norm[idx]:.1e}) , Mean(Grad): ({meangrad[idx]:.1e},{meangrad_norm[idx]:.1e}), Var(NormGrad): {normalized_grads_variance[idx]:.1e}")
 
 
 
 
-                input_states = np.concatenate([input_states, add_a], axis=0)
-                target_states = np.concatenate([target_states, add_b], axis=0)
-        
+            input_states = np.concatenate([input_states, add_a], axis=0)
+            target_states = np.concatenate([target_states, add_b], axis=0)
+            print(f"New number of training states: {len(input_states)}")
             add_more = False
 
-    if backup_cost < cost:
+    if backup_cost < cost and not epoch < num_epochs and backup_epoch > stored_epoch:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
         params = backup_params
     
@@ -1249,7 +1118,7 @@ if __name__ == '__main__':
     trots = [1,4,6,8,10,12,14]
 
     
-    trots = [1]
+    trots = [6]
     #res = [N_reserv]
     
     num_epochs = 1000
@@ -1282,13 +1151,10 @@ if __name__ == '__main__':
     for gate_idx,gate in enumerate(gates_random):
         
         if True:
-            if gate_idx not in [0]:
+            if gate_idx not in [0,1]:
                 continue
             for time_steps in trots:
 
-                
-                
-                
                 for N_reserv in res:
                     
                     N =N_ctrl+N_reserv
