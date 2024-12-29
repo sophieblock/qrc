@@ -1,3 +1,37 @@
+
+def generate_dataset_method2(gate, n_qubits, training_size, key, global_size=100):
+    '''
+    Generate the dataset of input and output states according to the gate provided,
+    while ensuring the first `training_size` states are consistent across calls.
+    
+    Parameters:
+        gate: The quantum gate to apply.
+        n_qubits: Number of qubits in the system.
+        training_size: Number of training states to generate.
+        key: JAX random key for reproducibility.
+        global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
+    '''
+    if training_size > global_size:
+        raise ValueError("training_size cannot exceed global_size.")
+    
+    # Generate a fixed set of subkeys for the entire global pool
+    global_keys = jax.random.split(key, num=global_size)
+    
+    # Generate random state vectors from the fixed pool
+    X = []
+    for i in range(training_size):
+        subkey = global_keys[i]
+        subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
+        seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
+        
+        # Use the seed to generate the random state vector
+        state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+        X.append(np.asarray(state_vec, dtype=jnp.complex128))
+    
+    X = np.stack(X)
+    return X, None
+
+
 averaged_data = all_data_df.groupby(['Trotter_Step', 'Reservoir Count', 'N_C']).agg(
     Average_Fidelity=('Avg_Fidelity', 'mean'),
     Std_Dev=('Avg_Fidelity', 'std'),
