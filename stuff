@@ -1,4 +1,5 @@
-
+# Verify no overlap
+assert not any(np.allclose(x1, x2) for x1 in X1 for x2 in X2), "Duplicate states found!"
 def geGLOBAL_KEY_POOL = []  # Store all keys
 GLOBAL_KEY_USED = set()  # Track used keys
 
