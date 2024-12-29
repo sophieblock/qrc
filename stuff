@@ -1,7 +1,6 @@
-# Verify no overlap
-assert not any(np.allclose(x1, x2) for x1 in X1 for x2 in X2), "Duplicate states found!"
-def geGLOBAL_KEY_POOL = []  # Store all keys
-GLOBAL_KEY_USED = set()  # Track used keys
+# Global key pool
+GLOBAL_KEY_POOL = []  # Store all keys
+GLOBAL_KEY_USED = set()  # Track used keys as tuples
 
 def extend_global_key_pool(key, new_size):
     """
@@ -26,9 +25,9 @@ def generate_dataset_method2(gate, n_qubits, training_size, key, global_size=100
 
     # Generate random state vectors from the global pool
     X = []
-    unused_keys = (k for k in GLOBAL_KEY_POOL if k not in GLOBAL_KEY_USED)
+    unused_keys = (k for k in GLOBAL_KEY_POOL if tuple(k.tolist()) not in GLOBAL_KEY_USED)
     for i, subkey in zip(range(training_size), unused_keys):
-        GLOBAL_KEY_USED.add(subkey)  # Mark the key as used
+        GLOBAL_KEY_USED.add(tuple(subkey.tolist()))  # Mark the key as used
         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
 
@@ -38,6 +37,19 @@ def generate_dataset_method2(gate, n_qubits, training_size, key, global_size=100
 
     X = np.stack(X)
     return X, None
+
+# Initialize global key
+initial_key = jax.random.PRNGKey(42)
+
+# Generate the first batch of states
+X1, _ = generate_dataset_method2(gate, n_qubits=3, training_size=10, key=initial_key, global_size=100)
+
+# Generate a new batch of states (ensuring no duplicates with X1)
+new_key,_  = jax.random.split(initial_key)
+X2, _ = generate_dataset_method2(gate, n_qubits=3, training_size=20, key=new_key, global_size=100)
+
+# Verify no overlap
+assert not any(np.allclose(x1, x2) for x1 in X1 for x2 in X2), "Duplicate states found!"
 
 
 averaged_data = all_data_df.groupby(['Trotter_Step', 'Reservoir Count', 'N_C']).agg(
