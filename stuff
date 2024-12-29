@@ -1,33 +1,40 @@
 
+def geGLOBAL_KEY_POOL = []  # Store all keys
+GLOBAL_KEY_USED = set()  # Track used keys
+
+def extend_global_key_pool(key, new_size):
+    """
+    Extend the global key pool with new keys using a given JAX random key.
+    """
+    global GLOBAL_KEY_POOL
+    # Generate additional keys
+    new_keys = jax.random.split(key, num=new_size)
+    GLOBAL_KEY_POOL.extend(new_keys)
+
 def generate_dataset_method2(gate, n_qubits, training_size, key, global_size=100):
-    '''
+    """
     Generate the dataset of input and output states according to the gate provided,
-    while ensuring the first `training_size` states are consistent across calls.
-    
-    Parameters:
-        gate: The quantum gate to apply.
-        n_qubits: Number of qubits in the system.
-        training_size: Number of training states to generate.
-        key: JAX random key for reproducibility.
-        global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
-    '''
-    if training_size > global_size:
-        raise ValueError("training_size cannot exceed global_size.")
-    
-    # Generate a fixed set of subkeys for the entire global pool
-    global_keys = jax.random.split(key, num=global_size)
-    
-    # Generate random state vectors from the fixed pool
+    while ensuring globally unique states across calls.
+    """
+    global GLOBAL_KEY_POOL, GLOBAL_KEY_USED
+
+    # Extend the global key pool if necessary
+    if len(GLOBAL_KEY_POOL) < len(GLOBAL_KEY_USED) + training_size:
+        additional_keys_needed = len(GLOBAL_KEY_USED) + training_size - len(GLOBAL_KEY_POOL)
+        extend_global_key_pool(key, additional_keys_needed)
+
+    # Generate random state vectors from the global pool
     X = []
-    for i in range(training_size):
-        subkey = global_keys[i]
+    unused_keys = (k for k in GLOBAL_KEY_POOL if k not in GLOBAL_KEY_USED)
+    for i, subkey in zip(range(training_size), unused_keys):
+        GLOBAL_KEY_USED.add(subkey)  # Mark the key as used
         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
-        
+
         # Use the seed to generate the random state vector
         state_vec = random_statevector(2**n_qubits, seed=seed_value).data
         X.append(np.asarray(state_vec, dtype=jnp.complex128))
-    
+
     X = np.stack(X)
     return X, None
 
