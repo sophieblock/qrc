@@ -70,17 +70,6 @@ config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 
-GLOBAL_KEY_POOL = []  # Store all keys
-GLOBAL_KEY_USED = set()  # Track used keys
-
-def extend_global_key_pool(key, new_size):
-    """
-    Extend the global key pool with new keys using a given JAX random key.
-    """
-    global GLOBAL_KEY_POOL
-    # Generate additional keys
-    new_keys = jax.random.split(key, num=new_size)
-    GLOBAL_KEY_POOL.extend(new_keys)
 
 def quantum_fun(gate, input_state, qubits):
     '''
@@ -89,45 +78,40 @@ def quantum_fun(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
-def generate_dataset(gate, n_qubits, training_size, key, global_size=3000, new_set=False):
+
+def generate_dataset(
+    gate, n_qubits, training_size, key, new_set=False
+):
     """
-    Generate the dataset of input and output states according to the gate provided,
-    while ensuring the first `training_size` states are consistent across calls.
+    Generate a deterministic dataset of input and output states for a given gate.
 
     Parameters:
         gate: The quantum gate to apply.
         n_qubits: Number of qubits in the system.
-        training_size: Number of training states to generate.
+        training_size: Number of training states required.
         key: JAX random key for reproducibility.
-        global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
-        new_set: If True, generate an entirely new dataset. Default is False.
+        trot_step: (Optional) Trotter step for additional determinism.
+        reservoir_count: (Optional) Reservoir count for additional determinism.
+        new_set: If True, generate a new dataset even for the same parameters. Default is False.
+
+    Returns:
+        Tuple (input_states, output_states).
     """
-    global GLOBAL_KEY_POOL, GLOBAL_KEY_USED
-
     if new_set:
-        # Generate a fresh random key pool
-        GLOBAL_KEY_POOL = jax.random.split(key, num=global_size)
-        GLOBAL_KEY_USED = set()  # Reset used keys
-    elif len(GLOBAL_KEY_POOL) < global_size:
-        # Extend the global key pool if necessary
-        extend_global_key_pool(key, global_size - len(GLOBAL_KEY_POOL))
+        # Use the raw key to generate a new dataset
+        seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+    else:
+       
+        # Derive a deterministic seed that ignores trot_step and reservoir_count
+        key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+        seed = hash((n_qubits, key_int)) 
 
-    # Always use the first `training_size` keys deterministically
-    selected_keys = GLOBAL_KEY_POOL[:training_size]
-
-    # Determine which keys are new (unused so far)
-    new_keys = [k for k in selected_keys if tuple(k.tolist()) not in GLOBAL_KEY_USED]
-
-    # Mark the new keys as used
-    for k in new_keys:
-        GLOBAL_KEY_USED.add(tuple(k.tolist()))
-
-    # Generate random state vectors
+    # Generate random state vectors deterministically
     X = []
-    for i, subkey in enumerate(selected_keys):
-        folded_key = jax.random.fold_in(subkey, i)
-        seed_value = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
-        state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+    for i in range(training_size):
+        folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
+        state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
+        state_vec = random_statevector(2**n_qubits, seed=state_seed).data
         X.append(np.asarray(state_vec, dtype=jnp.complex128))
 
     # Generate output states using the circuit
@@ -136,53 +120,10 @@ def generate_dataset(gate, n_qubits, training_size, key, global_size=3000, new_s
     circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
 
     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
+
     return np.asarray(X), np.asarray(y)
 
 
-# def generate_dataset(gate, n_qubits, training_size, key, global_size=100):
-#     '''
-#     Generate the dataset of input and output states according to the gate provided.
-#     Uses a seed for reproducibility.
-#     '''
-    
-
-#     # Generate random state vectors
-#     X = []
-    
-#     # Split the key into subkeys for the full training size
-#     keys = jax.random.split(key, num=training_size)
-    
-#     # Loop through the subkeys and generate the dataset
-#     for i, subkey in enumerate(keys):
-#         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
-#         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
-        
-#         # Use the seed to generate the random state vector
-#         state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
-    
-    
-#     X = np.stack(X)
-#     qubits = Wires(list(range(n_qubits)))
-#     dev_data = qml.device('default.qubit', wires=qubits)
-#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
-    
-#     # Execute the circuit for each input state
-#     # Execute the circuit for each input state and ensure Hermiticity
-#     # y = []
-#     # for i in range(training_size):
-#     #     target_state = np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128)
-        
-#     #     # Ensure the target state is Hermitian: A -> (A + A†) / 2
-#     #     target_state_hermitian = qml.Hermitian(target_state,wires=qubits)
-#     #     # print(type(target_state),type(target_state_hermitian))
-        
-#     #     y.append(target_state_hermitian)
-        
-
-#     y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
-#     y = np.stack(y)
-#     return X, y
 def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, key):
 
     N = N_reserv + N_ctrl
@@ -327,9 +268,7 @@ class Sim_QuantumReservoir:
 
             ''' Function to return constant hy parameter '''
             return p
-        # Add system-bath interactions
-        def bath_coupling_func(p, t):
-            return p * np.sin(t)  # Example time-dependent coupling
+       
 
         coefficients = []
         operators = []
@@ -395,7 +334,7 @@ class Sim_QuantumReservoir:
                         new_operator = self.get_ZZ_coupling(bath_qubit_i, bath_qubit_j)
                         static_operators.append(new_operator)
         
-        if self.N_reserv == 1:
+        if self.N_reserv == 1 and not self.bath:
             total_H = H_dynamic
         
         else:
@@ -519,26 +458,7 @@ def optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dic
             qml.evolve(parameterized_ham)(current_step, t=tau)
             
         return qml.density_matrix(wires=[*ctrl_wires])
-    """
-    vcircuit = jax.vmap(circuit, in_axes=(None, 0))
-    @jit
-    def cost_func(params, input_states, target_states):
-        def batched_cost_helper(params, input_states, target_states):
-            # Process the batch of states
-            batched_output_states = vcircuit(params, input_states)
-            # Compute fidelity for each pair in the batch and then average
-            fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, target_states)
-            average_fidelity = jnp.mean(fidelities)
-            return 1 - average_fidelity  # Minimizing infidelity
-
-        return batched_cost_helper(params, input_states, target_states)
     
-    
-    @jit
-    def collect_gradients(params, A, b):
-        grad_fn = jax.grad(cost_func, argnums=0)
-        return grad_fn(params, A, b)
-    """
     @jit
     def cost_func(params, input_state, target_state):
         output_state = circuit(params, input_state)
@@ -633,12 +553,16 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
     acceleration = prev_improvement - current_improvement
 
     return acceleration
-def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,random_key, bath_factor):
+
+def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key,bath_factor):
     float32=''
-    stored_epoch = 0
-    opt_lr=None
+    opt_lr = None
+    preopt_results = None
+    selected_indices, min_var_indices,replacement_indices = [],[],[]
+    num_states_to_replace = N_train // 5
+
     num_J = N_ctrl*N_reserv
-    folder_gate = folder + f"bath_coupling_order_{bath_factor}/"+ str(num_bath) + '/'+gate_name + '/reservoirs_' + str(N_reserv) + '/trotter_step_' + str(time_steps) +'/'
+    folder_gate = folder + str(num_bath) + '/'+gate_name + '/reservoirs_' + str(N_reserv) + '/trotter_step_' + str(time_steps) +'/' + 'bath_'+str(bath)+'/'
     Path(folder_gate).mkdir(parents=True, exist_ok=True)
     temp_list = list(Path(folder_gate).glob('*'))
     files_in_folder = []
@@ -648,49 +572,39 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 3
-    #print(list(Path(folder_gate).glob('*')))
+    k = 1
+   
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
         print('\n')
         return
-    filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
-
-    
-
-
 
     # get PQC
-    sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, N_reserv * N_ctrl,time_steps,bath,num_bath,bath_factor)
+    sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, N_reserv * N_ctrl,time_steps,bath,num_bath)
     
-    
-    # Get optimal hyperparameter (learning rate)
-    
+
     init_params = params
 
+    filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
+
+    # opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train + 2000, key= random_key) 
    
-    
-    opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train + 2000, key= random_key) 
-    input_states, target_states = np.asarray(opt_a[:N_train]), np.asarray(opt_b[:N_train])
+
+    input_states, target_states = generate_dataset(gate, N_ctrl,training_size= N_train, key= dataset_key, new_set=False)
     print(f"training state #1: {input_states[0]}")
-    test_in, test_targ = opt_a[N_train:], opt_b[N_train:]
+
+
+    test_dataset_key = jax.random.split(dataset_key)[1]
+    test_in, test_targ = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=False)
     
-    # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,5,key)
-    _, second_set_key = jax.random.split(random_key) 
-    # test_in, test_targ = generate_dataset(gate, N_ctrl, 2000, key= second_set_key) 
-    second_A, second_b = generate_dataset(gate, N_ctrl, 500, key= second_set_key, new_set=True) 
+
+    second_A, second_b = generate_dataset(gate, N_ctrl,training_size= 500, key= dataset_key, new_set=True) 
     assert not any(np.allclose(x1, x2) for x1 in input_states for x2 in second_A), "Duplicate states found!"
 
     
    
     parameterized_ham = sim_qr.get_total_hamiltonian_components()
-    # print("H: ",parameterized_ham)
-    
-    
-    #s = time.time()
-    #opt_lr,randomize = hyperparameter_optimization_batch(gate, 100, N_reserv, N_ctrl, N_train, time_steps,folder,bath,num_bath,init_params_dict,opt_a, opt_b,sim_qr,params)
-    #e = time.time()
-    #print("opt_lr: ",opt_lr," time: ", e-s)
+    print("H: ",parameterized_ham)
     
     
     print("Number of trainable parameters: ", len(params))
@@ -719,12 +633,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
             hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
             hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
             J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
-            """
-            print(f"hx: {hx_array}")
-            print(f"hy: {hy_array}")
-            print(f"hz: {hz_array}")
-            print(f"J_values: {J_values}")
-            """
+ 
             # Concatenate hx_array with J_values and coupling_params
             current_step = np.concatenate([J_values, hx_array, hy_array, hz_array])
             
@@ -761,17 +670,6 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
         return loss
    
 
-    @jit
-    def cost_per_state(params, input_state, target_state):
-        output_state = jit_circuit(params, input_state)
-        fidelity = qml.math.fidelity(output_state, target_state)
-        return 1 - fidelity  # Minimizing infidelity
-
-    
-    def collect_gradients(params, input_states, target_states):
-        grad_fn = jax.value_and_grad(cost_per_state, argnums=0)
-        costs,gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
-        return costs, gradients
     
 
     def final_test(params,test_in,test_targ):
@@ -815,10 +713,10 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
     print("________________________________________________________________________________")
     print(f"Starting optimization for {gate_name} with optimal lr {opt_lr} time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
 
-    #opt = optax.novograd(learning_rate=opt_lr)
-    opt = optax.adam(learning_rate=opt_lr)
-    #opt = optax.chain( optax.clip_by_global_norm(1.0), optax.novograd(learning_rate=opt_lr, b1=0.9, b2=0.1, eps=1e-6))
-    
+    opt = optax.chain(
+        optax.clip_by_global_norm(1.0),  # Clip gradients to prevent explosions
+        optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)  # Slightly more aggressive Adam
+    )
    
     
     print("Number of trainable parameters: ", len(params))
@@ -938,7 +836,8 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
 
         second_prev_cost = prev_cost  # Move previous cost back one step
         prev_cost = cost 
-        if np.abs(max(grad)) < 1e-14:
+        if np.abs(max(grad)) < 1e-14 or np.var(grad,ddof=1) < 1e-10:
+            print(f"max(grad)<1e-14. breaking....")
             break
         epoch += 1 
         cond3 = np.var(grad,ddof=1) < cond2
@@ -1040,6 +939,7 @@ def run_test(params, init_params_dict, num_epochs, N_reserv, N_ctrl, time_steps,
             target_states = np.concatenate([target_states, add_b], axis=0)
             print(f"New number of training states: {len(input_states)}")
             add_more = False
+        
 
     if backup_cost < cost and not epoch < num_epochs and backup_epoch > stored_epoch:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
@@ -1121,18 +1021,18 @@ if __name__ == '__main__':
     trots = [6]
     #res = [N_reserv]
     
-    num_epochs = 1000
+    num_epochs = 1200
     N_train = 20
-    base_folder = f'./analog_results_trainable_global/noise_opt_cost_adaptive_trainingset_test/'
+    
     # base_folder = f'./analog_results_trainable_global/noise_opt_cost/'
     bath_factor = 0.1
+    base_folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_bath_factor_{bath_factor}/'
     #folder = f'./analog_results_trainable_global/trainsize_{N_train}_optimize_trainset/'
 
     gates_random = []
-    baths = [False,True,True]
-    num_baths = [0,1,2]
-    baths = [False]
-    num_baths = [0]
+    
+    baths = [True]
+    num_baths = [2]
     for i in range(10):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         #pprint(Matrix(np.array(U)))
@@ -1147,37 +1047,47 @@ if __name__ == '__main__':
     #    g.name = g(wires=list(range(g.num_wires))).name
 
     
-
     for gate_idx,gate in enumerate(gates_random):
-        
-        if True:
-            if gate_idx not in [0,1]:
-                continue
-            for time_steps in trots:
 
-                for N_reserv in res:
+        if not gate_idx in [0]:
+            continue
+        # if gate_idx != 0:
+        #     continue
+       
+
+        for time_steps in trots:
+
+            
+            
+            
+            for N_reserv in res:
+                
+                N =N_ctrl+N_reserv
+                
+                #folder = f'./param_initialization/Nc{N_ctrl}_Nr{N_reserv}_dt{time_steps}/fixed_params4/test7/'
+                for num_bath,bath in zip(num_baths,baths):
+                    folder = os.path.join(base_folder, f"{num_bath}_num_baths/")
+                    params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
+                    params_key = jax.random.PRNGKey(params_key_seed)
+                    dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
+                    dataset_key = jax.random.PRNGKey(dataset_seed)
+                    main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
+                    # print(f"main_params: {main_params}")
+                    params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                     
-                    N =N_ctrl+N_reserv
                     
-                    #folder = f'./param_initialization/Nc{N_ctrl}_Nr{N_reserv}_dt{time_steps}/fixed_params4/test7/'
-                    for num_bath,bath in zip(num_baths,baths):
-                        folder = os.path.join(base_folder, f"{num_bath}_num_baths/trainsize_{N_train}/")
-                        params_key_seed= gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
+                    time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
+                    init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
+                    
 
-                        params_key = jax.random.PRNGKey(params_key_seed)
-                        print(f"params_key_seed: {params_key_seed}")
-                        main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
 
-                        params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
-                        
-                        
-                        time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
-                        init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
-                        
-    
-                        # Combine the two parts
-                        params = jnp.concatenate([time_step_params, main_params])
+                    # Combine the two parts
+                    params = jnp.concatenate([time_step_params, main_params])
+                    # params = jnp.asarray([0.4033546149730682, 1.4487122297286987, 2.3020467758178711, 2.9035964012145996, 0.9584765434265137, 1.7428307533264160, -1.3020169734954834, -0.8775904774665833, 2.4736261367797852, -0.4999605417251587, -0.8375297188758850, 1.7014273405075073, -0.8763229846954346, -3.1250307559967041, 1.1915868520736694, -0.4640290737152100, -1.0656110048294067, -2.6777451038360596, -2.7820897102355957, -2.3751690387725830, 0.1393062919378281])
+                    print(f"time_step_params: {time_step_params}")
 
-                        print(f"time_step_params: {time_step_params}")
 
-                        run_test(params, init_params_dict,num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,random_key = params_subkey2,bath_factor=bath_factor)
+
+                    run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,init_params_dict = init_params_dict,dataset_key = dataset_key,bath_factor=bath_factor)
+
+                        # run_test(params, init_params_dict,num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,random_key = params_subkey2,bath_factor=bath_factor)
