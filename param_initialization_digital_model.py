@@ -4,6 +4,7 @@ from qiskit.circuit.library import *
 from qiskit import *
 from qiskit.quantum_info import *
 import matplotlib.pyplot as plt
+import time
 from scipy import stats
 from pennylane.math import vn_entropy
 from pennylane.wires import Wires
@@ -15,14 +16,13 @@ import pickle
 import jax
 from jax import jit, config
 import jax.numpy as jnp
-from jax import jit, value_and_grad
-import time
-import jax.numpy as jnp
+
+
 from jax import jit, value_and_grad, vmap
 import optax
 import base64
 import os
-from QFIM import get_qfim_data
+
 #os.environ['OPENBLAS_NUM_THREADS'] = '1'
 has_jax = True
 diable_jit = False
@@ -35,7 +35,7 @@ def quantum_fun(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
     '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
+    qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
 
@@ -44,7 +44,7 @@ def get_target_state(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
     '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
+    qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.state()
 
@@ -120,9 +120,7 @@ class QuantumReservoirGate:
                 if i != j and i < j:
                     k = self.K_coeffs[i, j]
                     
-                    
-                    #print(f"{i},{j}/ {rsv_qubit_i},{rsv_qubit_j} -> k: {k} ")
-                    #print(f"RESERVOIR wires: {[rsv_qubit_i, rsv_qubit_j]}")
+                
                     qml.IsingXY(k, wires=[rsv_qubit_i, rsv_qubit_j])
     
     def set_gate_params(self, x_coeff,z_coeff,y_coeff, J_coeffs):
@@ -235,7 +233,7 @@ def get_initial_learning_rate_DQFIM(params,qrc,X,gate,init_grads, scale_factor=0
 
         #print(J_coeffs)
         #qml.StatePrep(test_state, wires=[*ctrl_qubits])
-        qml.QubitStateVector(input_state, wires=[*qrc.ctrl_qubits])
+        qml.StatePrep(input_state, wires=[*qrc.ctrl_qubits])
         
         for i in range(trotter_steps):
             qrc.set_gate_reservoir()
@@ -411,7 +409,7 @@ def optimize_traingset(gate,N_ctrl, N_r,trotter_steps, params, K_coeffs, N_train
         z_coeff = params[1]
         y_coeff = params[2]
         J_coeffs = params[3:]
-        qml.QubitStateVector(input_state, wires=[*sim_qr.ctrl_qubits])
+        qml.StatePrep(input_state, wires=[*sim_qr.ctrl_qubits])
         for i in range(trotter_steps):
             sim_qr.set_gate_reservoir()
             if sim_qr.static or trotter_steps == 1:
@@ -491,10 +489,22 @@ def optimize_traingset(gate,N_ctrl, N_r,trotter_steps, params, K_coeffs, N_train
     print(f"Initial Learning Rate: {initial_lr}")
     assert best_dataset_idx != second_best_idx
     return best_A, best_b, worst_A, worst_b, initial_lr
+def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
+    
+    prev_improvement = prev_cost - second_prev_cost
+    current_improvement = cost - prev_cost
+    acceleration = prev_improvement - current_improvement
 
-def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotter_steps, static, A, b, gate, gate_name, folder, test_size, training_size,opt_lr,L,dqfim):
+    return acceleration
+def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotter_steps, static, gate, gate_name, test_size, training_size,opt_lr= None,L = [], key=0):
     bath = False
     dqfim_data = None
+    
+    
+    if len(L) > 0:
+        A, b = generate_dataset(gate, gate.num_wires, training_size, test_size,key=key, L=L)
+    else:
+        A, b = generate_dataset(gate, gate.num_wires, training_size, test_size,key=key)
     init_params = params
     X, y = A[:training_size], b[:training_size]
     test_X, test_y = A[training_size:], b[training_size:]
@@ -512,7 +522,7 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         z_coeff = params[1]
         y_coeff = params[2]
         J_coeffs = params[3:]
-        qml.QubitStateVector(input_state, wires=[*qrc.ctrl_qubits])
+        qml.StatePrep(input_state, wires=[*qrc.ctrl_qubits])
         for i in range(trotter_steps):
             qrc.set_gate_reservoir()
             
@@ -554,7 +564,7 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         
         fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
         fidelities = jnp.clip(fidelities, 0.0, 1.0)
-        return 1 - fidelities
+        return fidelities
     # if opt_lr == None:
     #     # s = time.time()
     #     # init_loss, init_grads = jax.value_and_grad(cost_func)(params, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
@@ -583,26 +593,27 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
     print("________________________________________________________________________________")
     print(f"Starting optimization for {gate_name} with {len(X)} training states, lr {opt_lr} time_steps = {trotter_steps}, N_r = {n_rsv_qubits}...\n")
 
-    #opt = optax.adam(learning_rate=0.1)
+    opt = optax.adam(learning_rate=0.1)
+
     # opt = optax.chain(
     #     optax.clip_by_global_norm(1.0),  # Clip gradients to prevent explosions
-    #     optax.adam(learning_rate=opt_lr, b1=0.9, b2=0.99, eps=1e-8)  # Slightly more aggressive Adam
+    #     optax.adam(learning_rate=opt_lr, eps=1e-8)  # Slightly more aggressive Adam
     # )
-    opt = optax.chain(
-        optax.clip_by_global_norm(1.0),  # Clip gradients to prevent explosions
-        optax.adam(learning_rate=opt_lr, eps=1e-8)  # Slightly more aggressive Adam
-    )
 
     cost_threshold= 1e-05
     conv_tol = 1e-08
     prev_cost = float('inf')  # Initialize with infinity
     threshold_counts = 0
+    consecutive_improvement_count = 0
     consecutive_threshold_limit = 4
     backup_params = None
     backup_cost = float('inf')  
-
+    threshold_cond1, threshold_cond2 = [],[]
     cost_res = 1
-    costs,grads_per_epoch = [],[]
+    a_condition_set = False
+    a_threshold =  0.0
+    stored_epoch = None
+    costs,grads_per_epoch,rocs = [],[],[]
     epoch = 0
     improvement = True
     opt_state = opt.init(params)
@@ -614,10 +625,35 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         return new_params, opt_state, loss,grads
     fullstr = time.time()
     while epoch  < steps or improvement:
-        #cost, grad_circuit  = jax.value_and_grad(cost_func)(params, X, y, n_rsv_qubits, n_ctrl_qubits,trotter_steps, static)
-        #updates, opt_state = opt.update(grad_circuit, opt_state)
-        #params = optax.apply_updates(params, updates)
+
         params, opt_state, cost,grad_circuit = update(params, opt_state, X, y)
+        if epoch > 1:
+            var_grad = np.var(grad_circuit,ddof=1)
+            mean_grad = np.mean(jnp.abs(grad_circuit))
+            if epoch >5:
+                threshold_cond1.append(np.abs(mean_grad))
+                threshold_cond2.append(var_grad)
+            if epoch == 15:
+                initial_meangrad = np.mean(np.array(threshold_cond1))
+                initial_vargrad = np.mean(np.array(threshold_cond2))
+                cond1  = initial_meangrad * 1e-1
+                print(f"    - setting cond1: initial mean(grad) {initial_meangrad:2e}, threshold: {cond1:2e}")
+                cond2 = initial_vargrad * 1e-2
+                print(f"    - setting cond2: initial var(grad) {initial_vargrad:2e}, threshold: {cond2:2e}")
+            
+            acceleration = get_rate_of_improvement(cost,prev_cost,second_prev_cost)
+            if epoch >= 25 and not a_condition_set and acceleration < 0.0:
+                average_roc = np.mean(np.array(rocs[10:]))
+                a_marked = np.abs(average_roc)
+                a_threshold = max(a_marked * 1e-3, 1e-7)
+                # a_threshold = a_marked*1e-3 if a_marked*1e-3 > 9e-7 else a_marked*1e-2
+                
+                print(f"acceration: {a_marked:.2e}, marked: {a_threshold:.2e}")
+                # if N_ctrl == 3:
+                # # if True:
+                #     a_threshold *= 10
+                a_condition_set = True
+            rocs.append(acceleration)
 
         costs.append(cost)
         grads_per_epoch.append(grad_circuit)
@@ -627,34 +663,43 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
             print(f'Cost after step {epoch + 1}: {cost}. Max gradient: {max(grad_circuit)}')
         
         
-
-        if cost < backup_cost:  # There's an improvement
-            threshold_counts = 0  # Reset threshold counter if there's an improvement
-            backup_params = params  # Update backup with the current "good" parameters
-            backup_cost = cost
-        else:
-            if cost <= cost_threshold:
-                threshold_counts += 1 
+        
         # Check if there is improvement
         if cost < prev_cost:
-            prev_cost = cost  # Update previous cost to current cost
             improvement = True
+            consecutive_improvement_count += 1
+            current_cost_check = cost_func(params, X, y, n_rsv_qubits, n_ctrl_qubits,trotter_steps, static)
+            if current_cost_check < backup_cost:
+                # print(f"Epoch {epoch}: Valid improvement found. Updating backup params: {backup_cost:.2e} > {current_cost_check:.2e}")
+                backup_cost = current_cost_check
+                backup_params = params
+                false_improvement = False
+                backup_epoch = epoch
+            if false_improvement:
+                print(f"Epoch {epoch}: False improvement detected, backup params not updated. Difference: {current_cost_check- backup_cost:.2e}")
+                false_improvement = True
         else:
             improvement = False  # Stop if no improvement
-
+            consecutive_improvement_count = 0  # Reset the improvement count if no improvement
+        second_prev_cost = prev_cost  # Move previous cost back one step
+        prev_cost = cost  # Update previous cost with the current cost
         if prev_cost <= conv_tol: 
             break
         if np.abs(max(grad_circuit)) < 1e-14:
             break
         prev_cost = cost
         epoch += 1
-    
+    if backup_cost < cost:
+        print(f"*backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
+        params = backup_params
     fullend = time.time()
     print(f"time optimizing: {fullend-fullstr}")
-    infidelities = final_costs(params, X=test_X, y=test_y, n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits, trotter_steps=trotter_steps, static=static)
+    testing_results = final_costs(params, X=test_X, y=test_y, n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits, trotter_steps=trotter_steps, static=static)
+    avg_fidelity = jnp.mean(testing_results)
+    infidelities = 1.00000000000000-testing_results
     avg_infidelity = np.mean(infidelities)
 
-    print('Infidelity: ', avg_infidelity)
+    print(f"\nAverage Final Fidelity: {avg_fidelity:.2e}")
 
     x_coeff = params[0]
     z_coeff = params[1]
@@ -665,6 +710,7 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
                 'DQFIM_target_states':dqfim_data,
                 'epochs': epoch,
                 'trotter_step': trotter_steps,
+                'backup_epoch': backup_epoch,
                 'controls': n_ctrl_qubits, 
                 'reservoirs': n_rsv_qubits,
                 'x_coeff': x_coeff,
@@ -679,7 +725,9 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
                 'init_params':init_params,
                 'grads_per_epoch':grads_per_epoch,
                 'avg_infidelity':avg_infidelity,
-                'test_results':infidelities,
+                'avg_fidelity':avg_fidelity,
+                'infidelities':infidelities,
+                'testing_results':testing_results,
                 'training_size': training_size,
                 'noise_central': noise_central,
                 'noise_range': noise_range,
@@ -715,7 +763,7 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     """
     # Ensure file_path is a Path object
     file_path = Path(file_path) if not isinstance(file_path, Path) else file_path
-    
+    print(f"file_path: {file_path}")
     if not file_path.exists():
         print(f"File {file_path} does not exist.")
         return None
@@ -779,7 +827,7 @@ if __name__=='__main__':
     parameters = []
     
     N_r = 1
-    trotter_steps = 12
+    trotter_steps = 10
   
     bath = False
     static = False
@@ -787,7 +835,7 @@ if __name__=='__main__':
 
     folder = f'./param_initialization_final/digital_results/Nc_{N_ctrl}/'
     gates_random = []
-    for i in range(21):
+    for i in range(50):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         g = partial(qml.QubitUnitary, U=U)
         g.num_wires = N_ctrl
@@ -800,7 +848,7 @@ if __name__=='__main__':
     fp_idx = 0
    
     fixed_param_keys = [f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}']
-   # trainable_param_keys = ['test52', 'test33', 'test55', 'test71']
+    trainable_param_keys = ['test45','test33','test20','test43','test1','test13', 'test9', 'test19','test3', 'test39', 'test35']
     # trainable_param_keys = ['test20', 'test60', 'test181', 'test142', 'test138', 'test95']
     # trainable_param_keys = ['test110','test5', 'test103', 'test20', 'test22', 'test7', 'test52', 'test116', 'test13', 'test113']
     # trainable_param_keys =['test1', 'test141','test133','test130','test190','test82','test141', 'test165']
@@ -809,14 +857,14 @@ if __name__=='__main__':
     # trainable_param_keys = ['test5', 'test107' ,'test127','test44']# pi normal range
     # trainable_param_keys = ['test137','test118', 'test10'] # pi*.3 normal range
 
-    list_of_trainable_sets = {"1": ['test18','test89','test172','test73','test35','test196','test139','test15', 'test118','test82','test146','test170' ],
-                            #   "pi_normal": ['test5', 'test107' ], 
-                            #   "0.1": ['test75', 'test86' , 'test44'],
-                            #   "pi_normal.5": ['test154','test142']
-                              }
+    # list_of_trainable_sets = {"1": ['test18','test89','test172','test73','test35','test196','test139','test15', 'test118','test82','test146','test170' ],
+    #                         #   "pi_normal": ['test5', 'test107' ], 
+    #                         #   "0.1": ['test75', 'test86' , 'test44'],
+    #                         #   "pi_normal.5": ['test154','test142']
+    #                           }
     
-    # list_of_trainable_sets = {"": ['test192','test93','test139','test180','test39', 'test161','test162','test87','test101', 'test62'],
-    #                          }
+    list_of_trainable_sets = {"pi": trainable_param_keys,
+                             }
     # sample_range_label = "pi_normal.3"
     # sample_range = np.pi
     # print(len(fixed_param_keys), len(trainable_param_keys))
@@ -825,8 +873,9 @@ if __name__=='__main__':
     opt_lr = None
     delta_x = 1.49011612e-08
     threshold = 1.e-14
+    num_L = 100
     all_gates = gates_random
-    for i,gate in enumerate(all_gates):
+    for gate_idx,gate in enumerate(all_gates):
         for fixed_param_name, (sample_range_label, trainable_param_keys) in zip(fixed_param_keys,list_of_trainable_sets.items()):
             for test_key in trainable_param_keys:
                 test_key_dict = f'{sample_range_label}/{test_key}'
@@ -848,7 +897,7 @@ if __name__=='__main__':
                 # if i != 4:
                 #     continue
 
-                set_key = jax.random.PRNGKey(i*12345)
+                set_key = jax.random.PRNGKey(gate_idx*12345)
                 
                 
                 print("________________________________________________________________________________")
@@ -858,22 +907,20 @@ if __name__=='__main__':
                 N = N_ctrl + N_r
                 state = 'GHZ'
                 Kfactor = '1xK'
-                qfim_base_path = f'/Users/sophieblock/QRCCapstone/QFIM_traced_final_results/gate_model_DQFIM/Nc_{N_ctrl}/{state}_state/{Kfactor}/'
+                qfim_base_path = f'/Users/so714f/Documents/offline/qrc/QFIM_traced_final_results/gate_model_DQFIM/Nc_{N_ctrl}/L_{num_L}/{Kfactor}/'
                 # qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' /  f'data2.pickle'
 
-                qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' /  f'data_{sample_range_label}_range.pickle'
+                qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}/L_{num_L}' /  f'data_{sample_range_label}_range.pickle'
                 print(qfim_file_path)
                 print(f"{test_key} params (range: (-{sample_range_label}, {sample_range_label}))")
-                print(f"{fixed_param_name}")
+                
 
                 eigvals, K_coeffs,params,qfim,L,entropies = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
-                # L = []
+                L = []
+                print(f"{test_key}")
                 # print(f"eigvals: {eigvals}")
                 # print(f"params: {params}")
-                if len(L) > 0:
-                    A, b = generate_dataset(gate, gate.num_wires, training_size, test_size,set_key, L=L)
-                else:
-                    A, b = generate_dataset(gate, gate.num_wires, training_size, test_size,set_key)
+                
             # A, b, opt_lr,first_grad = optimize_traingset(gate,N_ctrl, N_r,trotter_steps, params, K_coeffs, training_size,5,set_key)
                 # A, b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_r,trotter_steps, params, K_coeffs, training_size,20,set_key)
                 #print(f"{test_key} params: {params}")
@@ -885,9 +932,9 @@ if __name__=='__main__':
                 var_qfim = np.var(eigvals)
                 print(f"QFIM trace: {trace_qfim}")
                 print(f"QFIM var: {var_qfim}")
+                based_subkey= gate_idx*trotter_steps*N_r,
 
-
-                data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static, A=A, b=b, gate=gate,gate_name= gate.name,folder= folder,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=L,dqfim=qfim)
+                data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static,gate=gate,gate_name= gate.name,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=L,key=set_key)
                 data['QFIM Results'] = {"qfim_eigvals":eigvals,
                                         "trainable_params": params,
                                         "qfim": qfim,
@@ -905,5 +952,7 @@ if __name__=='__main__':
                 with open(filename, 'wb') as f:
                     pickle.dump(df, f)
                 print(f"Saved to path: {filename}")
+
+                
 
                 
