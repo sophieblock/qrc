@@ -1,3 +1,92 @@
+# def plot_infidelity_by_lambda_scale(
+#     data_df, 
+#     N_C=1, 
+#     lambda_scales=[], 
+#     trotter_steps=None, 
+#     gamma_scale=0.1, 
+#     bath_qubits=2
+# ):
+#     """
+#     Plot infidelity (log scale) for a specific number of bath qubits with the hue set to `lambda_scale`.
+
+#     Args:
+#         data_df (DataFrame): The DataFrame containing extracted data.
+#         N_C (int): The number of control qubits to filter the data by.
+#         lambda_scales (list): List of lambda scales to filter data by. If empty, all scales are used.
+#         trotter_steps (list): A list of specific trotter steps to filter and plot. If None, all steps are used.
+#         gamma_scale (float): The gamma scale to filter the data by.
+#         bath_qubits (int): The number of bath qubits to filter data by (default is 2).
+#     """
+#     # Filter data for N_C, num_bath, and gamma_scale
+#     data_filtered = data_df[
+#         (data_df['N_C'] == N_C) &
+#         (data_df['Bath'] == bath_qubits) &
+#         (data_df['gamma_scale'] == gamma_scale)
+#     ]
+
+#     # Filter by trotter_steps if provided
+#     if trotter_steps:
+#         data_filtered = data_filtered[data_filtered['Trotter_Step'].isin(trotter_steps)]
+
+#     # Filter by lambda_scales if provided
+#     if lambda_scales:
+#         data_filtered = data_filtered[data_filtered['lambda_scale'].isin(lambda_scales)]
+
+#     # Check if filtered data is empty
+#     if data_filtered.empty:
+#         print(f"No data available for N_C={N_C}, num_bath={bath_qubits}, gamma_scale={gamma_scale}, and the specified parameters.")
+#         return
+
+#     # Explode Error_Test_Results for violin plot
+#     all_test_results = data_filtered.explode('Error_Test_Results').reset_index()
+#     all_test_results['Log(Infidelity)'] = all_test_results['Error_Test_Results']
+
+#     # Create the plot
+#     fig, ax = plt.subplots(figsize=(8, 6))
+#     sns.violinplot(
+#         x='Trotter_Step',
+#         y='Log(Infidelity)',
+#         hue='lambda_scale',
+#         data=all_test_results,
+#         ax=ax,
+#         density_norm='width',
+#         palette='Set3',
+#         inner="quart",
+#         zorder=2
+#     )
+
+#     # Customize legend
+#     handles, labels = ax.get_legend_handles_labels()
+#     new_labels = [f'$\\lambda_{{scale}} = {label}$' for label in labels]
+#     ax.legend(handles, new_labels, title_fontsize=12, loc='lower left', fontsize=12, fancybox=True, framealpha=0.5)
+
+#     # Customize grid and title
+#     ax.yaxis.grid(True, zorder=1)
+#     ax.xaxis.grid(False)
+
+#     ax.set_title(
+#         f'Infidelity vs Trotter Steps\n$N_{{bath}} = {bath_qubits}$, $\\gamma_{{scale}} = {gamma_scale}$',
+#         fontsize=15
+#     )
+#     ax.set_xlabel('$N_{trots}$', fontsize=22)
+#     ax.set_ylabel(r'$\log(\text{Infidelity})$', fontsize=22)
+
+#     # Adjust tick sizes
+#     ax.tick_params(axis='y', labelsize=12)
+#     ax.tick_params(axis='x', labelsize=18)
+
+#     plt.tight_layout()
+#     plt.show()
+
+# # Plot for N_C=2, num_bath=2, gamma_scale=0.05, specific lambda_scales and trotter_steps
+# plot_infidelity_by_lambda_scale(
+#     data_df=all_data_df,
+#     N_C=2,
+#     lambda_scales=[0.01, 0.1,1.0],
+#     trotter_steps=[4, 8, 12, 16],
+#     gamma_scale=0.1,
+#     bath_qubits=3
+# )
 import pennylane as qml
 import os
 
