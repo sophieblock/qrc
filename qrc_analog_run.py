@@ -1,6 +1,6 @@
 import pennylane as qml
 import os
-import numpy
+
 import pickle
 import re
 import seaborn as sns
@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import base64
 from jax import numpy as jnp
 import pickle
-from qutip import *
+
 from datetime import datetime
  # Using pennylane's wrapped numpy
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
@@ -27,6 +27,7 @@ import base64
 import time
 import os
 import ast
+from optax.tree_utils import tree_get
 import pandas as pd
 from pathlib import Path
 from qiskit.circuit.library import *
@@ -72,6 +73,17 @@ config.update('jax_disable_jit', diable_jit)
 config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
+
+
+def extend_global_key_pool(key, new_size):
+    """
+    Extend the global key pool with new keys using a given JAX random key.
+    """
+    global GLOBAL_KEY_POOL
+    # Generate additional keys
+    new_keys = jax.random.split(key, num=new_size)
+    GLOBAL_KEY_POOL.extend(new_keys)
+
 def quantum_fun(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
@@ -79,6 +91,7 @@ def quantum_fun(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
+
 def generate_dataset(
     gate, n_qubits, training_size, key, new_set=False
 ):
@@ -122,6 +135,7 @@ def generate_dataset(
     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
 
     return np.asarray(X), np.asarray(y)
+
 def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, key):
    
 
@@ -161,6 +175,58 @@ def create_initial_state(num_qubits, base_state):
         state = state.at[-1].set(1 / np.sqrt(2))
 
     return state
+
+def estimate_reductions_and_factor_with_gradients(
+    total_epochs, accumulation_size, patience, cooldown, initial_lr, min_scale, init_gradients_array, rtol, atol
+):
+    """
+    Estimate the number of reductions and compute the ideal factor for reduce_on_plateau
+    when initial gradients are given as an array.
+
+    Args:
+        total_epochs (int): Total number of training epochs.
+        accumulation_size (int): Number of updates before evaluating improvement.
+        patience (int): Number of evaluations to wait for improvement before reducing LR.
+        cooldown (int): Cooldown period after a reduction.
+        initial_lr (float): Initial learning rate (η0).
+        min_scale (float): Minimum learning rate (η_min).
+        init_gradients_array (array-like): Array of initial gradient magnitudes for each parameter.
+        rtol (float): Relative tolerance for improvement.
+        atol (float): Absolute tolerance for improvement.
+
+    Returns:
+        tuple: Estimated number of reductions (n) and ideal factor (f).
+    """
+    # Compute the mean gradient magnitude across all parameters
+    mean_gradients = np.mean(np.abs(init_gradients_array))
+
+    # Calculate number of evaluations during training
+    num_evaluations = total_epochs / accumulation_size
+
+    # Estimate the effective number of plateaus (potential reductions)
+    num_plateaus = num_evaluations / (patience + cooldown)
+    print(f"num_plateaus: {num_plateaus}")
+    # Estimate patience failure rate based on improvement likelihood
+    improvement_likelihood = mean_gradients / initial_lr
+    print(f"improvement_likelihood: {improvement_likelihood}")
+    tolerance_threshold = rtol * mean_gradients + atol
+    print(f"tolerance_threshold: {tolerance_threshold}")
+     # Patience failure rate: Likelihood of not improving
+    patience_failure_rate = max(1 - min(improvement_likelihood / tolerance_threshold, 1), 0)
+    print(f"patience_failure_rate: {patience_failure_rate}")
+
+    # Estimate reductions based on plateaus and failure rate
+    num_reductions = num_plateaus * patience_failure_rate
+
+
+    # Compute the ideal factor if reductions > 0
+    if num_reductions > 0:
+        ideal_factor = (min_scale / initial_lr) ** (1 / num_reductions)
+    else:
+        ideal_factor = 1.0  # No reductions expected
+
+    return num_reductions, ideal_factor
+
 
 
 class Sim_QuantumReservoir:
@@ -342,6 +408,58 @@ def compute_initial_learning_rate(gradients, scale_factor=0.1, min_lr=1e-3, max_
     initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
     return initial_lr
 
+def apply_adaptive_penalty(var_grad, iqr_var_grad,norm_var_grad_var, num_qubits, num_time_steps, num_parameters, weight_mean_grad, weight_aggregated_var, all_variances, all_iqrs,all_var_grad_vars):
+    """
+    Applies adaptive penalties to the variance and IQR based on system characteristics and number of parameters.
+    Logs details about penalties applied.
+    """
+    # Get the percentiles for variance and IQR for adaptive penalty
+    # Convert lists to NumPy arrays
+    all_variances = np.array(all_variances)
+    all_iqrs = np.array(all_iqrs)
+    all_var_grad_vars = np.array(all_var_grad_vars)  
+   
+    # print(f"all_variances.shape: {all_variances.shape}")
+    var_percentile_90 = np.percentile(all_variances, 90)  # 90th percentile of variance
+    iqr_percentile_10 = np.percentile(all_iqrs, 10)  # 10th percentile for IQR
+    var_grad_var_percentile_90 = np.percentile(all_var_grad_vars, 90)  # 90th percentile of var_grad variance
+    var_grad_var_percentile_10 = np.percentile(all_var_grad_vars, 50)  # 90th percentile of var_grad variance
+    
+    # print(f"var_percentile_90: {var_percentile_90:5e}, iqr_percentile_10: {iqr_percentile_10:5e}, var_grad_var_percentile_90: {var_grad_var_percentile_90:5e}, var_grad_var_percentile_10: {var_grad_var_percentile_10:5e}")
+    # Normalize based on system size (qubits * time_steps * num_parameters)
+    # norm_var_grad = var_grad / (num_qubits * num_time_steps * num_parameters)
+    # norm_iqr_var_grad = iqr_var_grad / (num_qubits * num_time_steps * num_parameters)
+    norm_var_grad = var_grad 
+    norm_iqr_var_grad = iqr_var_grad 
+   
+    # Initialize penalty factor
+    penalty_factor = 1.0
+    # print(f"\nEvaluating penalties for dataset with norm_var_grad: {norm_var_grad:.5e}, norm_iqr_var_grad: {norm_iqr_var_grad:.5e}, norm_var_grad_var: {norm_var_grad_var:.5e}")
+
+    # Only penalize if the variance is extremely high and the IQR is also large (indicating instability)
+    if norm_var_grad > var_percentile_90 and norm_iqr_var_grad > iqr_percentile_10:
+        penalty_factor *= 0.7  # Penalize unstable datasets (reduce to 70%)
+        # print(f"Penalized for high variance and high instability. Penalty factor reduced to {penalty_factor:.2f}")
+    
+    # Reward stability (low IQR, less than 10th percentile)
+    if norm_iqr_var_grad < iqr_percentile_10:
+        penalty_factor *= 1.3  # Reward more stable datasets
+        # print(f"Rewarded for stability (low IQR less than 10th percentile). Penalty factor increased to {penalty_factor:.2f}")
+    # Reward stability (low IQR, less than 10th percentile)
+    if norm_var_grad_var < var_grad_var_percentile_10:
+        penalty_factor *= 1.3  # Reward more stable datasets
+        # print(f"Rewarded for stability (low var(var_grad) less than 20th percentile). Penalty factor increased to {penalty_factor:.2f}")
+    
+    # Penalize large variance of var_grad (instability)
+    if norm_var_grad_var > var_grad_var_percentile_90:
+        penalty_factor *= 0.5  # Penalize unstable datasets with large var_grad variance
+        # print(f"Penalized for large var_grad variance (greater than 95th percentile). Penalty factor reduced to {penalty_factor:.2f}")
+
+    # Calculate the weighted sum with penalties applied
+    weighted_sum = penalty_factor * norm_var_grad 
+    
+    # print(f"Final weighted sum with penalties applied: {weighted_sum:.5e} norm_var_grad: {norm_var_grad:.5e}")
+    return weighted_sum
 
 
 def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_dict, N_train, num_datasets, key):
@@ -350,7 +468,7 @@ def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_d
     all_A, all_b = [], []
     for i in range(num_datasets):
         key, subkey = jax.random.split(key)  # Split the key for each dataset generation
-        A, b = generate_dataset(gate, N_ctrl, N_train, subkey)  # Generate dataset with the subkey
+        A, b = generate_dataset(gate, N_ctrl, N_train + 2000, subkey)  # Generate dataset with the subkey
         all_A.append(A)
         all_b.append(b)
     all_A = jnp.stack(all_A)
@@ -702,8 +820,117 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
     acceleration = prev_improvement - current_improvement
 
     return acceleration
+def scale_by_param_lr(param_lr):
+    """
+    Custom gradient transformation that multiplies each gradient element
+    by a per-parameter learning rate, given as a pytree `param_lr` that
+    mirrors the structure of the parameters.
+    
+    Args:
+      param_lr: pytree of per-parameter scaling factors.
+      
+    Returns:
+      An (init_fn, update_fn) tuple for use in an optax chain.
+    """
+    def init_fn(params):
+        # No state is needed for this simple scaling.
+        return optax.EmptyState()
 
+    def update_fn(updates, state, params=None):
+        # Multiply each update by its corresponding per-parameter learning rate.
+        scaled_updates = jax.tree_util.tree_map(lambda g, lr: g * lr, updates, param_lr)
+        return scaled_updates, state
 
+    return optax.GradientTransformation(init_fn, update_fn)
+def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-3, max_lr=0.2):
+    # print(f"grads: {grads}")
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    return lr_tree
+@jit
+def approximate_largest_hessian_eig(params, cost_func, input_states, target_states, shift=1e-3):
+    """
+    Approximate the largest diagonal entry of the Hessian by parameter-shift 
+    second derivatives, then use it as a crude bound on the largest eigenvalue.
+
+    Arguments:
+      params: 1D array of trainable parameters
+      cost_func: function(params, input_states, target_states) -> scalar cost
+      input_states, target_states: training data for cost_func
+      shift: finite-difference shift for second derivative (parameter shift)
+    
+    Returns:
+      max_diag: a float that bounds the largest Hessian eigenvalue from above
+    """
+    # Evaluate the unshifted cost once for efficiency
+    cost_center = cost_func(params, input_states, target_states)
+    
+    diag_vals = []
+    # We loop over each parameter to compute second derivative wrt param[i]
+    for i in range(len(params)):
+        # param[i] + shift
+        params_plus  = params.at[i].add( shift )
+        # param[i] - shift
+        params_minus = params.at[i].add(-shift)
+
+        # Evaluate cost at plus/minus shifts
+        cost_plus  = cost_func(params_plus,  input_states, target_states)
+        cost_minus = cost_func(params_minus, input_states, target_states)
+
+        # Approximate second derivative w.r.t. param i
+        # [f(x+δ) - 2 f(x) + f(x-δ)] / δ^2
+        second_deriv = (cost_plus - 2.0*cost_center + cost_minus) / (shift**2)
+
+        diag_vals.append(second_deriv)
+    
+    # The maximum absolute diagonal entry is a rough upper bound on λ_max
+    diag_vals_arr = jnp.array(diag_vals)
+    max_diag = jnp.max(jnp.abs(diag_vals_arr))
+    return max_diag
+
+@jit
+def get_initial_lr_hessian(params, cost_func, input_states, target_states, grads,
+                           shift=1e-3, min_lr=1e-3, max_lr=0.2):
+    """
+    Use Hessian-based approach for the initial learning rate:
+       lr ~ 1 / lambda_max
+    where lambda_max is approximated by the largest diagonal entry of the Hessian.
+    
+    Arguments:
+      params:       1D array of trainable parameters
+      cost_func:    function(params, X, Y) -> scalar cost
+      input_states, target_states: training data
+      grads:        the gradient vector (∂C/∂θ)
+      shift:        finite-difference shift for approximate_largest_hessian_eig
+      min_lr, max_lr: clip bounds for the returned learning rate
+    
+    Returns:
+      lr_approx:    the recommended initial learning rate
+      grad_norm:    the norm of grads (for logging/debugging)
+    """
+    # Bound on the largest Hessian eigenvalue from diagonal approximations
+    hess_bound = approximate_largest_hessian_eig(params, cost_func, input_states, target_states, shift)
+    grad_norm = jnp.linalg.norm(grads)
+
+    # If hess_bound is too small, fallback to e.g. 0.1
+    lr_approx = jnp.where(hess_bound > 1e-12, 1.0 / hess_bound, 0.1)
+    lr_approx = jnp.clip(lr_approx, min_lr, max_lr)
+    return lr_approx, grad_norm
+
+# def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.2):
+#     """
+#     Provide a *vector* of learning rates, one for each parameter,
+#     inversely proportional to the param's gradient magnitude.
+#     """
+#     grad_magnitudes = jnp.abs(grads) + 1e-12
+#     print(f"grad_magnitudes: {grad_magnitudes}")
+#     lr_vector = base_step / grad_magnitudes
+#     print(f"lr_vector: {lr_vector}")
+#     lr_vector = jnp.clip(lr_vector, min_lr, max_lr)
+#     return lr_vector
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key):
     float32=''
     opt_lr = None
@@ -723,7 +950,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 2
+    k = 3
    
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
@@ -738,17 +965,16 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
     filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
 
+    # opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train + 2000, key= random_key) 
+   
 
     input_states, target_states = generate_dataset(gate, N_ctrl,training_size= N_train, key= dataset_key, new_set=False)
-    # print(f"training state #1: {input_states[0]}")
-    # preopt_results, input_states, target_states,second_A,second_b,f_A,f_b,opt_lr,selected_indices = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,num_datasets=5,key=dataset_key)
-    ts1 = input_states[0]
+
 
 
     test_dataset_key = jax.random.split(dataset_key)[1]
     test_in, test_targ = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=False)
     
-
 
     parameterized_ham = sim_qr.get_total_hamiltonian_components()
 
@@ -831,8 +1057,19 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         e = time.time()
         dt = e - s
         # print(f"initial fidelity: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
-        opt_lr,grad_norm = get_initial_learning_rate(init_grads)
-        # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
+        # opt_lr,grad_norm = get_initial_learning_rate(init_grads)
+       
+        # opt_lr, grad_norm = get_initial_lr_hessian(
+        #     params, 
+        #     cost_func, 
+        #     input_states, 
+        #     target_states, 
+        #     init_grads,
+        #     shift=1e-3,
+        #     min_lr=1e-3,
+        #     max_lr=0.2
+        # )
+        opt_lr = get_initial_lr_per_param(init_grads)
         cost = init_loss
     else:
         s = time.time()
@@ -840,14 +1077,24 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         e = time.time()
         dt = e - s
         opt_lr,grad_norm = get_initial_learning_rate(init_grads)
+       
         cost = init_loss
         # print(f"initial fidelity: {init_loss:.4f}, init opt: {maybe_lr}. Time: {dt:.2e}")
         
 
-    
-
-
-    
+    opt_descr = 'per param'
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
+    #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
+    #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
+    # )
+    # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
+    learning_rate_schedule = optax.constant_schedule(opt_lr)
+    opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
+        )
+    # print(learning_rate_schedule)
     """
     case #0
     # """
@@ -860,12 +1107,12 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     """
     case #1
     """
-    opt_descr = 'case 1'
-    learning_rate_schedule = optax.constant_schedule(opt_lr)
-    opt = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate_schedule, b1=0.99, b2=0.999, eps=1e-7),
-        )
+    # opt_descr = 'case 1'
+    # learning_rate_schedule = optax.constant_schedule(opt_lr)
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate_schedule, b1=0.99, b2=0.999, eps=1e-7),
+    #     )
     """
     case #2
     """
@@ -955,9 +1202,11 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         grads = jnp.asarray(grads, dtype=jnp.float64)
         return new_params, opt_state, loss, grads
 
-
+    opt_state = opt.init(params)
+    print(f"per param lrs: \n{opt_lr}\n")
+    # print(f"initial opt_state: {opt_state}")
     print("________________________________________________________________________________")
-    print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) with optimal lr {opt_lr}, time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
+    print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) with avg optimal lr ({np.mean(opt_lr)}), time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
     print(f"Initial Loss: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
     print(f"Depth: {circuit_depth}, Num Gates: {num_gates} ")
     print("Number of trainable parameters: ", len(params))
@@ -967,8 +1216,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     param_per_epoch,grads_per_epoch = [],[]
    # print(f"Params: {params}")
     
-    opt_state = opt.init(params)
-    # print(f"initial opt_state: {opt_state}")
+    
 
     # Define the gradient function outside the loop
     #cost_and_grad = jax.value_and_grad(partial(cost_func, time_steps=time_steps, N_reserv=N_reserv, N_ctrl=N_ctrl))
@@ -1023,10 +1271,10 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 # print(f"Reduced scale at epoch {epoch}: {plateau_state.scale:.5f}. \n - current_avg: {current_avg:.2e},\n - best: {plateau_state.best_value:.2e},\n - res: {plateau_state.best_value * (1 - RTOL) + RTOL:.2e}")
                 scale_reduction_epochs.append(epoch + 1)
                 new_scale = plateau_state.scale
-        elif 'learning_rate' in opt_state[1].hyperparams:
-            plateau_scale = 1.0
-            learning_rate = opt_state[1].hyperparams['learning_rate']
-            learning_rates.append(learning_rate)
+        # elif 'learning_rate' in opt_state[1].hyperparams:
+        #     plateau_scale = 1.0
+        #     learning_rate = opt_state[1].hyperparams['learning_rate']
+        #     learning_rates.append(learning_rate)
         else:
             learning_rates.append('fixed')
         if epoch > 1:
@@ -1063,7 +1311,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         grads_per_epoch.append(grad)
         # Logging
         max_abs_grad = jnp.max(jnp.abs(grad))
-        if epoch == 0 or (epoch + 1) % 250 == 0:
+        if epoch == 0 or (epoch + 1) % 100 == 0:
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
             e = time.time()
@@ -1079,16 +1327,20 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             
             # learning_rate = opt_state[1].hyperparams['learning_rate']
          
-            print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, lr: {learning_rates[-1]:.5f}'
+            print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
             # print(f'Epoch {epoch + 1} --- cost: {cost:.4f}, best={best_val:.4f}, avg: {current_avg:.4f}, lr={learning_rates[-1]:.4f} [{plateau_state.scale:.3f}], '
                 #   f' count: {plateau_state.plateau_count} '
                 #   f'has improved: {(1 - RTOL) * plateau_state.best_value}'
                 # f'Var(grad): {var_grad:.1e}, '
                 # f'GradNorm: {np.linalg.norm(grad):.1e}, '
-                #  f'Mean(grad): {mean_grad:.1e}, '
+                 f'Mean(grad): {mean_grad:.1e}, '
                 f'[t: {epoch_time:.1f}s]'
                 )
-            # print(f" opt_state: {opt_state}")
+            # if optax.tree_utils.tree_get(opt_state, 'learning_rate'):
+            #     print(f"opt_state: {optax.tree_utils.tree_get(opt_state, 'learning_rate')}")
+            # else:
+            #     print(f'opt_state: {opt_state}')
+            print(f" opt_state: {opt_state}")
             # print(f"    --- Learning Rate: {learning_rate}")
         
             s = time.time()
@@ -1213,40 +1465,20 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     with open(filename, 'wb') as f:
         pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-
  
 
 if __name__ == '__main__':
 
-
-    
-
-    
-
-
-    
-    
-    
-    #folder = './results_jax_baths_global_h/'
-    # Example usage
-
-    
     # run below 
     N_ctrl = 3
    
    
-    # trots = [30,40,45]
-    trots = [40]
-    # trots = [15,20,25,30,35,40,45]
-    # trots = [8,12]
-    # trots = [1,15,20,25,30,35,40]
-    # trots =[1,2,3,4,5,6,7,8,9,10]
-    # trots =[1,8,16,20,24]
+    # trots = [16,18,20,22,24]
+    trots =[1,4,8,10,12,14,16,18,20,22,24,26]
 
-    # res = [1, 2, 3]
     res = [1]
-    # trots = [6,8,10,12,14,16]
-    # trots = [15]
+    trots = [35]
+    # trots = [2]
 
     
     
@@ -1255,12 +1487,12 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 25
+    N_train = 20
     add=0
-    # if N_ctrl ==4:
-    #     add = 5_optimized_by_cost3
+   
     
-    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_case1/'
+    # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_cond2/'
+    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
     gates_random = []
@@ -1268,7 +1500,7 @@ if __name__ == '__main__':
     num_baths = [0]
 
 
-    for i in range(30):
+    for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         #pprint(Matrix(np.array(U)))
         g = partial(qml.QubitUnitary, U=U)
@@ -1279,7 +1511,7 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        if not gate_idx in [17]:
+        if not gate_idx in [8,16]:
             continue
         # if gate_idx != 0:
         #     continue
@@ -1301,7 +1533,7 @@ if __name__ == '__main__':
                     dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
                     dataset_key = jax.random.PRNGKey(dataset_seed)
                     main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
-                   
+                    # print(f"main_params: {main_params}")
                     params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                     
                     
@@ -1312,7 +1544,7 @@ if __name__ == '__main__':
 
                     # Combine the two parts
                     params = jnp.concatenate([time_step_params, main_params])
-                    # params = jnp.asarray([0.4033546149730682, 1.4487122297286987, 2.3020467758178711, 2.9035964012145996, 0.9584765434265137, 1.7428307533264160, -1.3020169734954834, -0.8775904774665833, 2.4736261367797852, -0.4999605417251587, -0.8375297188758850, 1.7014273405075073, -0.8763229846954346, -3.1250307559967041, 1.1915868520736694, -0.4640290737152100, -1.0656110048294067, -2.6777451038360596, -2.7820897102355957, -2.3751690387725830, 0.1393062919378281])
+                    # params = jnp.asarray([0.708180844783782959,2.8630681037902832,0.51971900463104248,0.102997027337551117,0.5567360520362854,2.78287434577941895,1.57961368560791016,0.866679072380065918,2.72562146186828613,0.56838381290435791,2.61631464958190918,2.09357690811157227,0.705745697021484375,0.871583163738250732,2.9413750171661377,2.5572206974029541,2.25589108467102051,2.58423185348510742,1.24116122722625732,0.675378262996673584,0.259453773498535156,2.53845119476318359,0.298816800117492676,2.51644587516784668,1.16178691387176514,0.302116096019744873,2.62891721725463867,2.2046971321105957,0.181666463613510132,1.66521167755126953,2.10095763206481934,1.95381510257720947,3.03793001174926758,0.753958046436309814,1.9740145206451416,0.783146083354949951,2.53042101860046387,0.746370375156402588,1.573944091796875,2.19305944442749023,-0.740846395492553711,-2.14908385276794434,1.15825963020324707,2.84470033645629883,-0.328924059867858887,-2.83768844604492188,-2.00651001930236816,0.28257480263710022,-1.08436489105224609,-3.05580830574035645,2.97736454010009766,0.304987728595733643,-2.75177407264709473,-2.78570270538330078,2.48746943473815918,-0.341458261013031006,-0.112607285380363464,1.61129927635192871,-0.136841148138046265,1.4562525749206543,-1.40975785255432129,-0.945134997367858887,1.85663366317749023,2.19307374954223633,-2.54177999496459961,2.79172015190124512,-1.02528917789459229,-0.60877680778503418,1.29766404628753662,-3.01436758041381836,1.32913053035736084,-1.3869251012802124,1.69927799701690674,1.17338061332702637,-0.473877638578414917,0.376701444387435913,2.51183605194091797,-1.071022629737854,2.87483382225036621,-1.1927940845489502,0.132605060935020447,-1.08920586109161377,-0.648234248161315918,-0.0223977342247962952,1.29679763317108154,-1.91868412494659424,2.22426080703735352,3.03661894798278809,2.08379387855529785,0.718560516834259033,-3.10053229331970215,-2.64503049850463867,2.25072979927062988,0.159820646047592163,-1.74804234504699707,1.21237015724182129,0.27378547191619873,-0.649013161659240723,-2.77437114715576172,-1.71469390392303467,1.94135427474975586,2.75203847885131836,-0.521626830101013184,-1.28643155097961426,-1.64881479740142822,2.16837811470031738,1.83844888210296631,-1.03077304363250732,1.9857337474822998,-0.648720085620880127,-0.783919751644134521,1.98524951934814453,1.53545141220092773,2.59280824661254883,-2.53451418876647949,-2.15049290657043457,2.42705225944519043,1.40798842906951904,2.10079097747802734,-1.85509192943572998,-1.95991683006286621,-1.87856805324554443,-1.42525207996368408,-0.673454761505126953,2.00832796096801758,0.610223114490509033,-1.60458683967590332,-1.15768992900848389,-1.11240410804748535,2.19812273979187012,-2.39813089370727539,0.556749582290649414,1.8967738151550293,-2.61383056640625,-1.36014199256896973,2.61524200439453125,2.01110935211181641,2.09496569633483887,-1.81603610515594482,-2.25705409049987793,2.87667560577392578,2.22872662544250488,-3.13997626304626465,2.44711756706237793,2.15184450149536133,-1.68608808517456055,2.93016624450683594,-0.802432894706726074,2.14380383491516113,1.47287189960479736,-2.0552980899810791,2.41168117523193359,2.96615505218505859,1.45948731899261475,0.800140798091888428,-1.50944530963897705,-1.66607260704040527,-2.8509671688079834,-2.47937941551208496,3.12403154373168945,3.05443429946899414,-1.66225099563598633,1.30399894714355469])
                     # print(f"time_step_params: {time_step_params}")
 
 
