@@ -108,7 +108,7 @@ def get_cached_data_once(base_path, N_ctrl, K_0):
     Expects a cache file named: 'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
     """
     global global_cache_data, global_processed_files
-    cache_file = os.path.join(base_path, f'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
+    cache_file = os.path.join(base_path, f'digital_new_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
 
     if global_cache_data and global_processed_files:
         print(f"Using cached data from memory for N_ctrl={N_ctrl}.")
@@ -128,9 +128,9 @@ def get_cached_data(base_path, N_ctrl, K_0):
     Load cached_data if it exists, else return empty placeholders.
     Returns (cached_data, processed_files).
     
-    Expects a cache file named: 'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
+    Expects a cache file named: 'digital_new_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
     """
-    cache_file = os.path.join(base_path, f'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
+    cache_file = os.path.join(base_path, f'digital_new_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
 
     if os.path.exists(cache_file):
         with open(cache_file, 'rb') as f:
@@ -149,7 +149,7 @@ def save_cached_data(base_path, cached_data, processed_files, N_ctrl, K_0):
     """
     Save the (cached_data, processed_files) to a single pickle file.
     """
-    cache_file = os.path.join(base_path, f'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
+    cache_file = os.path.join(base_path, f'digital_new_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
     with open(cache_file, 'wb') as f:
         pickle.dump((cached_data, processed_files), f)
     print(f"[INFO] Cache saved for N_ctrl={N_ctrl} at {cache_file}.")
@@ -248,7 +248,7 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 
                     cached_data[file_id] = {
                         "processed_data": processed_data,
-                        "raw_data": raw_df  # optional if you want to keep the raw
+                        # "raw_data": raw_df  # optional if you want to keep the raw
                     }
                     processed_files.add(file_id)
                     all_data.append(processed_data)
@@ -258,7 +258,68 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 
     return cached_data, processed_files, pd.DataFrame(all_data)
 
+###############################################################################
+# 4) The function to incorporate newly generated data pickles
+###############################################################################
+def update_cache_with_new_data(
+    base_path, 
+    K_0, 
+    sample_range, 
+    model_type, 
+    N_ctrl, 
+    threshold, 
+    by_test,
+    cached_data, 
+    processed_files
+):
+    """
+    For a single N_ctrl, look for new data.pickle files in the QFIM_results/gate/... directories 
+    that are NOT yet in cached_data. Then process them, store them in cached_data, 
+    and return an updated DataFrame plus the updated (cached_data, processed_files).
+    """
+    all_new_data = []
+    model_path = Path(base_path) / 'QFIM_results' / model_type / f'Nc_{N_ctrl}' / f'sample_{sample_range}/{K_0}xK'
 
+    if not model_path.exists():
+        print(f"[WARN] Directory {model_path} does not exist. No new data found.")
+        return cached_data, processed_files, pd.DataFrame()
+
+    for Nr in sorted(os.listdir(model_path)):
+        Nr_path = model_path / Nr
+        if not Nr_path.is_dir():
+            continue
+
+        for trotter_step_dir in sorted(os.listdir(Nr_path)):
+            trotter_step_path = Nr_path / trotter_step_dir
+            if not trotter_step_path.is_dir():
+                continue
+
+            data_file = trotter_step_path / 'data.pickle'
+            file_id = str(data_file)
+
+            if file_id in cached_data:
+                continue  # skip, already in cache
+
+            if is_valid_pickle_file(data_file):
+                print(f"[INFO] Found NEW data file: {data_file}")
+                raw_df = load_and_clean_pickle(data_file)
+                trotter_step_num = extract_trotter_step(data_file)
+                reservoir_count  = extract_Nr(data_file)
+
+                processed_data = process_data_combined(
+                    raw_df, threshold, by_test,
+                    Nc=N_ctrl, N_R=reservoir_count, trot=trotter_step_num
+                )
+                cached_data[file_id] = {
+                    "processed_data": processed_data,
+                    "raw_data": raw_df
+                }
+                processed_files.add(file_id)
+                all_new_data.append(processed_data)
+
+    if all_new_data:
+        save_cached_data(base_path, cached_data, processed_files, N_ctrl, K_0)
+    return cached_data, processed_files, pd.DataFrame(all_new_data)
 # ----------------------------------------------------------------------------
 # Rebuild df_all from existing cached_data 
 # ----------------------------------------------------------------------------
@@ -315,9 +376,21 @@ def maybe_rebuild_or_process(base_path, sample_range, model_type, N_ctrls, K_0, 
             )
             combined_frames.append(df_partial)
         else:
-            # Rebuild from the existing cache
+            # 3) We do have a cache; let's see if there's new data not in the cache
+            cached_data, processed_files, df_new = update_cache_with_new_data(
+                base_path=base_path,
+                K_0=K_0,
+                sample_range=sample_range,
+                model_type=model_type,
+                N_ctrl=N_ctrl,
+                threshold=threshold,
+                by_test=by_test,
+                cached_data=cached_data,
+                processed_files=processed_files
+            )
+            # df_new is newly added data. We also want the old data
             local_rows = []
-            for file_id, fdict in cached_data.items():
+            for fid, fdict in cached_data.items():
                 local_rows.append(fdict["processed_data"])
             df_partial = pd.DataFrame(local_rows)
             combined_frames.append(df_partial)
@@ -328,178 +401,6 @@ def maybe_rebuild_or_process(base_path, sample_range, model_type, N_ctrls, K_0, 
         df_all = pd.DataFrame()
     return df_all
 
-# ----------------------------------------------------------------------------
-# Possibly unify reading from cache or processing new files
-# ----------------------------------------------------------------------------
-def maybe_rebuild_or_process(base_path, sample_range, model_type, N_ctrls, K_0, threshold=1e-10, by_test=False):
-    """
-    1) Attempt to rebuild from existing caches for each N_ctrl in N_ctrls.
-    2) If a cache is missing or incomplete, process new files for that N_ctrl.
-    3) Combine partial DataFrames into one df_all.
-    """
-    combined_frames = []
-    for N_ctrl in N_ctrls:
-        cached_data, processed_files = get_cached_data(base_path, N_ctrl, K_0)
-        if not cached_data:
-            # If no cache, let's process from scratch
-            print(f"[INFO] No existing cache for N_ctrl={N_ctrl}, scanning directories.")
-            cached_data, processed_files, df_partial = process_and_cache_new_files(
-                base_path, K_0, sample_range, model_type, [N_ctrl],
-                threshold, by_test, check_for_new_data=False,
-                cached_data=cached_data, processed_files=processed_files
-            )
-            combined_frames.append(df_partial)
-        else:
-            # Rebuild from the existing cache
-            local_rows = []
-            for file_id, fdict in cached_data.items():
-                local_rows.append(fdict["processed_data"])
-            df_partial = pd.DataFrame(local_rows)
-            combined_frames.append(df_partial)
-
-    if combined_frames:
-        df_all = pd.concat(combined_frames, ignore_index=True)
-    else:
-        df_all = pd.DataFrame()
-    return df_all
-def prune_and_rebuild_cache(
-    old_backup_file,
-    new_cache_file,
-    base_path,
-    N_ctrl,
-    K_0,
-    threshold=1e-8,
-    reprocess_missing=True,
-    check_disk=True,
-    keep_missing=False,
-    by_test=False
-):
-    """
-    1) Loads an old backup cache (e.g. 'digital_results_QFIM_Nc_2_1K_backup.pkl').
-    2) Iterates over its entries (file_id -> {processed_data, raw_data}).
-    3) Decides if we keep or discard each entry. Typically, we check 
-       if the original data file still exists. If it doesn't and 
-       'keep_missing=False', discard. If 'keep_missing=True', keep anyway.
-    4) Optionally re-run 'process_data_combined' to refresh processed_data, 
-       especially if the directory on disk changed or you want new logic.
-    5) Writes out a new pruned dictionary to 'new_cache_file' 
-       (e.g. 'digital_results_QFIM_Nc_2_1K.pkl').
-
-    Parameters
-    ----------
-    old_backup_file : str or Path
-        Path to your old backup cache, e.g. digital_results_QFIM_Nc_2_1K_backup.pkl
-    new_cache_file : str or Path
-        Where to save the newly pruned cache, e.g. digital_results_QFIM_Nc_2_1K.pkl
-    base_path : str or Path
-        Base path for your 'QFIM_results/gate/...' structure.
-    N_ctrl : int
-        The control qubit value for naming or reprocessing logic.
-    K_0 : str
-        The K value used in your naming scheme, e.g. '1'.
-    threshold : float
-        The threshold used for process_data_combined if reprocessing.
-    reprocess_missing : bool
-        If True, we re-run 'process_data_combined' on each entry to get fresh 
-        processed_data. If False, we keep the old 'processed_data' as is.
-    check_disk : bool
-        If True, we check if the file_id path still exists on disk. If not, 
-        we discard (unless keep_missing=True).
-    keep_missing : bool
-        If True, keep old entries even if their data file no longer exists. 
-        If False, discard them.
-    by_test : bool
-        Passed to 'process_data_combined' if reprocessing.
-
-    Returns
-    -------
-    new_cached_data : dict
-        The pruned or updated dictionary: {file_id: {processed_data, raw_data}}.
-    new_processed_files : set
-        The updated set of processed files.
-    """
-    old_backup_file = Path(old_backup_file)
-    new_cache_file = Path(new_cache_file)
-    base_path = Path(base_path)
-
-    if not old_backup_file.exists():
-        print(f"[ERROR] Old backup file not found: {old_backup_file}")
-        return {}, set()
-
-    # 1) Load the old backup
-    with open(old_backup_file, 'rb') as f:
-        old_cached_data, old_processed_files = pickle.load(f)
-    print(f"[INFO] Loaded backup from {old_backup_file} with {len(old_cached_data)} entries.")
-
-    # 2) Prepare new dict
-    new_cached_data = {}
-    new_processed_files = set()
-
-    # 3) Iterate over the old entries
-    for file_id, file_dict in old_cached_data.items():
-        keep_entry = True
-
-        # file_id is presumably a path to '.../data.pickle'
-        data_file_path = Path(file_id)
-
-        # a) Check if file still exists on disk
-        if check_disk:
-            if not data_file_path.exists():
-                # If the file doesn't exist, only keep if keep_missing==True
-                if not keep_missing:
-                    keep_entry = False
-
-        if not keep_entry:
-            continue  # skip this entry
-
-        # b) Potentially re-run process_data_combined
-        #    If reprocessing, we need to re-load from disk. 
-        #    If the file is missing on disk, we can't re-run. 
-        #    So ensure it actually exists or skip re-run if not found.
-        new_processed_data = None
-        new_raw_data = None
-
-        if reprocess_missing and data_file_path.exists():
-            # We'll re-load the .pickle from disk, re-run process_data_combined
-            # to ensure we have the newest logic
-            # from your_code_file import load_and_clean_pickle, extract_trotter_step, extract_Nr
-            # from your_code_file import process_data_combined  # adjust as needed
-
-            raw_df = load_and_clean_pickle(data_file_path)
-            trotter_step_num = extract_trotter_step(data_file_path)
-            reservoir_count  = extract_Nr(data_file_path)
-            processed_data = process_data_combined(
-                raw_df, threshold=threshold, by_test=by_test,
-                Nc=N_ctrl, N_R=reservoir_count, trot=trotter_step_num,
-                print_bool=False
-            )
-            processed_data.update({
-                'N_ctrl': N_ctrl,
-                'N_reserv': reservoir_count,
-                'Trotter_Step': trotter_step_num
-            })
-
-            new_processed_data = processed_data
-            new_raw_data = raw_df  # or keep old if desired
-        else:
-            # Keep old if not reprocessing or file not found
-            new_processed_data = file_dict["processed_data"]
-            new_raw_data = file_dict.get("raw_data", None)
-
-        # c) Add to new cache
-        new_cached_data[file_id] = {
-            "processed_data": new_processed_data,
-            "raw_data": new_raw_data
-        }
-        new_processed_files.add(file_id)
-
-    print(f"[INFO] After pruning/cleanup, we have {len(new_cached_data)} entries.")
-    print(f"[INFO] Saving to new cache file: {new_cache_file}")
-    with open(new_cache_file, 'wb') as f:
-        pickle.dump((new_cached_data, new_processed_files), f)
-    print("[INFO] Done.")
-
-    return new_cached_data, new_processed_files
 ###############################################################################
 #  "Build QFIM DataFrame" pipeline (the code from your question)
 ###############################################################################
@@ -671,43 +572,26 @@ def build_qfim_dataframe(df_all, threshold=1e-12):
 
 
 if __name__ == "__main__":
-    old_backup_file = "/Users/sophieblock/QRCcapstone/parameter_analysis_directory/digital_results_QFIM_Nc_2_1K_backup.pkl"
-    new_cache_file  = "/Users/sophieblock/QRCcapstone/parameter_analysis_directory/digital_results_QFIM_Nc_2_1K.pkl"
+    base_path = "/Users/sophieblock/QRCcapstone/parameter_analysis_directory/"
+    model_type = "gate"
+    N_ctrls = [2, 3]
+    sample_range = "pi"
+    K_str = "1"
+    threshold = 1e-10
+    by_test = False
 
-    prune_and_rebuild_cache(
-        old_backup_file=old_backup_file,
-        new_cache_file=new_cache_file,
-        base_path="/Users/sophieblock/QRCcapstone/parameter_analysis_directory",
-        N_ctrl=2,
-        K_0="1",
-        threshold=1e-8,
-        reprocess_missing=True,   # or False if you want to keep old processed_data
-        check_disk=True,
-        keep_missing=False,
-        by_test=False
+    # 1) Possibly we do:
+    #    df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
+    #    if df_all.empty, we call process_and_cache_new_files
+    #    or we do the combined approach:
+    df_all = maybe_rebuild_or_process(
+        base_path, sample_range, model_type, N_ctrls, K_str,
+        threshold=threshold, by_test=by_test
     )
 
-# if __name__ == "__main__":
-#     base_path = "/Users/sophieblock/QRCcapstone/parameter_analysis_directory/"
-#     model_type = "gate"
-#     N_ctrls = [2, 3]
-#     sample_range = "pi"
-#     K_str = "1"
-#     threshold = 1e-10
-#     by_test = False
+    print("[INFO] df_all shape after reading cache or scanning directories:", df_all.shape)
 
-#     # 1) Possibly we do:
-#     #    df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
-#     #    if df_all.empty, we call process_and_cache_new_files
-#     #    or we do the combined approach:
-#     df_all = maybe_rebuild_or_process(
-#         base_path, sample_range, model_type, N_ctrls, K_str,
-#         threshold=threshold, by_test=by_test
-#     )
-
-#     print("[INFO] df_all shape after reading cache or scanning directories:", df_all.shape)
-
-#     # 2) Build QFIM DataFrame with advanced metrics
-#     df_all = build_qfim_dataframe(df_all, threshold=1e-12)
-#     print("[INFO] df_all final shape:", df_all.shape)
-#     print(df_all.head())
+    # 2) Build QFIM DataFrame with advanced metrics
+    df_all = build_qfim_dataframe(df_all, threshold=1e-12)
+    print("[INFO] df_all final shape:", df_all.shape)
+    print(df_all.head())
