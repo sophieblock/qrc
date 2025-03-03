@@ -23,9 +23,6 @@ from jax import numpy as np
 import jax.numpy as jnp
 from jax import jit, value_and_grad, vmap
 import pennylane.numpy as pnp
-from optax import tree_utils as otu
-from optax import contrib
-from optax.contrib import reduce_on_plateau
 #os.environ['OPENBLAS_NUM_THREADS'] = '1'
 has_jax = True
 diable_jit = False
@@ -33,8 +30,7 @@ config.update('jax_disable_jit', diable_jit)
 #config.parse_flags_with_absl()
 config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
-# Show on which platform JAX is running.
-print("JAX running on", jax.devices()[0].platform.upper())
+
 
 def oracle(wires, omega):
     """Apply the oracle that flips the phase of the omega state."""
@@ -91,7 +87,6 @@ def generate_omegas(n_ctrl_qubits):
     return [list(omega) for omega in product([0, 1], repeat=n_ctrl_qubits)]
 
 
-
 def quantum_fun(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
@@ -99,50 +94,72 @@ def quantum_fun(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
-
-def generate_dataset(
-    gate, n_qubits, training_size, key, new_set=False
-):
-    """
-    Generate a deterministic dataset of input and output states for a given gate.
-
+def generate_dataset(gate, n_qubits, training_size, key, global_size=100):
+    '''
+    Generate the dataset of input and output states according to the gate provided,
+    while ensuring the first `training_size` states are consistent across calls.
+    
     Parameters:
         gate: The quantum gate to apply.
         n_qubits: Number of qubits in the system.
-        training_size: Number of training states required.
+        training_size: Number of training states to generate.
         key: JAX random key for reproducibility.
-        trot_step: (Optional) Trotter step for additional determinism.
-        reservoir_count: (Optional) Reservoir count for additional determinism.
-        new_set: If True, generate a new dataset even for the same parameters. Default is False.
-
-    Returns:
-        Tuple (input_states, output_states).
-    """
-    if new_set:
-        # Use the raw key to generate a new dataset
-        seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-    else:
-       
-        # Derive a deterministic seed that ignores trot_step and reservoir_count
-        key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-        seed = hash((n_qubits, key_int)) 
-
-    # Generate random state vectors deterministically
+        global_size: Fixed size for the pre-generated pool of states (must be >= training_size).
+    '''
+    if training_size > global_size:
+        raise ValueError("training_size cannot exceed global_size.")
+    
+    # Generate a fixed set of subkeys for the entire global pool
+    global_keys = jax.random.split(key, num=global_size)
+    
+    # Generate random state vectors from the fixed pool
     X = []
     for i in range(training_size):
-        folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
-        state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
-        state_vec = random_statevector(2**n_qubits, seed=state_seed).data
+        subkey = global_keys[i]
+        subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
+        seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
+        
+        # Use the seed to generate the random state vector
+        state_vec = random_statevector(2**n_qubits, seed=seed_value).data
         X.append(np.asarray(state_vec, dtype=jnp.complex128))
+    qubits = Wires(list(range(n_ctrl_qubits)))
+    dev_data = qml.device('default.qubit', wires=qubits)
+    circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
 
-    # Generate output states using the circuit
-    qubits = Wires(list(range(n_qubits)))
-    dev_data = qml.device("default.qubit", wires=qubits)
-    circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
 
-    y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
+    y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
+    y = np.stack(y)
+    return X, y
+# def generate_dataset(gate, n_ctrl_qubits,n_rsv_qubits, training_size, key):
+#     '''
+#     Generate the dataset of input and output states according to the gate provided.
+#     Uses a seed for reproducibility.
+#     '''
+    
+#     X = []
+    
+#     # Split the key into subkeys for the full training size
+#     keys = jax.random.split(key, num=training_size)
+    
+#     # Loop through the subkeys and generate the dataset
+#     for i, subkey in enumerate(keys):
+#         subkey = jax.random.fold_in(subkey, i)  # Fold in the index to guarantee uniqueness
+#         seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])  # Get a scalar seed
+        
+#         # Use the seed to generate the random state vector
+#         state_vec = random_statevector(2**n_ctrl_qubits, seed=seed_value).data
+#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
+    
+    
+#     X = np.stack(X)
+#     qubits = Wires(list(range(n_ctrl_qubits)))
+#     dev_data = qml.device('default.qubit', wires=qubits)
+#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
+    
 
-    return np.asarray(X), np.asarray(y)
+#     y = [np.array(circuit(gate, X[i], qubits), dtype=jnp.complex128) for i in range(training_size)]
+#     y = np.stack(y)
+#     return X, y
 
 def generate_low_entangled_dataset(gate, n_qubits, training_size, key):
     '''
@@ -554,17 +571,8 @@ def calculate_gradient_stats(gradients):
     var_grad = mean_grad_squared - mean_grad ** 2
     grad_norm = jnp.linalg.norm(mean_grad)
     return mean_grad, var_grad, grad_norm
-def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-3, max_lr=0.2):
-    # print(f"grads: {grads}")
-    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
-    # print(f"grad_magnitudes: {grad_magnitudes}")
-    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
-    # print(f"lr_tree: {lr_tree}")
-    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
-    return lr_tree
-def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_coeffs, trotter_steps, static, gate, gate_name, folder, test_size, training_size, opt_lr,dataset_key):
-    N_ctrl = n_ctrl_qubits
-
+def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_coeffs, trotter_steps, static, gate, gate_name, folder, test_size, training_size, noise_central, opt_lr,random_key):
+    num_states_to_replace = training_size // 5
     selected_indices, preopt_results = {},{}
     bath = False
     init_params = params
@@ -583,7 +591,10 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         print('Already Done. Skipping: '+folder_gate)
         print('\n')
         return
-
+    A, b = generate_dataset(gate, N_ctrl, n_rsv_qubits, training_size + test_size, random_key)  # Generate dataset with the subkey
+    # A, b = generate_grover_dataset(omega, n_ctrl_qubits, training_size+test_size,random_key)
+    # A, b = generate_low_entangled_dataset(gate, n_ctrl_qubits, training_size+test_size,random_key)
+    # preopt_results, A, b,second_A,second_b,finetuning_A,finetuning_b,opt_lr, selected_indices = optimize_traingset(gate,n_ctrl_qubits, n_rsv_qubits,trotter_steps, params, K_coeffs, training_size,10,random_key)
     filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
     # best_dataset_idx = selected_indices[0]
     # filename = os.path.join(folder_gate, f'trainingset_A{best_dataset_idx}_rep_A{selected_indices[1]}.pickle')
@@ -596,13 +607,10 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     # print(f"init_meangrad: {init_meangrad:2e}, threshold: {cond1:2e}")
     # print(f"init_vargrad: {init_vargrad:2e}, threshold: {cond2:2e}")
     # add_a, add_b = np.asarray(second_A[:num_states_to_replace]), np.asarray(second_b[:num_states_to_replace])
-    X, y =generate_dataset(gate, N_ctrl,training_size= training_size, key= dataset_key, new_set=False)
+    X, y = A[:training_size], b[:training_size]
+    _, subkey = jax.random.split(random_key)
+    test_X, test_y = generate_dataset(gate, N_ctrl, n_rsv_qubits, test_size, subkey) 
 
-    # print(f"training state #1: {X[0]}")
-    test_dataset_key = jax.random.split(dataset_key)[1]
-    test_X, test_y = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=False)
-   
-    
     qrc = QuantumReservoirGate(n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits,  K_coeffs=K_coeffs, static=static)
     ctrl_wires = qrc.ctrl_qubits
     @qml.qnode(qrc.dev, interface="jax",diff_method="backprop")
@@ -625,6 +633,55 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         return qml.density_matrix(wires=[*qrc.ctrl_qubits])
 
 
+    
+    # @qml.qnode(qrc.dev, interface="jax", diff_method="backprop")
+    # def circuit(params, input_state, target_state):
+        
+    #     x_coeff = params[0]
+    #     z_coeff = params[1]
+    #     y_coeff = params[2]
+    #     J_coeffs = params[3:]
+        
+    #     # Prepare the input state
+    #     qml.StatePrep(input_state, wires=[*qrc.ctrl_qubits])
+        
+    #     # Apply gates in the trotterization
+    #     for i in range(trotter_steps):
+    #         qrc.set_gate_reservoir()
+    #         if qrc.static or trotter_steps == 1:
+    #             qrc.set_gate_params(x_coeff, z_coeff, y_coeff, J_coeffs)
+    #         else:
+    #             step = len(qrc.rsv_qubits) * len(qrc.ctrl_qubits)
+    #             qrc.set_gate_params(x_coeff, z_coeff, y_coeff, J_coeffs[i*step:(i+1)*step])
+        
+    #     # Return the expectation value of the Hermitian operator corresponding to the target state
+    #     return qml.expval(qml.Hermitian(target_state, wires=[*qrc.ctrl_qubits]))
+
+    # vcircuit = jax.vmap(circuit, in_axes=(None, 0, 0))
+    # @partial(jit, static_argnums=(3, 4, 5, 6))
+    # def cost_func(params,X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static):
+    #     params = jnp.asarray(params, dtype=jnp.float64)
+    #     X = jnp.asarray(X, dtype=jnp.complex128)
+    #     y = jnp.asarray(y, dtype=jnp.complex128)
+    #     loss = jnp.mean(vcircuit(params, X, y))
+    #     # print(f"cost_func - loss dtype: {loss.dtype}")
+    #     return loss
+    # @jit
+    # def collect_gradients(params, input_states, target_states):
+    #     def cost_func_grad(params, input_state, target_state):
+    #         # Use the vcircuit to calculate the expectation values
+    #         output_expval = vcircuit(params, input_state, target_state)
+    #         return 1 - output_expval  # Minimizing infidelity
+
+
+    #     grad_fn = jax.grad(cost_func_grad, argnums=0)
+    #     gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
+    #     return gradients
+    # def final_costs(params, X, y, n_rsv_qubits=None, n_ctrl_qubits=None, trotter_steps=None, static=None):
+        batched_expvals = vcircuit(params, X, y)
+        
+        print(f"final_costs - batched_expvals dtype: {batched_expvals.dtype}")
+        return batched_expvals
     vcircuit = jax.vmap(circuit, in_axes=(None, 0))
     def batched_cost_helper(params, X, y):
         # Process the batch of states
@@ -664,7 +721,7 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     def final_costs(params, X, y, n_rsv_qubits=None, n_ctrl_qubits=None, trotter_steps=None, static=None):
         
         batched_output_states = vcircuit(params, X)
-
+        print(f"y dtype: {y[0].dtype}")
         
         fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
         fidelities = jnp.clip(fidelities, 0.0, 1.0)
@@ -680,208 +737,44 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         e = time.time()
         dt = e - s
         # print(f"Initial gradients dtype: {init_grads.dtype}, Initial loss dtype: {init_loss.dtype}")
-        # print(f"initial fidelity: {init_loss}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt}")
+        print(f"initial fidelity: {init_loss}")
         # print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
-        # opt_lr, raw_lr = get_initial_learning_rate(init_grads)
-        opt_lr = get_initial_lr_per_param(init_grads)
-        # print(f"Adjusted initial learning rate: {opt_lr:.4f}.")
-        cost = init_loss
-    
-    opt_descr = 'per param'
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
-    #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
-    #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
-    # )
-    # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
-    learning_rate_schedule = optax.constant_schedule(opt_lr)
-    opt = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
-        )
-    print(f"per param lrs: \n{opt_lr}\n")
+        opt_lr, raw_lr = get_initial_learning_rate(init_grads)
+        print(f"Adjusted initial learning rate: {opt_lr:.4f}.prev: {raw_lr:.5f}")
+
     print("________________________________________________________________________________")
-    print(f"Starting optimization for {gate_name}  trots = {trotter_steps}, N_r = {n_rsv_qubits}  with avg optimal lr ({np.mean(opt_lr)}) time_steps = {trotter_steps}, N_r = {n_rsv_qubits}...\n")
-    print(f"Initial Loss: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
-    """
-    case #0 (original optimizer )
-    """
-    # opt_descr = 'case 0'
+    print(f"Starting optimization for {gate_name}  trots = {trotter_steps}, N_r = {n_rsv_qubits} with optimal lr {opt_lr:.4f} time_steps = {trotter_steps}, N_r = {n_rsv_qubits}...\n")
+
+    #opt = optax.adam(learning_rate=0.1)
     # opt = optax.chain(
     #     optax.clip_by_global_norm(1.0),  # Clip gradients to prevent explosions
-    #     optax.adam(learning_rate=opt_lr) 
+    #     optax.adam(learning_rate=opt_lr, b1=0.9, b2=0.999, eps=1e-8)  # Slightly more aggressive Adam
     # )
+    opt = optax.adam(learning_rate=opt_lr)
 
-    """
-    case #1
-    """
-    # opt_descr = 'case 1'
-    # learning_rate_schedule = optax.constant_schedule(opt_lr)
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),
-    #     optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate_schedule, b1=0.99, b2=0.999, eps=1e-7),
-    #     )
-    """
-    case #2
-    """
-    # opt_descr = 'case 2'
-    # PATIENCE = 20
-    # COOLDOWN = 0
-    # FACTOR = 0.75
-    # RTOL = 1e-2
-    # ACCUMULATION_SIZE = 5
-    # MIN_SCALE = 0.01
-    # # Create the Adam optimizer
-    # adam = optax.adam(learning_rate= opt_lr, b1=0.99, b2=0.999, eps=1e-7)
-
-    # # Add the reduce_on_plateau transformation
-    # reduce_on_plateau = optax.contrib.reduce_on_plateau(
-    #     factor=FACTOR,
-    #     patience=PATIENCE,
-    #     rtol=RTOL,
-    #     cooldown=COOLDOWN,
-    #     accumulation_size=ACCUMULATION_SIZE,
-    #     min_scale=MIN_SCALE,
-    # )
-    # opt = optax.chain(
-    #    adam, reduce_on_plateau)
-   
-
-    """
-    case #3
-    """
-    # opt_descr = 'case 3'
-    # PATIENCE = 10
-    # COOLDOWN = 0
-    # FACTOR = 0.75
-    # RTOL = 1e-2
-    # ACCUMULATION_SIZE = 3
-    # MIN_SCALE = 0.01
-    # # Create the Adam optimizer
-    # adam = optax.adam(learning_rate= opt_lr, b1=0.99, b2=0.999, eps=1e-7)
-
-    # # Add the reduce_on_plateau transformation
-    # reduce_on_plateau = optax.contrib.reduce_on_plateau(
-    #     factor=FACTOR,
-    #     patience=PATIENCE,
-    #     rtol=RTOL,
-    #     cooldown=COOLDOWN,
-    #     accumulation_size=ACCUMULATION_SIZE,
-    #     min_scale=MIN_SCALE,
-    # )
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),adam, reduce_on_plateau)
-   
-    """
-    case #4
-    """
-    # opt_descr = 'case 4'
-    # warmup_steps = 20
-    # total_steps = steps//2
-    # schedule = optax.sgdr_schedule(
-    # [{"init_value":opt_lr/2, "peak_value":opt_lr, "decay_steps":total_steps, "warmup_steps":warmup_steps, "end_value":opt_lr*1e-1},
-    #  {"init_value":opt_lr*1e-1, "peak_value":opt_lr/2, "decay_steps":total_steps, "warmup_steps":warmup_steps, "end_value":opt_lr*1e-2}
-    
-    # ])
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),  # Optional gradient clipping
-    #     optax.inject_hyperparams(optax.adam)(learning_rate=schedule)
-    # )
-    """
-    case #5
-    """
-    # opt_descr = 'case 5'
-    # warmup_steps = 20
-    # total_steps = steps//3
-    # schedule = optax.sgdr_schedule(
-    # [{"init_value":opt_lr/2, "peak_value":opt_lr, "decay_steps":total_steps, "warmup_steps":warmup_steps, "end_value":opt_lr*1e-1},
-    #   {"init_value":opt_lr*1e-1, "peak_value":opt_lr/2, "decay_steps":total_steps, "warmup_steps":warmup_steps, "end_value":(opt_lr*1e-1)/2},
-    #  {"init_value":(opt_lr*1e-1)/2, "peak_value":opt_lr*1e-1, "decay_steps":total_steps, "warmup_steps":warmup_steps, "end_value":opt_lr*1e-2},
-
-    # ])
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),  # Optional gradient clipping
-    #     optax.inject_hyperparams(optax.adam)(learning_rate=schedule)
-    # )
-
-    # # Case #6: Combined SGDR + Reduce on Plateau
-    # opt_descr = 'case 6'
-
-   
-    # warmup_steps = 20
-    # total_steps = steps // 2
-    # schedule = optax.sgdr_schedule(
-    #     [
-    #         {
-    #             "init_value": opt_lr / 2,
-    #             "peak_value": opt_lr,
-    #             "decay_steps": total_steps,
-    #             "warmup_steps": warmup_steps,
-    #             "end_value": opt_lr / 2,
-    #         },
-    #         {
-    #             "init_value": opt_lr * 1e-1,
-    #             "peak_value": opt_lr / 2,
-    #             "decay_steps": total_steps,
-    #             "warmup_steps": warmup_steps,
-    #             "end_value": opt_lr * 1e-1,
-    #         },
-    #     ]
-    # )
-
-    # # Parameters for Reduce on Plateau
-    # PATIENCE = 10
-    # COOLDOWN = 5
-    # FACTOR = 0.75
-    # RTOL = 1e-3
-    # ACCUMULATION_SIZE = 5
-    # MIN_SCALE = 0.01
-
-    # # Combine SGDR and Reduce on Plateau
-    # sgdr = optax.inject_hyperparams(optax.adam)(learning_rate=schedule)
-    # reduce_on_plateau = optax.contrib.reduce_on_plateau(
-    #     factor=FACTOR,
-    #     patience=PATIENCE,
-    #     rtol=RTOL,
-    #     cooldown=COOLDOWN,
-    #     accumulation_size=ACCUMULATION_SIZE,
-    #     min_scale=MIN_SCALE,
-    # )
-
-    # # Combined optimizer
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),  # Optional gradient clipping
-    #     sgdr,
-    #     reduce_on_plateau,
-    # )
-
+    cost_threshold= 1e-05
+    conv_tol = 1e-08
     prev_cost = float('inf')  # Initialize with infinity
-
+    threshold_counts = 0
+    consecutive_threshold_limit = 4
     backup_params = None
     backup_cost = float('inf')  
 
     cost_res = 1
     costs = []
-    grads_per_epoch,rocs = [],[]
+    grads_per_epoch = []
     epoch = 0
     improvement = True
     opt_state = opt.init(params)
-    # print(f"initial opt_state: {opt_state}")
-    # learning_rate = opt_state[1].hyperparams['learning_rate']
-    # print(f"init learning rate: {learning_rate}")
-    # print(f"per param lrs: \n{opt_lr}\n")
     @jit
-    def update(params, opt_state, X, y, value):
+    def update(params, opt_state, X, y):
         # Ensure inputs are float64
         params = jnp.asarray(params, dtype=jnp.float64)
         X = jnp.asarray(X, dtype=jnp.complex128)
         y = jnp.asarray(y, dtype=jnp.complex128)
         
         loss, grads = jax.value_and_grad(cost_func)(params, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
-        if not isinstance(opt_state[-1], optax.contrib.ReduceLROnPlateauState):
-            updates, opt_state = opt.update(grads, opt_state, params)
-        else:
-            updates, opt_state = opt.update(grads, opt_state, params=params, value=value)
+        updates, opt_state = opt.update(grads, opt_state, params)
         new_params = optax.apply_updates(params, updates)
         
         # Ensure outputs are float64
@@ -893,133 +786,39 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     fullstr = time.time()
     add_more = True
     improvement_count = 0
-    a_threshold, acceleration =  0.0, 0.0
-    threshold_cond1, threshold_cond2 = [],[]
-    a_condition_set = False
     a_threshold =  0.0
     stored_epoch = None
     false_improvement = False
-    # Introduce tracking for barren plateaus
-
-    scale_reduction_epochs = []  # Track epochs where scale is reduced
-    scales_per_epoch = []  # Store scale values per epoch
-    new_scale = 1.0  # Initial scale value
-    learning_rates = []
     # print(f"params: {type(params)}, {params.dtype}")
-    num_reductions = 0
-    new_scale = 1.0
     while epoch  < steps or improvement:
-        
-        params, opt_state, cost,grad_circuit = update(params, opt_state, X, y,value=cost)
-        grad =grad_circuit
+        #cost, grad_circuit  = jax.value_and_grad(cost_func)(params, X, y, n_rsv_qubits, n_ctrl_qubits,trotter_steps, static)
+        #updates, opt_state = opt.update(grad_circuit, opt_state)
+        #params = optax.apply_updates(params, updates)
+        params, opt_state, cost,grad_circuit = update(params, opt_state, X, y)
+
         costs.append(cost)
         grads_per_epoch.append(grad_circuit)
-        # print(opt_state)
-        if opt_descr in ['case 2', 'case 3']:
-            plateau_scale = opt_state[-1].scale
-            adjusted_lr = opt_lr * plateau_scale
-            learning_rates.append(adjusted_lr)
-            scales_per_epoch.append(plateau_scale)
-            plateau_state = opt_state[-1]
-            # Check if plateau should have triggered
-            if (
-                plateau_state.avg_value >= plateau_state.best_value * (1 - RTOL) + RTOL
-                and plateau_state.plateau_count >= PATIENCE
-            ):
-                print(f"ReduceLROnPlateau *should* have triggered at Epoch {epoch + 1}!")
-            # Verify if scale is reducing
-            if plateau_state.scale < new_scale:
-                # print(f"ReduceLROnPlateau has reduced scale to {plateau_state.scale:.5f}! \n - plateau_state.avg_value: {plateau_state.avg_value}\n - plateau_state.best_value: {plateau_state.best_value}")
-                scale_reduction_epochs.append(epoch + 1)
-                new_scale = plateau_state.scale
-        elif opt_descr == 'case 6' or opt_descr == 'case 7':
-            sgdr_lr = opt_state[1].hyperparams['learning_rate']
-            plateau_scale = opt_state[2].scale
-            adjusted_lr = sgdr_lr * plateau_scale
-            learning_rates.append(adjusted_lr)
-            scales_per_epoch.append(plateau_scale)
 
-            plateau_state = opt_state[2]
-            # Check if plateau should have triggered
-            if (
-                plateau_state.avg_value >= plateau_state.best_value * (1 - RTOL) + RTOL
-                and plateau_state.plateau_count >= PATIENCE
-            ):
-                print(f"ReduceLROnPlateau *should* have triggered at Epoch {epoch + 1}!")
-            if plateau_state.scale < new_scale:
-                print(f"ReduceLROnPlateau reduced scale at Epoch {epoch + 1} to {plateau_state.scale:.5f}")
-                scale_reduction_epochs.append(epoch + 1)
-                new_scale = plateau_state.scale
-       
-            
-        elif opt_descr == 'case 0':
-            plateau_scale = 1.0
-            learning_rate = opt_lr
-            learning_rates.append(learning_rate)
+        if (epoch + 1) % 100 == 0 or epoch==0:
 
-
-        elif 'learning_rate' in opt_state[1].hyperparams:
-            plateau_scale = 1.0
-            learning_rate = opt_state[1].hyperparams['learning_rate']
-            learning_rates.append(learning_rate)
-        else:
-            learning_rates.append('fixed')
-        if epoch > 1:
-            var_grad = np.var(grad,ddof=1)
-            mean_grad = np.mean(jnp.abs(grad))
-            if epoch >5:
-                threshold_cond1.append(np.abs(mean_grad))
-                threshold_cond2.append(var_grad)
-            if epoch == 15:
-                initial_meangrad = np.mean(np.array(threshold_cond1))
-                initial_vargrad = np.mean(np.array(threshold_cond2))
-                cond1  = initial_meangrad * 1e-1
-                print(f"    - setting cond1: initial mean(grad) {initial_meangrad:2e}, threshold: {cond1:2e}")
+            var_grad = np.var(grad_circuit)
+            if epoch == 0:
+                initial_vargrad = var_grad
                 cond2 = initial_vargrad * 1e-2
-                print(f"    - setting cond2: initial var(grad) {initial_vargrad:2e}, threshold: {cond2:2e}")
+                print(f"    - setting cond2: initial var(grad) {initial_vargrad:2e}, cond2 threshold: {cond2:2e}")
+            mean_grad = np.mean(grad_circuit)  # No absolute value for normalized gradient variance
             
-            acceleration = get_rate_of_improvement(cost,prev_cost,second_prev_cost)
-            if epoch >= 25 and not a_condition_set and acceleration < 0.0:
-                average_roc = np.mean(np.array(rocs[10:]))
-                a_marked = np.abs(average_roc)
-                a_threshold = max(a_marked * 1e-3, 1e-7)
-                # a_threshold = a_marked*1e-3 if a_marked*1e-3 > 9e-7 else a_marked*1e-2
-                
-                print(f"acceration: {a_marked:.2e}, marked: {a_threshold:.2e}")
-               
-                a_condition_set = True
-            rocs.append(acceleration)
-        if epoch == 0 or (epoch + 1) % 200 == 0:
-            
-            var_grad = np.var(grad,ddof=1)
-            mean_grad = np.mean(jnp.abs(grad))
-            max_grad = max(jnp.abs(grad))
-            e = time.time()
-            epoch_time = e - s
-            # learning_rate = opt_state[1].hyperparams['learning_rate']
-            # print(f"Epoch {epoch + 1} --- Current Learning Rate: {learning_rate}")
-            # r_scale = optax.tree_utils.tree_get(opt_state, "scale")
-            
-            # plateau_state = opt_state[2]
-            # print(
-            #     f"Epoch {epoch + 1} --- cost: {cost:.5f}, "
-            #     f"SGDR LR: {sgdr_lr:.5e}, Plateau Scale: {plateau_scale:.5f}, "
-            #     f"Best Value: {plateau_state.best_value}, "
-            #     f"Plateau Count: {plateau_state.plateau_count}, "
-            #     f"Cooldown Count: {plateau_state.cooldown_count}, "
-            #     f"Avg Value: {plateau_state.avg_value:.5e}"
-            # )
-
-            print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
-                #   f'a: {acceleration:.2e} '
-                # f'Var(grad): {var_grad:.1e}, '
-                # f"opt_state[1]['learning_rate']= {opt_state[1].hyperparams['learning_rate']}",
-                # f'GradNorm: {np.linalg.norm(grad):.1e}, '
-                 f'Mean(grad): {mean_grad:.1e}, '
-                 f'Max(grad): {max_grad:.1e}, '
-                f'[t: {epoch_time:.1f}s]')
-            
-        
+            # Normalized gradient variance
+            normalized_var_grad = var_grad /  np.mean(grad_circuit**2) 
+            # Print with only two decimal places in scientific notation
+            print(f'Epoch {epoch + 1} cost: {cost:.5f}, '
+                 
+                f'Var(grad): {var_grad:.1e}, '
+                f'Mean(grad): {mean_grad:.1e}')
+            # print(f'Cost after step {epoch + 1}: {cost:.2e}. '
+            #     f'Var(grad): {var_grad:.2e}, '
+            #     f'Mean(grad): {mean_grad:.2e}, '
+            #     f'Normalized Var(grad): {normalized_var_grad:.2e}')
             
 
 
@@ -1044,26 +843,64 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
             # print(f"    backup_cost: {backup_cost:.6f}")
             improvement = False  # Stop if no improvement
             consecutive_improvement_count = 0  # Reset the improvement count if no improvement
-        var_condition= np.var(grad_circuit,ddof=1) < 1e-14
-        gradient_condition= max(jnp.abs(grad)) < 1e-8
-        cost_confition = cost < 1e-10
+
+
+        # if (epoch >= 50 and np.mean(np.abs(grad_circuit)) < cond1 
+        #     and np.var(grad_circuit) < cond2 and add_more and epoch <= 0.9 * steps):
+
+        #     mean_grad = jnp.mean(np.abs(grad_circuit))
+        #     var_grad = jnp.var(grad_circuit)
+        #     # Normalized gradient variance
+        #     normalized_var_grad_abs = var_grad / (mean_grad ** 2) if mean_grad != 0 else float('inf')
+        #     normalized_var_grad = var_grad / (jnp.mean(grad_circuit) ** 2) if jnp.mean(grad_circuit) != 0 else float('inf')
+
+        #     # print(f"params: {type(params)}, {params.dtype}")
+        #     # print(f"params: {params}")
+        #     gradients_per_state = collect_gradients(params, X, y)
+        #     meangrad, vargrad, grad_norm = calculate_gradient_stats(gradients_per_state)
+        #     normalized_var_grad_L = vargrad / (meangrad ** 2)
+        #     # Compute summary statistics for the normalized variance
+        #     norm_var_grad_mean = normalized_var_grad_L.mean()  # Mean of normalized gradient variance across params
+        #     norm_var_grad_max = normalized_var_grad_L.max()    # Max of normalized gradient variance across params
+        #     norm_var_grad_var = jnp.var(normalized_var_grad_L) # Variance of normalized gradient variance across params
+            
+        #     grads_variance = jnp.var(gradients_per_state, axis=tuple(range(1, gradients_per_state.ndim)))  # Calculate variance across the parameters for each state
+        #     # Compute the statistics and print them nicely
+        #     var_grad_mean = vargrad.mean()
+        #     var_var_grad = jnp.var(vargrad)
+        #     min_grad = min(np.abs(grad_circuit))
+        #     max_grad = max(np.abs(grad_circuit))
+
+        #     print(f"Epoch {epoch}:")
+        #     print(f"***flat landscape warning at epoch {epoch}. Mean(grad): {mean_grad:3e}, Var(Grad): {var_grad:3e}, Norm(vargrad): {normalized_var_grad:3e}, abs(mean): {normalized_var_grad_abs:3e}")
+        #     print(f"    ∑_l Mean(Var Grad): {var_grad_mean:.2e})")
+        #     print(f"    ∑_l Var(Var Grad): {var_var_grad:.2e}")
+        #     print(f"    ∑_l Mean(Mean Grad): {jnp.mean(jnp.abs(meangrad)):.2e}")
+        #     print(f"    ∑_l Var(Mean Grad): {jnp.var(jnp.abs(meangrad)):.2e}")
+        #     print(f"    ∑_l Norm(Var Grad) (mean): {norm_var_grad_mean:.2e}")
+        #     print(f"    ∑_l Norm(Var Grad) (normalized_var_grad): {normalized_var_grad:.2e}")
+        #     print(f"    ∑_l Norm(Var Grad) (var): {norm_var_grad_var:.2e}")
+        #     print(f"    Max Grad: {max_grad:.2e}")
+        #     print(f"    Min Grad: {min_grad:.2e}\n")
+        #     # Identify the indices of the states with the smallest gradient variances
+        #     min_var_indices = np.argsort(grads_variance)[:num_states_to_replace]
+        #     # Replace the states with the smallest variances with the new states
+        #     for idx in min_var_indices:
+        #         X = X.at[idx].set(add_a[min_var_indices == idx].squeeze(axis=0))
+        #         y = y.at[idx].set(add_b[min_var_indices == idx].squeeze(axis=0))
+            
+        #     add_more = False
         
-        if var_condition or gradient_condition or epoch >=2*steps or cost_confition:
-            if epoch >=2*steps:
-                print(f"Epoch greater than max. Ending opt at epoch: {epoch}")
-            if var_condition:
-                print(f"Variance of the gradients below threshold [{np.var(grad_circuit,ddof=1):.1e}], thresh:  1e-10. Ending opt at epoch: {epoch}")
-            if cost_confition:
-                print(f"Cost below threshold [{cost:.1e}]. Ending opt at epoch: {epoch}")
-            if gradient_condition:
-                print(f"Magnitude of maximum gradient is less than threshold [{max_grad:.1e}]. Ending opt at epoch: {epoch}")
-
+        # if np.abs(max(grad_circuit)) < 1e-14:
+        #     print(f"")
+        #     break
+        if cost < 1e-6:
+            print(f"Cost below threshold [{cost:.1e}]. Ending opt at epoch: {epoch}")
             break
-        # Check if there is improvement
-        second_prev_cost = prev_cost  # Move previous cost back one step
-        prev_cost = cost  # Update previous cost with the current cost
-
-     
+        if np.var(grad_circuit) < 1e-10 and epoch >=1000:
+            print(f"Variance of the gradients below threshold [{np.var(grad_circuit):.1e}]. Ending opt at epoch: {epoch}")
+            break
+        prev_cost = cost
 
 
         epoch += 1
@@ -1102,12 +939,8 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     
     data = {
         'Gate': base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
-        'opt_description': opt_descr,
-        'epochs': steps,
+        'epochs': epoch,
         'selected_indices': selected_indices,
-        'lrs': learning_rates,
-        'scales_per_epoch': scales_per_epoch,  # Add scales per epoch
-        'scale_reduction_epochs': scale_reduction_epochs,  # Add epochs of scale reduction
         'init_params': init_params,
         'preopt_results': preopt_results,
         'grads_per_epoch': grads_per_epoch,
@@ -1175,31 +1008,38 @@ if __name__=='__main__':
 
     
 
+    steps = 1000
+    training_size_list = [20]
+    noise_central = 0.01
+    noise_range = 0.002
+    test_size = 2000
+    bath = False
 # --------------------------------------------------------------------------------------------
 
     #folder = './gate_model_results_new/' #save the results in this folder
     
     
     
-    # trotter_step_list = [1,2,3,4,5]
-    trotter_step_list = [15,20,25,30,35,40,42,45,47,50]
-    # trotter_step_list = [1, 6, 8, 10, 12, 14, 16,18,20,22]
-    # trotter_step_list = trotter_step_list[::-1]
-    # trotter_step_list = [8,12,16,20,24,28,32]
-    # trotter_step_list = [1,2,3,4,5,6,8,10,12]
+    # trotter_step_list = [1,2,3,4,5,6,7]
+    # trotter_step_list = [20,21,23,23,24,25,26,27,28,29,30,31,32,33,34]
+    trotter_step_list = [1, 8, 10, 12, 14, 16,18,20,22,24,26]
+    trotter_step_list = trotter_step_list[::-1]
+    # trotter_step_list = [22,24,26]
     # trotter_step_list = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45]
-    # trotter_step_list = [4,6,8,10,12,14,18,22]
+    # trotter_step_list = [1,3,6,9,10,11,12,13,14,15,16,17,18,19,20,22,24,28,29]
+    # trotter_step_list = [4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56]
     
-    # rsv_qubits_list = [1,2,3]
-    rsv_qubits_list = [1]
-
-    N_ctrl = 3
+    # rsv_qubits_list = [2,3,4,5,6]
+    rsv_qubits_list = [1,2,3]
+    # trotter_step_list = [1]
+    static_options = [False]
+    N_ctrl = 2
     # omegas = generate_omegas(N_ctrl)
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_same_epoch{steps}/'
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_optimized_by_cost3/'
-    
+    folder = f'./gate_results_trainable_global/trainsize_{training_size_list[0]}_no_hypertraining_costcut_1e-6/'
     gates_random = []
-    for i in range(30):
+    for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         g = partial(qml.QubitUnitary, U=U)
         g.num_wires = N_ctrl
@@ -1210,79 +1050,46 @@ if __name__=='__main__':
     # gates = omegas
     gates = gates_random
     random = True
-
+    parameters = []
     opt_lr = None
-    baths = [False]
-    num_baths = [0]
-    training_size = 20
-    static =False
-
-    steps = 1500
     
-    noise_central = 0.01
-    noise_range = 0.002
-    test_size = 2000
-    bath = False
-    folder = f'./gate_results_trainable_global/trainsize_{training_size}_epoch{steps}_per_param_costcut_1e-10/'
-    for gate_idx,gate in enumerate(gates):
-        # if gate_idx not in [6]:
-        # if gate_idx not in [7]:
-        #     continue
-
-        for trotter_steps in trotter_step_list:
-            for n_rsv_qubits in rsv_qubits_list:
-            
-                
-
+    for training_size in training_size_list:
+        for static in static_options:
+            for gate_idx,gate in enumerate(gates):
+                # if gate_idx not in [12]:
+                #     continue
+                for trotter_steps in trotter_step_list:
+                    for n_rsv_qubits in rsv_qubits_list:
                     
-                N = N_ctrl +n_rsv_qubits
-                
-                params_key_seed = gate_idx*121 * n_rsv_qubits + 12345 * trotter_steps *n_rsv_qubits
-                print(f"params_key_seed: {params_key_seed}")
-                params_key = jax.random.PRNGKey(params_key_seed)
-                dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
+                        
 
-                dataset_key = jax.random.PRNGKey(dataset_seed)
+                            
+                        N = N_ctrl +n_rsv_qubits
+                        
+                        params_key_seed = gate_idx*121 * n_rsv_qubits + 12345 * trotter_steps *n_rsv_qubits
+                        params_key = jax.random.PRNGKey(params_key_seed)
 
-                
+                        params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * n_rsv_qubits) * trotter_steps,), minval=-np.pi, maxval=np.pi, dtype=jnp.float64)
+                       
+                        _, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
+                        
+                        
+                        
+                        n_ctrl_qubits = N_ctrl
+                        
+                        K_0 = 1.0
+                        # print(gate)
+                        K_half = jax.random.uniform(params_subkey1, (N, N))
+                        K = (K_half + K_half.T) / 2  # making the matrix symmetric
+                        K = 2. * K - 1.  # Uniform in [-1, 1]
+                        K_coeffs = K * K_0 / 2  # Scale to [-K_0/2, K_0/2]
+                        
 
-                params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * n_rsv_qubits) * trotter_steps,), 
-                                            minval=-np.pi, maxval=np.pi, dtype=jnp.float64)
-            
-                # Reset subkeys explicitly for each loop iteration
-                _, subkey1, subkey2 = jax.random.split(params_key, 3)
-                n_ctrl_qubits = N_ctrl
-                
-                K_0 = 1.0
-                # print(gate)
-                K_half = jax.random.uniform(subkey1, (N, N))
-                K = (K_half + K_half.T) / 2  # making the matrix symmetric
-                K = 2. * K - 1.  # Uniform in [-1, 1]
-                K_coeffs = K * K_0 / 2  # Scale to [-K_0/2, K_0/2]
-                
+                        bath_params = None
+                        
 
-                bath_params = None
-                
-
-                if random:
-                    label = gate.name
-                else:
-                    label = gate
-                run_experiment(
-                    params=params, 
-                    bath_params=None, 
-                    steps=steps, 
-                    n_rsv_qubits=n_rsv_qubits, 
-                    n_ctrl_qubits=N_ctrl, 
-                    K_coeffs=K_coeffs, 
-                    trotter_steps=trotter_steps, 
-                    static=static, 
-                    gate=gate, 
-                    gate_name=gate.name if random else str(gate), 
-                    folder=folder, 
-                    test_size=test_size, 
-                    training_size=training_size, 
-                   
-                    opt_lr=None, 
-                    dataset_key=dataset_key
-                )
+                        if random:
+                            label = gate.name
+                        else:
+                            label = gate
+                        run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_coeffs, trotter_steps, static, gate, f'{label}', folder, test_size, training_size, noise_central, opt_lr,random_key=params_subkey2)
