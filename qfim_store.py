@@ -87,6 +87,14 @@ def is_valid_pickle_file(file_path):
     except Exception as e:
         print(f"An error occurred: {e}")
         return False
+    
+def get_keys(df):
+    """
+    Helper function to extract a minimal representation of the data keys.
+    Returns a dict mapping each fixed_param key to the set of test keys.
+    """
+    return {fixed_param: set(df[fixed_param].keys()) for fixed_param in df}
+
 def clean_array(data):
     """Helper function to clean deprecated JAX arrays."""
     if isinstance(data, np.ndarray):
@@ -166,7 +174,7 @@ def extract_Nr(data_file):
     """
     return int(data_file.parent.parent.name.split('_')[-1])
 
-def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool):
+def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=False):
     """
     Here, you do your minimal extraction:
       - qfim_eigvals
@@ -190,7 +198,8 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool):
             entval = df[fixed_params_dict][test_id].get('entropy', None)
             if entval is not None:
                 entropies.append(entval)
-
+    keys_snapshot = get_keys(df)
+    num_test_keys = sum(len(tests) for tests in keys_snapshot.values())
 
 # Build your minimal dictionary
     processed_data = {
@@ -199,6 +208,7 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool):
         "Trotter_Step": trot,
         "all_qfim_eigvals": qfim_eigval_list,
         "mean_entropy": np.mean(entropies) if entropies else np.nan,
+        "num_test_keys": num_test_keys
         # etc. if needed
     }
     return processed_data
@@ -230,7 +240,9 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 
                 # If already in cache, skip or update
                 if file_id in cached_data:
-                    
+                    if check_for_new_data:
+                        print(f"Updating cached data.file_id: {file_id}")
+                        cached_data, processed_files = update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshold)
                     all_data.append(cached_data[file_id]['processed_data'])
                     continue
 
@@ -248,7 +260,7 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 
                     cached_data[file_id] = {
                         "processed_data": processed_data,
-                        # "raw_data": raw_df  # optional if you want to keep the raw
+                        "raw_data": raw_df  # optional if you want to keep the raw
                     }
                     processed_files.add(file_id)
                     all_data.append(processed_data)
@@ -261,6 +273,43 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 ###############################################################################
 # 4) The function to incorporate newly generated data pickles
 ###############################################################################
+
+def update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshold):
+    """
+    Update a cached entry for data_file if new fixed_param keys or new test keys are present.
+    Instead of storing the entire raw DataFrame, we keep a snapshot of its keys ("raw_keys").
+    If differences are detected, we re-load the file, re-run process_data_combined,
+    and update both the processed_data and the stored keys.
+    """
+    file_id = str(data_file)
+    df = load_and_clean_pickle(data_file)
+    new_keys = get_keys(df)
+    old_keys = cached_data[file_id].get("raw_keys", {})
+
+    # Check for any new fixed_param keys or new tests for an existing fixed_param.
+    needs_update = False
+    for fixed_param, tests in new_keys.items():
+        if fixed_param not in old_keys:
+            needs_update = True
+            break
+        else:
+            if tests - old_keys[fixed_param]:
+                needs_update = True
+                break
+
+    if needs_update:
+        print(f"[INFO] New fixed_param/test keys detected in {file_id}. Updating processed data.")
+        trotter_step_num = extract_trotter_step(data_file)
+        reservoir_count  = extract_Nr(data_file)
+        processed_data = process_data_combined(
+            df, threshold, by_test=False, Nc=N_ctrl,
+            N_R=reservoir_count, trot=trotter_step_num, print_bool=False
+        )
+        cached_data[file_id]["processed_data"] = processed_data
+        cached_data[file_id]["raw_keys"] = new_keys
+
+    processed_files.add(file_id)
+    return cached_data, processed_files
 def update_cache_with_new_data(
     base_path, 
     K_0, 
@@ -297,8 +346,18 @@ def update_cache_with_new_data(
             data_file = trotter_step_path / 'data.pickle'
             file_id = str(data_file)
 
+            # if file_id in cached_data:
+                
+            #     print(f"{file_id} found in cached data. File path: {file_id}")
+            #     continue  # skip, already in cache
             if file_id in cached_data:
-                continue  # skip, already in cache
+                print(f"[INFO] Checking cached file: {file_id}")
+                updated = update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshold)
+                # Only append if it was actually updated
+                if updated:
+                    all_new_data.append(cached_data[file_id]['processed_data'])
+                continue
+            
 
             if is_valid_pickle_file(data_file):
                 print(f"[INFO] Found NEW data file: {data_file}")
@@ -312,10 +371,11 @@ def update_cache_with_new_data(
                 )
                 cached_data[file_id] = {
                     "processed_data": processed_data,
-                    "raw_data": raw_df
+                    "raw_keys": get_keys(raw_df)
                 }
                 processed_files.add(file_id)
                 all_new_data.append(processed_data)
+
 
     if all_new_data:
         save_cached_data(base_path, cached_data, processed_files, N_ctrl, K_0)
@@ -326,22 +386,32 @@ def update_cache_with_new_data(
 def rebuild_df_from_existing_cache(base_path, N_ctrls, K_0):
     """
     Rebuild a single DataFrame from the cached_data dictionaries saved on disk.
-    This does NOT require scanning the original QFIM_results directories.
+    This function does NOT scan the original QFIM_results directories, but instead
+    loads preprocessed cached data. Each row in the returned DataFrame corresponds
+    to one experimental run for a given configuration (i.e. a specific combination of
+    control qubits (N_ctrl), reservoir qubits (N_R), and Trotter step (T)). 
     
-    Parameters:
-    -----------
+    The cached data includes a column (typically named 'all_qfim_eigvals') which stores
+    the raw QFIM eigenvalue arrays. Each element of this column is the result of
+    computing the QFIM for one set of randomly sampled trainable parameters for that
+    configuration.
+    
+    Parameters
+    ----------
     base_path : Path or str
-        The base directory where cached pickles are stored.
+        The base directory where cached pickle files are stored.
     N_ctrls : list of int
-        List of N_ctrl values you want to load from cache.
+        List of control qubit counts (N_ctrl values) for which cached data is to be loaded.
     K_0 : str or int
-        The K string/index used in naming the cache files, e.g. '1', '2', etc.
-
-    Returns:
-    --------
+        The K parameter string/index used in naming the cache files (e.g. '1', '2', etc.).
+        
+    Returns
+    -------
     df_all : pd.DataFrame
-        A DataFrame constructed by concatenating all 'processed_data'
-        entries from each cached_data for all given N_ctrls.
+        A DataFrame constructed by concatenating all 'processed_data' entries from
+        each cached_data file for the specified N_ctrls. Each row represents one experiment run,
+        with the column 'all_qfim_eigvals' holding the raw QFIM eigenvalue arrays computed from
+        a single random sample of trainable parameters.
     """
     all_data = []
 
@@ -359,9 +429,39 @@ def rebuild_df_from_existing_cache(base_path, N_ctrls, K_0):
 # ----------------------------------------------------------------------------
 def maybe_rebuild_or_process(base_path, sample_range, model_type, N_ctrls, K_0, threshold=1e-10, by_test=False):
     """
-    1) Attempt to rebuild from existing caches for each N_ctrl in N_ctrls.
-    2) If a cache is missing or incomplete, process new files for that N_ctrl.
-    3) Combine partial DataFrames into one df_all.
+    For each specified control qubit value (N_ctrl), this function:
+      1) Attempts to rebuild the DataFrame from existing cached_data,
+      2) If the cache is missing or incomplete, processes new QFIM_results files to generate data,
+      3) Combines the resulting partial DataFrames into one df_all.
+    
+    Each row in df_all corresponds to a single experiment run for a given configuration
+    (i.e. a unique combination of N_ctrl, reservoir qubits, and Trotter step). In these rows,
+    the column 'all_qfim_eigvals' contains the raw QFIM eigenvalue arrays computed from one sample
+    of random trainable parameters.
+    
+    Parameters
+    ----------
+    base_path : Path or str
+        The base directory where the cache files and/or raw QFIM_results are stored.
+    sample_range : str
+        The sample range label used in your file/directory naming (e.g. "pi").
+    model_type : str
+        The model type (e.g. "gate").
+    N_ctrls : list of int
+        List of control qubit counts to process.
+    K_0 : str or int
+        The K parameter string/index (e.g. "1").
+    threshold : float, optional
+        The threshold value used when processing QFIM data.
+    by_test : bool, optional
+        If True, process data by individual test key; otherwise, use the standard aggregation.
+        
+    Returns
+    -------
+    df_all : pd.DataFrame
+        A DataFrame constructed by combining cached (or newly processed) data for each N_ctrl.
+        Each row represents one experiment run (i.e. one random sample of trainable parameters) for
+        the configuration, and the column 'all_qfim_eigvals' stores the corresponding raw QFIM eigenvalue arrays.
     """
     combined_frames = []
     for N_ctrl in N_ctrls:
@@ -475,98 +575,190 @@ def compute_spread_columns(df, eigs_2d_col="qfim_eigs_2d", threshold=1e-12, ddof
         pooled_vals.append(pool_val)
 
     prefix = spread_method.lower()
+    if prefix == "mad":
+        prefix += f'_{scale}'
     df[f"spread_mean_per_sample_{prefix}"] = per_sample_means
     df[f"spread_std_per_sample_{prefix}"]  = per_sample_stds
     df[f"spread_val_pooled_{prefix}"]      = pooled_vals
     return df
 
-def compute_all_stats(eigval_list, threshold=1e-12):
+def compute_all_stats(
+    eigval_list,
+    threshold=1e-12,
+    spread_methods=("variance", "mad"),  # e.g. ["variance", "mad"]
+    ddof=1,
+    scale="normal",
+    # Additional args for the approximate effective dimension
+    do_effective_dim=True,
+    vol_param_space=1.0,
+    gamma=0.1,    
+    n=100,
+    V_theta=1.0,
+):
     """
-    Single-pass extraction of rank, average variance, etc. 
-    Just as in your original 'compute_all_stats' function.
-    """
-    ranks_per_draw = []
-    var_qfim_per_draw = []
-    var_qfim_nonzero_per_draw = []
-    trace_qfim_per_draw = []
-    trace_qfim_norm_by_len = []
-    trace_qfim_norm_by_rank = []
-    var_qfim_norm_by_len = []
-    var_qfim_norm_by_rank = []
+    Compute QFIM statistics for a list of draws (eigval_list),
+    plus spread-of-log metrics via sample & pooled approaches,
+    and an approximate 'effective dimension' from the paper.
 
-    for eigvals in eigval_list:
-        arr = np.array(eigvals, dtype=float)
-        arr = np.where(arr<threshold, 0.0, arr)
+    Returns a dict with columns that match your usual naming scheme.
+    """
+
+    import numpy as np
+
+    # 1) Basic per-draw computations
+    ranks_per_draw = []
+    var_all_per_draw = []
+    var_nonzero_per_draw = []
+    trace_per_draw = []
+    var_norm_len_per_draw = []
+    var_norm_rank_per_draw = []
+    trace_norm_len_per_draw = []
+    trace_norm_rank_per_draw = []
+
+    for eigs in eigval_list:
+        arr = np.array(eigs, dtype=float)
+        arr = np.where(arr < threshold, 0.0, arr)
         rank = np.count_nonzero(arr)
         ranks_per_draw.append(rank)
-        var_qfim = np.var(arr)
-        var_qfim_per_draw.append(var_qfim)
-        nonzeros = arr[arr>0]
-        var_non = np.var(nonzeros) if len(nonzeros)>1 else 0.0
-        var_qfim_nonzero_per_draw.append(var_non)
+
+        var_all = np.var(arr)
+        var_all_per_draw.append(var_all)
+
+        nonz = arr[arr > 0]
+        var_non = np.var(nonz) if nonz.size > 1 else 0.0
+        var_nonzero_per_draw.append(var_non)
+
         trace_val = arr.sum()
-        trace_qfim_per_draw.append(trace_val)
-        length = len(arr)
-        trace_qfim_norm_by_len.append(trace_val/length if length>0 else 0.0)
-        var_qfim_norm_by_len.append(var_qfim/length if length>0 else 0.0)
+        trace_per_draw.append(trace_val)
 
-        if rank>0:
-            trace_qfim_norm_by_rank.append(trace_val/rank)
-            var_qfim_norm_by_rank.append(var_qfim/rank)
+        length = len(arr) if len(arr) else 1
+        var_norm_len_per_draw.append(var_all / length)
+        trace_norm_len_per_draw.append(trace_val / length)
+
+        if rank > 0:
+            var_norm_rank_per_draw.append(var_all / rank)
+            trace_norm_rank_per_draw.append(trace_val / rank)
         else:
-            trace_qfim_norm_by_rank.append(0.0)
-            var_qfim_norm_by_rank.append(0.0)
+            var_norm_rank_per_draw.append(0.0)
+            trace_norm_rank_per_draw.append(0.0)
 
+    # 2) Aggregate across draws
     D_C = max(ranks_per_draw) if ranks_per_draw else 0
-    avg_test_var_qfim_eigvals = np.mean(var_qfim_per_draw) if var_qfim_per_draw else 0.0
-    avg_test_var_qfim_eigvals_nonzero = np.mean(var_qfim_nonzero_per_draw) if var_qfim_nonzero_per_draw else 0.0
-    avg_test_tr_qfim_eigvals = np.mean(trace_qfim_per_draw) if trace_qfim_per_draw else 0.0
-    avg_test_tr_qfim_eigvals_norm = np.mean(trace_qfim_norm_by_len) if trace_qfim_norm_by_len else 0.0
-    avg_test_tr_qfim_eigvals_norm_by_rank = np.mean(trace_qfim_norm_by_rank) if trace_qfim_norm_by_rank else 0.0
-    avg_test_var_qfim_eigvals_normalized = np.mean(var_qfim_norm_by_len) if var_qfim_norm_by_len else 0.0
-    avg_test_var_qfim_eigvals_normalized_by_rank = np.mean(var_qfim_norm_by_rank) if var_qfim_norm_by_rank else 0.0
-    var_test_var_qfim_eigvals = np.var(var_qfim_per_draw) if len(var_qfim_per_draw)>1 else 0.0
-    var_test_var_qfim_eigvals_log = np.log(var_test_var_qfim_eigvals) if var_test_var_qfim_eigvals>0 else 0.0
-    var_test_var_qfim_eigvals_nonzero = np.var(var_qfim_nonzero_per_draw) if len(var_qfim_nonzero_per_draw)>1 else 0.0
+    avg_var_all = np.mean(var_all_per_draw) if var_all_per_draw else 0.0
+    avg_var_nonzero = np.mean(var_nonzero_per_draw) if var_nonzero_per_draw else 0.0
+    avg_trace = np.mean(trace_per_draw) if trace_per_draw else 0.0
+    avg_trace_len = np.mean(trace_norm_len_per_draw) if trace_norm_len_per_draw else 0.0
+    avg_trace_rank = np.mean(trace_norm_rank_per_draw) if trace_norm_rank_per_draw else 0.0
+    avg_var_norm_len = np.mean(var_norm_len_per_draw) if var_norm_len_per_draw else 0.0
+    avg_var_norm_rank = np.mean(var_norm_rank_per_draw) if var_norm_rank_per_draw else 0.0
 
-    return {
+    var_var_all = np.var(var_all_per_draw) if len(var_all_per_draw) > 1 else 0.0
+    var_var_nonzero = np.var(var_nonzero_per_draw) if len(var_nonzero_per_draw) > 1 else 0.0
+
+    # 3) Flatten eigenvalues to build a single array for "effective dimension"
+    #    We'll do a naive 'pooled' approach:
+    all_eigs_concat = np.concatenate([
+        np.where(np.array(eigs) < threshold, 0.0, eigs) for eigs in eigval_list
+    ]) if eigval_list else np.array([])
+   
+   
+    # TODO: Effective Dimension from Eq. (32) in the paper (captures concentration of QFIM spectrum)
+
+   
+
+    # Spread-of-log metrics for each method in spread_methods
+    #    We'll build arr_2d to use your existing vectorized functions.
+    arr_2d = np.zeros((len(eigval_list), max(len(x) for x in eigval_list))) if eigval_list else np.zeros((0,0))
+    for i, e in enumerate(eigval_list):
+        tmp = np.array(e, dtype=float)
+        tmp = np.where(tmp < threshold, 0.0, tmp)
+        arr_2d[i, :len(tmp)] = tmp
+
+    spread_results = {}
+    from functools import partial
+
+
+    for method in spread_methods:
+        per_draw = spread_per_sample_vectorized(
+            arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
+        )
+        spread_mean = per_draw.mean() if per_draw.size else 0.0
+        spread_std  = per_draw.std()  if per_draw.size > 1 else 0.0
+
+        pooled_val = spread_pooling_vectorized(
+            arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
+        )
+
+        # Store them with keys that include the scale
+        prefix = method.lower()
+        # e.g. "spread_mean_per_sample_mad_normal"
+        spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
+        spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
+        spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
+
+    # 5) Final dictionary
+    metrics = {
+        # Per-draw lists
         "QFIM_ranks": ranks_per_draw,
+        "test_var_qfim_eigvals": var_all_per_draw,
+        "test_var_qfim_eigvals_nonzero": var_nonzero_per_draw,
+        "test_tr_qfim_eigvals": trace_per_draw,
+        "test_var_qfim_eigvals_normalized": var_norm_len_per_draw,
+        "test_var_qfim_eigvals_normalized_by_rank": var_norm_rank_per_draw,
+
+        # Aggregated
         "D_C": D_C,
-        "test_var_qfim_eigvals": var_qfim_per_draw,
-        "test_var_qfim_eigvals_nonzero": var_qfim_nonzero_per_draw,
-        "test_tr_qfim_eigvals": trace_qfim_per_draw,
-        "avg_test_var_qfim_eigvals": avg_test_var_qfim_eigvals,
-        "avg_test_var_qfim_eigvals_nonzero": avg_test_var_qfim_eigvals_nonzero,
-        "avg_test_tr_qfim_eigvals": avg_test_tr_qfim_eigvals,
-        "var_test_var_qfim_eigvals": var_test_var_qfim_eigvals,
-        "var_test_var_qfim_eigvals_log": var_test_var_qfim_eigvals_log,
-        "var_test_var_qfim_eigvals_nonzero": var_test_var_qfim_eigvals_nonzero,
-        "avg_test_var_qfim_eigvals_normalized": avg_test_var_qfim_eigvals_normalized,
-        "avg_test_var_qfim_eigvals_normalized_by_rank": avg_test_var_qfim_eigvals_normalized_by_rank,
-        "test_var_qfim_eigvals_normalized": var_qfim_norm_by_len,
-        "test_var_qfim_eigvals_normalized_by_rank": var_qfim_norm_by_rank,
-        "avg_test_tr_qfim_eigvals_norm": avg_test_tr_qfim_eigvals_norm,
-        "avg_test_tr_qfim_eigvals_norm_by_rank": avg_test_tr_qfim_eigvals_norm_by_rank
+        "avg_test_var_qfim_eigvals": avg_var_all,
+        "avg_test_var_qfim_eigvals_nonzero": avg_var_nonzero,
+        "avg_test_tr_qfim_eigvals": avg_trace,
+        "avg_test_tr_qfim_eigvals_norm": avg_trace_len,
+        "avg_test_tr_qfim_eigvals_norm_by_rank": avg_trace_rank,
+        "avg_test_var_qfim_eigvals_normalized": avg_var_norm_len,
+        "avg_test_var_qfim_eigvals_normalized_by_rank": avg_var_norm_rank,
+        "var_test_var_qfim_eigvals": var_var_all,
+        "var_test_var_qfim_eigvals_nonzero": var_var_nonzero,
+
+     
     }
+
+    # Merge in the spread-of-log results with the new naming
+    metrics.update(spread_results)
+
+    return metrics
 def build_qfim_dataframe(df_all, threshold=1e-12):
     """
     1) Convert all_qfim_eigvals -> qfim_eigs_2d
-    2) Single-pass stats => expanded columns
-    3) Spread-based metrics (variance, mad, median).
+    2) Single-pass stats => expanded columns (including spread-of-log)
+    3) Optionally, extra 'compute_spread_columns' calls 
+       if you want separate columns for 'median', etc.
     4) Return final df_all with everything included.
     """
-    # Convert
+    # 1) Convert for convenience
     df_all["qfim_eigs_2d"] = df_all["all_qfim_eigvals"].apply(to_2d)
 
-    # Single-pass stats
-    stats_series = df_all["all_qfim_eigvals"].apply(lambda x: compute_all_stats(x, threshold=threshold))
+    # 2) Single-pass stats
+    stats_series = df_all["all_qfim_eigvals"].apply(
+        lambda x: compute_all_stats(
+            x, 
+            threshold=threshold, 
+            spread_methods=["variance", "mad"], # you can add 'median' if you like
+            ddof=1, 
+            scale="normal"
+        )
+    )
     df_stats = pd.json_normalize(stats_series)
-    df_all = pd.concat([df_all.reset_index(drop=True), df_stats.reset_index(drop=True)], axis=1)
+    df_out = pd.concat([df_all.reset_index(drop=True), df_stats.reset_index(drop=True)], axis=1)
 
+    # 3) If you still want “extra” spread columns for e.g. 'median' or other transformations,
+    #    you can also call your existing compute_spread_columns(...) here:
+    # df_out = compute_spread_columns(df_out, threshold=threshold, spread_method="median", scale="normal")
+    # etc.
+
+    
     # Spread-based columns: variance, mad, median
-    df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="variance", scale="normal")
-    df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="mad", scale="normal")
-    df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="median", scale="normal")
+    # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="variance", scale="normal")
+    # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="mad", scale="normal")
+    # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="median", scale="normal")
 
     return df_all
 
@@ -591,7 +783,7 @@ if __name__ == "__main__":
 
     print("[INFO] df_all shape after reading cache or scanning directories:", df_all.shape)
 
-    # 2) Build QFIM DataFrame with advanced metrics
+    # # 2) Build QFIM DataFrame with advanced metrics
     df_all = build_qfim_dataframe(df_all, threshold=1e-12)
     print("[INFO] df_all final shape:", df_all.shape)
     print(df_all.head())
