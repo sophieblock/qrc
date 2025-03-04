@@ -1,22 +1,29 @@
-df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
-# df_all.keys()
-print(f"df_all.shape: {df_all.shape}")
-print(df_all[['key_pair_tuple']].dtypes)
-
-def all_tuples_unique(tuples_list):
-    # Return True if all items are unique (no duplicates)
-    return len(tuples_list) == len(set(tuples_list))
-
-df_all["all_key_pairs_unique"] = df_all["key_pair_tuple"].apply(all_tuples_unique)
-df_all['num_keys'] = df_all["key_pair_tuple"].apply(lambda x: len(x))
-df_all[['N_ctrl','N_reserv','Trotter_Step', 'key_pair_tuple']].head()
+from collections import Counter
 
 for idx, row in df_all.iterrows():
-    # Extract the list of tuples from the current row
     tuples_list = row["key_pair_tuple"]
     
-    # Collect the second element of each tuple
-    second_elems = [t[1] for t in tuples_list]
+    # --- Check overall tuple uniqueness ---
+    tuple_counts = Counter(tuples_list)
+    dup_tuples = [t for t, count in tuple_counts.items() if count > 1]
+    if dup_tuples:
+        print(f"\nRow {idx} has duplicate tuples in 'key_pair_tuple':")
+        for dup in dup_tuples:
+            print(f"  Tuple {dup} occurs {tuple_counts[dup]} times")
+        print("Row details:")
+        print(row)
     
-    # Assert that the second elements are unique
-    assert len(second_elems) == len(set(second_elems)), f"Duplicate second element found in row {idx}!"
+    # --- Check uniqueness of the second element ---
+    second_elems = [t[1] for t in tuples_list]
+    second_counts = Counter(second_elems)
+    dup_seconds = [sec for sec, count in second_counts.items() if count > 1]
+    if dup_seconds:
+        print(f"\nRow {idx} has duplicate second elements in 'key_pair_tuple':")
+        for sec in dup_seconds:
+            # Get all tuples with this duplicate second element
+            associated_tuples = [t for t in tuples_list if t[1] == sec]
+            # The output shows each duplicate second element and its corresponding tuples,
+            # making the first elements clear.
+            print(f"  Second element {sec} appears in tuples: {associated_tuples}")
+        print("Row details:")
+        print(row)
