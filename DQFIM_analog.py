@@ -13,8 +13,7 @@ import matplotlib.pyplot as plt
 import base64
 import pickle
 from qutip import *
-from qutip.qip.operations import cnot,rz,rx,ry,snot
-from qutip.qip.circuit import QubitCircuit
+
  # Using pennylane's wrapped numpy
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
 import jax
@@ -63,11 +62,7 @@ import pennylane as qml
 from pennylane.operation import AnyWires, Operation
 from pennylane.typing import TensorLike
 from pennylane.ops import functions
-from pennylane.ops import Evolution
-from parametrized_hamiltonian import ParametrizedHamiltonian
-from parametrized_ham_pytree import ParametrizedHamiltonianPytree
-from hard_ham import HardwareHamiltonian
-from evolution2 import Evolution
+
 #from pennylane.pulse import ParametrizedEvolution, ParametrizedHamiltonian,HardwareHamiltonian
 from jax.experimental.ode import odeint
 from pennylane.devices.qubit.apply_operation import _evolve_state_vector_under_parametrized_evolution,apply_parametrized_evolution
@@ -88,16 +83,15 @@ def create_ghz_state(num_qubits):
     state = state.at[-1].set(1.0 / jnp.sqrt(2))
     return state
 
-def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath,K_factor, base_key):
+
+def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath,key, E_0=1.0,K_0 = 1.0):
     N = N_reserv + N_ctrl
-    # Adjust the key based on time_steps and fixed_param_num
-    key = jax.random.PRNGKey((base_key + time_steps) * 123456789 % (2**32))  # Example combination
-    key, subkey = jax.random.split(key)
    
-    K_half = jax.random.normal(key = subkey,shape= (N, N)) 
+   
+    K_half = jax.random.normal(key = key,shape= (N, N)) 
     K = (K_half + K_half.T) / 2  # making the matrix symmetric
     K = 2. * K - 1.
-    K *= K_factor
+    K = K * K_0/2
     #print(f"K: {K}")
     if bath:
         bath_array = 0.01 * jax.random.normal(subkey, (num_bath, N_ctrl + N_reserv))
@@ -133,7 +127,7 @@ def quantum_fun(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
     '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
+    qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.density_matrix(wires=[*qubits])
 
@@ -351,7 +345,7 @@ def quantum_fun(gate, input_state, qubits):
     '''
     Apply the gate to the input state and return the output state.
     '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
+    qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     # return qml.density_matrix(wires=[*qubits])
     return qml.state()
@@ -388,20 +382,22 @@ def main():
     baths = [False]
     num_bath = 0
     number_of_fixed_param_tests = 1
-    number_trainable_params_tests = 10
+    number_trainable_params_tests = 5
     num_input_states = 50
     base_state = f'L_{num_input_states}'
     
     
-    # trots = [1,2,3,4,5,6,7,8,9,10]
+    # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
     
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
-    # trots = [8,10,12]
-    # trots = [1,4,5,6,8,10,12,16,18,20,22]
-    # trots = np.arange(1,20,1)
-    trots = [ 10, 15, 20,25,30,35,40,45]
-    # reservoirs = [2,3]
     reservoirs = [1]
+    # trots = [1,4,5,6,8,10,12,16,18,20,22,26,30,32,34]
+    # trots = np.arange(1,20,1)
+    # trots = [10,15, 20,25,30,35,40]
+    trots = [1,5,8,10,12,14,30,35,40]
+    # trots =[30,35,40]
+    # reservoirs = [2,3]
+    # reservoirs = [2,3,4,5,6,7]
 
     
    
@@ -435,7 +431,7 @@ def main():
                         data_filename = os.path.join(folder_gate, 'data.pickle')
                     base_key_seed = 123* N_reserv + 12345 * time_steps *N_reserv
                     params_key = jax.random.PRNGKey(base_key_seed)
-                    params_subkey0, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
+                    params_subkey0, params_subkey1 = jax.random.split(params_key, 2)
                      
                     L = generate_dataset(N_ctrl,N_reserv, num_input_states,params_subkey0)
                     print(data_filename)
@@ -454,6 +450,10 @@ def main():
                         new_tests_count = 0  # Counter for new tests
                         fixed_param_key = f'fixed_params{fixed_param_num}'
                         all_tests_data.setdefault(fixed_param_key, {})
+
+                        # if fixed_param_key != 'fixed_params0':
+                        #     print(f"Resetting {fixed_param_key}")
+                        #     all_tests_data[fixed_param_key] = {}
                         
                         number_trainable_tests_completed = len(all_tests_data[fixed_param_key].keys())
                         tests_to_run = number_trainable_params_tests - number_trainable_tests_completed
@@ -465,9 +465,10 @@ def main():
                         else:
                             print("Moving on!")
                         if tests_to_run > 0:
+                            fixed_param_seed = base_key_seed * fixed_param_num + base_key_seed *1234
+                            fixed_PRNGKey = jax.random.PRNGKey(fixed_param_seed)
                             
-                            base_key = fixed_param_num *fixed_param_num+ 1000 * time_steps*fixed_param_num
-                            fixed_params = get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, Kfactor,base_key)
+                            fixed_params = get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath,key = fixed_PRNGKey, K_0 = Kfactor)
                             # print(f"fixed: {fixed_params}")
                             #test_state = create_initial_state(N_ctrl,base_state)
                             sim_qr = Sim_QuantumReservoir(fixed_params, N_ctrl, N_reserv, num_J, time_steps=time_steps)
@@ -578,7 +579,7 @@ def main():
                                 return jnp.array(entropies), density_matrix_sum / num_input_states
 
                             
-
+                            # @jax.jit
                             def compute_qfim_eigen_decomposition(params):
                                 density_matrix_grads = get_partial_grads(params, L, jit_circuit)
                                 entropies,Pi_L = get_density_matrix_sum(params, L, jit_circuit)
@@ -617,11 +618,12 @@ def main():
     
                             
                             # Generate a batch of parameters
-                            param_batch = generate_batch_params(params_subkey2,np.arange(number_trainable_tests_completed,number_trainable_params_tests), time_steps, N_ctrl, N_reserv, sample_range)
+                            param_batch = generate_batch_params(params_subkey1,np.arange(number_trainable_tests_completed,number_trainable_params_tests), time_steps, N_ctrl, N_reserv, sample_range)
                             if batch:
                                 # gradients = collect_gradients(param_batch)
                                 s = time.time()
                                 batch_results = jax.vmap(compute_qfim_eigen_decomposition)(param_batch)
+                                batch_results = jax.tree_util.tree_map(jax.block_until_ready,batch_results)
                                 # batch_results = jax.vmap(get_qfi_eigvals, in_axes=(0,))(param_batch)
                                 e = time.time()
                                 print(f'Time for param set: {e-s}')
@@ -653,12 +655,13 @@ def main():
                                         print(f"Trainable params: {param_str}")
                                         print(f"Fixed params: {fixed_params}")
                                         raise ValueError("qfim contains negative eigenvalues")
-                                # original_circuit = jit_circuit(params)
-                                # original_circuit = original_circuit / np.trace(original_circuit)
-                                # entropy = vn_entropy(original_circuit, indices=[*ctrl_wires])
+                                    # original_circuit = jit_circuit(params)
+                                    # original_circuit = original_circuit / np.trace(original_circuit)
+                                    # entropy = vn_entropy(original_circuit, indices=[*ctrl_wires])
                                     
                                     all_tests_data[fixed_param_key][test_key] = {
                                         'L':L,
+                                        
                                         'fixed_params': fixed_params,
                                         'qfim_eigvals': eigvals,
                                         'qfim_eigvecs': eigvecs,

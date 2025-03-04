@@ -170,7 +170,7 @@ def quantum_fun(gate, input_state, qubits):
 
 class QuantumNetwork:
 
-    def __init__(self, n_rsv_qubits, n_ctrl_qubits, K_coeffs,trotter_steps=1, static=False, bath_params=None):
+    def __init__(self, n_rsv_qubits, n_ctrl_qubits, K_coeffs,hZ, trotter_steps=1, static=False, bath_params=None):
         self.static = static
         self.ctrl_qubits = Wires(list(range(n_ctrl_qubits))) # wires of the reservoir qubits (i.e. number of qubits in the reservoir)
         self.rsv_qubits = Wires(list(range(n_ctrl_qubits, n_rsv_qubits+n_ctrl_qubits))) # wires of the control qubits (i.e. number of qubits in the control)
@@ -178,13 +178,14 @@ class QuantumNetwork:
 
         self.dev = qml.device("default.qubit", wires =self.all_wires) 
         self.trotter_steps = trotter_steps
-        #self.z_coeffs = z_coeffs  # parameters of the reservoir (Z)
+        self.z_coeffs = hZ  # parameters of the reservoir (Z)
         #self.y_coeffs = y_coeffs  # parameter of the reservoir (XY_coupling)
         self.K_coeffs = K_coeffs  # parameter of the reservoir (XY_coupling)
        # print(K_coeffs)
         self.bath_params = bath_params
     def set_gate_reservoir(self):
-        
+        for i,r in enumerate(self.rsv_qubits):
+            qml.RZ(self.z_coeffs[i], wires = r)
         
         for i, rsv_qubit_i in enumerate(self.rsv_qubits):
             for j, rsv_qubit_j in enumerate(self.rsv_qubits):
@@ -192,21 +193,46 @@ class QuantumNetwork:
                 if i != j and i < j:
                     k = self.K_coeffs[i, j]
                     
-                    
-                    #print(f"{i},{j}/ {rsv_qubit_i},{rsv_qubit_j} -> k: {k} ")
-                    #print(f"RESERVOIR wires: {[rsv_qubit_i, rsv_qubit_j]}")
                     qml.IsingXY(k, wires=[rsv_qubit_i, rsv_qubit_j])
     
-    def set_gate_params(self, x_coeff,z_coeff,y_coeff, J_coeffs):
+    def set_gate_params(self, x_coeff,y_coeff, J_coeffs):
         for r in self.rsv_qubits:
-            qml.RX(x_coeff, wires=r)
-            qml.RZ(z_coeff, wires=r)
+            qml.RX(x_coeff, wires=r)   
             qml.RY(y_coeff, wires=r)
+
         for i,qubit_a in enumerate(self.rsv_qubits):
             for j,qubit_b in enumerate(self.ctrl_qubits):
                 #print(f"CONTROL wires: {[self.ctrl_qubits[j],self.rsv_qubits[i]]}")
                 qml.IsingXY(J_coeffs[i * len(self.ctrl_qubits) + j], wires=[qubit_a, qubit_b])
+    # def build_ham(self,x,y,z,J):
+    #     terms = []
+    #     coefs = []
+    #     for i, rsv_qubit_i in enumerate(self.rsv_qubits):
+    #         for j, rsv_qubit_j in enumerate(self.rsv_qubits):
+                
+    #             if i != j and i < j:
+    #                 k = self.K_coeffs[i, j]
+                    
+    #                 qml.IsingXY(k, wires=[rsv_qubit_i, rsv_qubit_j])
 
+def generate_circuit(qrc, trotter_steps):
+    """Create a quantum circuit based on qrc and its trotter steps."""
+    @qml.qnode(qrc.dev, interface='jax')
+    def circuit(params, input_state):
+        x_coeff, y_coeff = params[:2]
+        J_coeffs = params[2:]
+        qml.StatePrep(input_state, wires=qrc.ctrl_qubits)
+        for _ in range(trotter_steps):
+            qrc.set_gate_reservoir()
+            qrc.set_gate_params(x_coeff, y_coeff, J_coeffs)
+        return qml.density_matrix(wires=qrc.ctrl_qubits)
+    return circuit
+def draw_circuits(param_batch, input_state, qrc, trotter_steps):
+    """Draw the circuits for all parameter sets in the batch."""
+    for test_num, params in enumerate(param_batch):
+        print(f"Drawing circuit for parameter set {test_num + 1} of {len(param_batch)}:")
+        circuit = generate_circuit(qrc, trotter_steps)
+        print(qml.draw(circuit)(params, input_state))
 
 def generate_batch_params(params_key, tests, trotter_steps, N_ctrl, N_reserv, sample_range):
     param_batch = []
@@ -221,7 +247,7 @@ def generate_batch_params(params_key, tests, trotter_steps, N_ctrl, N_reserv, sa
         test_key = jax.random.fold_in(params_key, test_num)
         
         # Generate the parameters using normal distribution (or any other distribution)
-        params = jax.random.uniform(test_key, shape=(3 + (N_ctrl * N_reserv) * trotter_steps,), minval= -sample_range,maxval = sample_range)
+        params = jax.random.uniform(test_key, shape=(2 + (N_ctrl * N_reserv) * trotter_steps,), minval= -sample_range,maxval = sample_range)
         
         
         # Append parameters to the batch
@@ -270,12 +296,12 @@ def generate_dataset(N_ctrl,N_reserv, training_size, key):
 
 
 def main():
-    N_ctrl = 2
+    N_ctrl = 1
 
     baths = [False]
     num_bath = 0
-    number_of_fixed_param_tests = 10
-    number_trainable_params_tests = 100 
+    number_of_fixed_param_tests = 20
+    number_trainable_params_tests = 50
     static = False
     
     
@@ -283,34 +309,28 @@ def main():
     delta_x=1.49011612e-08
 
     
-    # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+    reservoirs = [1,2,3,4,5,6,7]
     # reservoirs = [2,3,4]
-    reservoirs = [1,2,3,4,5,6,7,8,9,10]
     # trots =[1, 10, 15,16,17,18,19, 20, 22, 25,27, 30,35]
-    # trots = [10,12,14]
+    # trots = [10,12]
     # trots = np.arange(1,30,1)
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12]
-    # trots = [11,12]
+    trots = [1]
 
     #trots = [1,2,3,4,5,6,7,8,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30]
     # trots = [20,22,25,27,30,32,35,37,40]
-    # trots = [1,5,7,10,13,15,18, 20,22,25,30,35,40]
     # trots = [1,4,6, 8, 10, 12, 14, 16, 18, 20, 22, 24,26,28]
-    trots = [1,2]
+    # trots = [12]
     batch=True
    
-    kFactor = 1
+    kFactor = 1.
     sample_range_label = "pi"
     sample_range = np.pi
     num_input_states = 50
     base_state = f'L_{num_input_states}'
-    folder = f'./QFIM_traced_final_results/gate_model_DQFIM/Nc_{N_ctrl}/{base_state}/{kFactor}xK/'
+    folder = f'./QFIM_traced_final_results/gate_model_hZ_DQFIM/Nc_{N_ctrl}/{base_state}/{kFactor}xK/2pi_E_0/'
     for trotter_steps in trots:
         for n_rsv_qubits in reservoirs:
-            number_of_fixed_param_tests = 10
-            if n_rsv_qubits == 1:
-                number_of_fixed_param_tests = 1
-
             N_reserv = n_rsv_qubits
         
 
@@ -332,8 +352,8 @@ def main():
                 data_filename = os.path.join(folder_gate, f'data_{sample_range_label}_range.pickle')
                 base_key_seed = 123* n_rsv_qubits + 12345 * trotter_steps *n_rsv_qubits
                 params_key = jax.random.PRNGKey(base_key_seed)
-                
-                params_subkey0, params_subkey1 = jax.random.split(params_key, 2)          
+                params_subkey0, params_subkey1 = jax.random.split(params_key, 2)
+                            
                         
                 
                 L = generate_dataset(N_ctrl,N_reserv,num_input_states, params_subkey0)
@@ -350,6 +370,7 @@ def main():
                 for fixed_param_num in range(0,number_of_fixed_param_tests):
                     fixed_param_seed = base_key_seed * fixed_param_num + base_key_seed *1234
                     fixed_PRNGKey = jax.random.PRNGKey(fixed_param_seed)
+                    fized_params_key1, fized_params_key2 = jax.random.split(fixed_PRNGKey, 2)
                     new_tests_count = 0
                     fixed_param_key = f'fixed_params{fixed_param_num}'
                     all_tests_data.setdefault(fixed_param_key, {})
@@ -357,21 +378,24 @@ def main():
                     number_trainable_tests_completed = len(all_tests_data[fixed_param_key].keys())
                     tests_to_run = number_trainable_params_tests - number_trainable_tests_completed
                     
+                    K_half =   jax.random.uniform(fized_params_key1, shape=(N,N), minval=-kFactor, maxval=kFactor)
+                    K = (K_half + K_half.T) / 2  # making the matrix symmetric
+                    K = 2. * K - 1.
+                    K_coeffs = K * K_0/2
+                    E_0 = np.pi*2
+                    hZ = jax.random.uniform(fized_params_key2, (N_reserv,), minval = -0.5,maxval=0.5)
+                    hZ = E_0*hZ
+                    # print(f"hZ: {hZ}, K_coeffs: {K_coeffs}")
+                    qrc = QuantumNetwork(n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=N_ctrl, K_coeffs=K_coeffs,hZ=hZ,trotter_steps=trotter_steps, static=static)
+                    ctrl_qubits = qrc.ctrl_qubits # wires of the reservoir qubits (i.e. number of qubits in the reservoir)
+                    rsv_qubits = qrc.rsv_qubits# wires of the control qubits (i.e. number of qubits in the control)
+                    all_wires = qrc.all_wires
+                    dev =qrc.dev
                     if tests_to_run > 0:
                         print(f"Number of tests to run for {fixed_param_key}: ", tests_to_run)
                         
                         
                         
-                        K_half =   jax.random.uniform(fixed_PRNGKey, shape=(N,N), minval=-kFactor, maxval=kFactor)
-                        K = (K_half + K_half.T) / 2  # making the matrix symmetric
-                        K = 2. * K - 1.
-                        K_coeffs = K * K_0/2
-
-                        qrc = QuantumNetwork(n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=N_ctrl, K_coeffs=K_coeffs,trotter_steps=trotter_steps, static=static)
-                        ctrl_qubits = qrc.ctrl_qubits # wires of the reservoir qubits (i.e. number of qubits in the reservoir)
-                        rsv_qubits = qrc.rsv_qubits# wires of the control qubits (i.e. number of qubits in the control)
-                        all_wires = qrc.all_wires
-                        dev =qrc.dev
 
 
 
@@ -379,23 +403,21 @@ def main():
                         @qml.qnode(dev,interface='jax',diff_method="backprop")
                         def circuit(params,input_state):
                             x_coeff = params[0]
-                            z_coeff = params[1]
-                            y_coeff = params[2]
-                            J_coeffs = params[3:]
+                            y_coeff = params[1]
+                            J_coeffs = params[2:]
 
-                            #print(J_coeffs)
-                            #qml.StatePrep(test_state, wires=[*ctrl_qubits])
+                    
                             qml.StatePrep(input_state, wires=[*qrc.ctrl_qubits])
                             
                             for i in range(trotter_steps):
                                 qrc.set_gate_reservoir()
 
                                 step = len(rsv_qubits)*len(ctrl_qubits)
-                                qrc.set_gate_params(x_coeff,z_coeff,y_coeff,  J_coeffs[i*step:(i+1)*step])
+                                qrc.set_gate_params(x_coeff,y_coeff, J_coeffs[i*step:(i+1)*step])
                             return qml.density_matrix(wires=[*ctrl_qubits])
 
                         
-
+                        
                         jit_circuit = jax.jit(circuit)
                         
 
@@ -414,6 +436,8 @@ def main():
                             # Loop over each input state and sum the density matrices
                             for input_state in input_states:
                                 out = jit_circuit(params, input_state)
+                                
+                                
                                 entropy = vn_entropy(out, indices=[*qrc.ctrl_qubits])
                                 entropies.append(entropy)
                                 
@@ -469,9 +493,10 @@ def main():
                             return jnp.asarray(all_res)
                                                 
                         def compute_qfim_eigval_decomp(params):
+                            
                             density_matrix_grads = get_partial_grads(params, L, jit_circuit)
                             entropies,Pi_L = get_density_matrix_sum(params, L, jit_circuit)
-
+                            # print(f"Pi_L: {Pi_L}")
                             # Eigenvalue decomposition
                             eigvals, eigvecs = jnp.linalg.eigh(Pi_L)
                             n_params = len(density_matrix_grads)
@@ -525,7 +550,7 @@ def main():
                                     print(f"Negative eigenvalue detected for test {test_key}\neigvals: {eigvals}")
                                     param_str = ', '.join([str(p) for p in params])
                                     fixed_param_str = ', '.join([f'N_ctrl: {N_ctrl}', f'N_reserv: {n_rsv_qubits}', 
-                                                                f'trots: {trotter_steps}', f'Kfactor: {kFactor}', 
+                                                                f'trots: {trotter_steps}', f'Kfactor: {kFactor}',  f'hZ: {hZ}', 
                                                                 f'num_bath: {num_bath}'])
                                     print(f"Trainable params: {param_str}")
                                     # print(f"Fixed params: {fixed_params}")
@@ -538,6 +563,9 @@ def main():
                                     'L': L,
                                     'entropies': entropies,
                                     'K_coeffs': K_coeffs,
+                                    'hZ': hZ,
+                                    'E_0':E_0,
+                                    'K_0':K_0,
                                     'qfim_eigvals': eigvals,
                                     'qfim_eigvecs': eigvecs,
                                     'trainable_params': params,
@@ -546,15 +574,15 @@ def main():
                                     'n_ctrl': N_ctrl,
                                     'n_reserv': n_rsv_qubits,
                                     'time_steps': trotter_steps,
-                                
                                     'num_bath': num_bath
                                 }
                                 new_tests_count += 1
                         else:
                             # Non-batch processing, run each test one by one
-                            print("Running tests one by one...")
+                            # print("Running tests one by one...")
+                            # draw_circuits(param_batch, L[0],qrc,trotter_steps)
                             for test_num, params in enumerate(param_batch):
-                                print(f"Running test {test_num + 1} of {len(param_batch)}")
+                                # print(f"Running test {test_num + 1} of {len(param_batch)}")
                                 eigvals, eigvecs, qfim, entropies = compute_qfim_eigval_decomp(params)
                                 test_key = f'test{test_num + number_trainable_tests_completed}'
                                 
@@ -564,12 +592,15 @@ def main():
                                 if jnp.any(eigvals < error_threshold):
                                     print(f"Negative eigenvalue detected for test {test_key}, eigvals: {eigvals}")
                                     raise ValueError("QFIM contains negative eigenvalues")
-
+                                print(f"Tr(eigvals): {sum(eigvals):.2e}, Var: {jnp.var(eigvals):.2e}\n")
                                 # Store results individually
                                 all_tests_data[fixed_param_key][test_key] = {
                                     'L': L,
                                     'entropies': entropies,
                                     'K_coeffs': K_coeffs,
+                                    'hZ': hZ,
+                                    'E_0':E_0,
+                                    'K_0':K_0,
                                     'qfim_eigvals': eigvals,
                                     'qfim_eigvecs': eigvecs,
                                     'trainable_params': params,
