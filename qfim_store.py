@@ -594,7 +594,29 @@ def compute_all_stats(
     from a single draw (i.e. one sample of randomly generated trainable parameters) for a 
     given configuration (specified by a unique combination of N_ctrl, reservoir qubits (N_R),
     and Trotter step (T)). 
+
+    Parameters
+    ----------
+    eigval_list : List[List[float]] or List[np.ndarray]
+        Each element of eigval_list represents the QFIM eigenvalues computed for 
+        a single random draw (trainable parameters) in your experiment.
+    threshold : float
+        Threshold for zeroing out near-zero eigenvalues.
+    spread_methods : tuple of str
+        Methods for spread-of-log computations. Possible values: "variance", "mad", "median".
+    ddof : int
+        Delta degrees of freedom for variance-based computations.
+    scale : str
+        Scale for median_abs_deviation in "mad" case.
+    do_effective_dim : bool
+        Whether to compute IPR-based and Abbas-based effective dimension metrics.
     
+        Notes on the Three Categories of Metrics:
+      1) ABSOLUTE SCALE: e.g. raw trace and raw variance (sums of eigenvalues, etc.).
+      2) SHAPE OF THE SPECTRUM: e.g. normalized IPR, normalized Abbas dimension, 
+         which ignore total magnitude by normalizing eigenvalues to sum=1.
+      3) AVERAGE PER NONZERO MODE: e.g. trace/rank, variance/rank.
+
     For each draw, the following metrics are computed:
       - rank: Number of nonzero eigenvalues after applying the threshold.
       - var_qfim_eigvals: Variance computed on all eigenvalues.
@@ -606,22 +628,19 @@ def compute_all_stats(
       - trace_norm_rank: Trace normalized by the rank.
       - Spread metrics: For each method in spread_methods (e.g. "variance", "mad"), compute the spread of the log of the eigenvalues.
       - effective_dimension: TODO
-    
-    In addition, pooled metrics are computed across all draws:
-      - Average and variance for each per-draw metric.
-      - Pooled spread-of-log metrics.
+
       
-    Returns
+     Returns
     -------
     metrics : dict
-        A dictionary with keys that follow your naming convention. For example:
-          - "QFIM_ranks": List of ranks for each draw.
-          - "test_var_qfim_eigvals": List of variances (all eigenvalues) for each draw.
-          - "test_tr_qfim_eigvals": List of traces for each draw.
-          - "avg_test_var_qfim_eigvals": Average variance across draws.
-          - "avg_test_tr_qfim_eigvals": Average trace across draws.
-          - "effective_dimension": TODO
-          - Spread-of-log metrics for each method (e.g. "spread_mean_per_sample_variance_normal", etc.).
+        Dictionary containing per-draw lists and aggregated statistics. 
+        The keys are split into categories:
+
+        [1] "absolute_scale_*" ...
+        [2] "spectrum_shape_*" ...
+        [3] "avg_per_active_mode_*" ...
+        
+        ... plus spread-of-log metrics for each method in spread_methods.
     
     Additional Notes:
     -----------------
@@ -634,36 +653,58 @@ def compute_all_stats(
 
     import numpy as np
 
-    # 1) Basic per-draw computations
+    # -------------------------------------------------------------------------
+    # 1) Per-draw computations
+    # -------------------------------------------------------------------------
     ranks_per_draw = []
-    var_all_per_draw = []
-    var_nonzero_per_draw = []
-    trace_per_draw = []
-    var_norm_len_per_draw = []
-    var_norm_rank_per_draw = []
-    trace_norm_len_per_draw = []
-    trace_norm_rank_per_draw = []
+    var_all_per_draw = []     # raw variance (absolute scale)
+    var_nonzero_per_draw = [] # raw variance of nonzero eigenvals only
+    trace_per_draw = []       # raw trace (absolute scale)
+
+    var_norm_rank_per_draw = []   # average per nonzero mode
+    trace_norm_rank_per_draw = [] # average per nonzero mode
+
+    # Effective dimension (IPR & Abbas) - raw vs. normalized
+    ipr_deffs_raw    = []
+    ipr_deffs_norm   = []
+    abbas_deffs_raw  = []
+    abbas_deffs_norm = []
+
+    # For Abbas measure (optional local dimension approach)
+    # =============== NEW #2: Abbas local dimension ===============
+    # d_{n, gamma}(theta) ~ -log(V_theta) + sum_i log(1 + alpha * lambda_i)
+    # We'll just set V_theta=1 => -log(1)=0, so that term vanishes.
+    # Then we do sum(log(1 + alpha * lambda_i)).
+    # If alpha*lambda_i < -1, that log is undefined; in practice, alpha*lambda_i >= 0 if alpha>0, lambda_i >= 0
+
+    n = len(eigval_list)   # interpret as number of data samples
+    gamma = 1.0
+    if n > 1:
+        alpha = (gamma * n) / (2.0 * np.log(n))
+    else:
+        alpha = 0.0
+    V_theta = 1.0  # Placeholder
 
     for eigs in eigval_list:
         arr = np.array(eigs, dtype=float)
-        arr = np.where(arr < threshold, 0.0, arr)
+        arr = np.where(arr < threshold, 0.0, arr)   # threshold small values
+        # rank = #nonzero eigenvalues
         rank = np.count_nonzero(arr)
         ranks_per_draw.append(rank)
 
+        # raw variance + trace = "absolute scale"
         var_all = np.var(arr)
-        var_all_per_draw.append(var_all)
+        trace_val = arr.sum()
 
+        var_all_per_draw.append(var_all)
+        trace_per_draw.append(trace_val)
+
+        # variance over nonzero eigenvals (still absolute scale, ignoring zeros)
         nonz = arr[arr > 0]
         var_non = np.var(nonz) if nonz.size > 1 else 0.0
         var_nonzero_per_draw.append(var_non)
 
-        trace_val = arr.sum()
-        trace_per_draw.append(trace_val)
-
-        length = len(arr) if len(arr) else 1
-        var_norm_len_per_draw.append(var_all / length)
-        trace_norm_len_per_draw.append(trace_val / length)
-
+         # [3] average per nonzero mode => divide by rank if rank>0
         if rank > 0:
             var_norm_rank_per_draw.append(var_all / rank)
             trace_norm_rank_per_draw.append(trace_val / rank)
@@ -671,28 +712,76 @@ def compute_all_stats(
             var_norm_rank_per_draw.append(0.0)
             trace_norm_rank_per_draw.append(0.0)
 
+         # --------------------------- IPR-based d_eff ---------------------------
+        # raw
+        sum_eigs_sq = np.sum(arr**2)
+        if sum_eigs_sq > 0:
+            ipr_raw = (trace_val**2) / sum_eigs_sq
+        else:
+            ipr_raw = 0.0
+        ipr_deffs_raw.append(ipr_raw)
+
+        # normalized (i.e., shape only)
+        if trace_val > 0:
+            arr_norm = arr / trace_val
+            sum_norm_sq = np.sum(arr_norm**2)
+            if sum_norm_sq > 0.0:
+                ipr_norm = 1.0 / sum_norm_sq
+            else:
+                ipr_norm = 0.0
+        else:
+            ipr_norm = 0.0
+        ipr_deffs_norm.append(ipr_norm)
+
+        # --------------------------- Abbas-based d_eff -------------------------
+        # raw
+        abbas_raw = 0.0
+        for lam in arr:
+            val = 1.0 + alpha * lam
+            if val <= 0.0:
+                val = 1e-15
+            abbas_raw += np.log(val)
+        # if V_theta != 1: abbas_raw -= np.log(V_theta)
+        abbas_deffs_raw.append(abbas_raw)
+
+        # normalized
+        abbas_norm = 0.0
+        if trace_val > 0:
+            for lam_norm in (arr / trace_val):
+                val = 1.0 + alpha * lam_norm
+                if val <= 0.0:
+                    val = 1e-15
+                abbas_norm += np.log(val)
+        # if V_theta != 1: abbas_norm -= np.log(V_theta)
+        abbas_deffs_norm.append(abbas_norm)
+
+
+    # -------------------------------------------------------------------------
     # 2) Aggregate across draws
+    # -------------------------------------------------------------------------
     D_C = max(ranks_per_draw) if ranks_per_draw else 0
+
     avg_var_all = np.mean(var_all_per_draw) if var_all_per_draw else 0.0
-    avg_var_nonzero = np.mean(var_nonzero_per_draw) if var_nonzero_per_draw else 0.0
     avg_trace = np.mean(trace_per_draw) if trace_per_draw else 0.0
-    avg_trace_len = np.mean(trace_norm_len_per_draw) if trace_norm_len_per_draw else 0.0
-    avg_trace_rank = np.mean(trace_norm_rank_per_draw) if trace_norm_rank_per_draw else 0.0
-    avg_var_norm_len = np.mean(var_norm_len_per_draw) if var_norm_len_per_draw else 0.0
+    avg_var_nonzero = np.mean(var_nonzero_per_draw) if var_nonzero_per_draw else 0.0
+
     avg_var_norm_rank = np.mean(var_norm_rank_per_draw) if var_norm_rank_per_draw else 0.0
+    avg_trace_norm_rank = np.mean(trace_norm_rank_per_draw) if trace_norm_rank_per_draw else 0.0
 
     var_var_all = np.var(var_all_per_draw) if len(var_all_per_draw) > 1 else 0.0
     var_var_nonzero = np.var(var_nonzero_per_draw) if len(var_nonzero_per_draw) > 1 else 0.0
 
-   
-   
-   
-    # TODO: Effective Dimension from Eq. (32) in the paper (captures concentration of QFIM spectrum)
+    # Summaries for the new effective dimension lists
+    avg_ipr_raw   = float(np.mean(ipr_deffs_raw))  if ipr_deffs_raw  else 0.0
+    avg_ipr_norm  = float(np.mean(ipr_deffs_norm)) if ipr_deffs_norm else 0.0
+    avg_abbas_raw = float(np.mean(abbas_deffs_raw))  if abbas_deffs_raw  else 0.0
+    avg_abbas_norm= float(np.mean(abbas_deffs_norm)) if abbas_deffs_norm else 0.0
 
-   
-
-    # Spread-of-log metrics for each method in spread_methods
-    #    We'll build arr_2d to use your existing vectorized functions.
+    # -------------------------------------------------------------------------
+    # 3) Spread-of-log metrics (unchanged)
+    #    We interpret each row of arr_2d as one draw's eigenvalues
+    #    => Then we do the 'spread_of_log' across them.
+    # -------------------------------------------------------------------------
     arr_2d = np.zeros((len(eigval_list), max(len(x) for x in eigval_list))) if eigval_list else np.zeros((0,0))
     for i, e in enumerate(eigval_list):
         tmp = np.array(e, dtype=float)
@@ -700,56 +789,84 @@ def compute_all_stats(
         arr_2d[i, :len(tmp)] = tmp
 
     spread_results = {}
-    from functools import partial
-
-
     for method in spread_methods:
         per_draw = spread_per_sample_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
         )
         spread_mean = per_draw.mean() if per_draw.size else 0.0
         spread_std  = per_draw.std()  if per_draw.size > 1 else 0.0
-
-        pooled_val = spread_pooling_vectorized(
+        pooled_val  = spread_pooling_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
         )
-
-        # Store them with keys that include the scale
         prefix = method.lower()
-        # e.g. "spread_mean_per_sample_mad_normal"
         spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
         spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
         spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
 
-    # 5) Final dictionary
+
+    # -------------------------------------------------------------------------
+    # 4) Build Final Dictionary with CLEAR Category Labels
+    # -------------------------------------------------------------------------
     metrics = {
-        # Per-draw lists
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Category [A]: Basic Info & Per-draw lists
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         "QFIM_ranks": ranks_per_draw,
-        "test_var_qfim_eigvals": var_all_per_draw,
-        "test_var_qfim_eigvals_nonzero": var_nonzero_per_draw,
-        "test_tr_qfim_eigvals": trace_per_draw,
-        "test_var_qfim_eigvals_normalized": var_norm_len_per_draw,
-        "test_var_qfim_eigvals_normalized_by_rank": var_norm_rank_per_draw,
+        "var_all_eigenvals_per_draw": var_all_per_draw,       # absolute scale
+        "var_nonzero_eigenvals_per_draw": var_nonzero_per_draw,# absolute scale
+        "trace_eigenvals_per_draw": trace_per_draw,           # absolute scale
 
-        # Aggregated
-        "D_C": D_C,
-        "avg_test_var_qfim_eigvals": avg_var_all,
-        "avg_test_var_qfim_eigvals_nonzero": avg_var_nonzero,
-        "avg_test_tr_qfim_eigvals": avg_trace,
-        "avg_test_tr_qfim_eigvals_norm": avg_trace_len,
-        "avg_test_tr_qfim_eigvals_norm_by_rank": avg_trace_rank,
-        "avg_test_var_qfim_eigvals_normalized": avg_var_norm_len,
-        "avg_test_var_qfim_eigvals_normalized_by_rank": avg_var_norm_rank,
-        "var_test_var_qfim_eigvals": var_var_all,
-        "var_test_var_qfim_eigvals_nonzero": var_var_nonzero,
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Category [1]: ABSOLUTE SCALE (aggregated)
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        "absolute_scale_avg_var_all": avg_var_all,
+        "absolute_scale_avg_var_nonzero": avg_var_nonzero,
+        "absolute_scale_avg_trace": avg_trace,
 
-     
+        # For those wanting the variance of the 'var_all_eigenvals_per_draw'
+        "absolute_scale_var_of_var_all": var_var_all,
+        "absolute_scale_var_of_var_nonzero": var_var_nonzero,
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Category [2]: SHAPE OF THE SPECTRUM
+        # (these are the normalized versions of IPR & Abbas)
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        "spectrum_shape_ipr_deffs_norm_per_draw": ipr_deffs_norm,
+        "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
+        
+        "spectrum_shape_abbas_deffs_norm_per_draw": abbas_deffs_norm,
+        "spectrum_shape_avg_abbas_deffs_norm": avg_abbas_norm,
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Category [3]: AVERAGE PER NONZERO MODE
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
+        "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
+
+        "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
+        "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # Rank-based dimension as a simpler measure of capacity
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        "D_C": D_C,  # max rank observed across draws
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # RAW IPR & ABBAS for absolute scale dimension
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        "ipr_deffs_raw_per_draw": ipr_deffs_raw,
+        "avg_ipr_deffs_raw": avg_ipr_raw,
+
+        "abbas_deffs_raw_per_draw": abbas_deffs_raw,
+        "avg_abbas_deffs_raw": avg_abbas_raw,
     }
 
-    # Merge in the spread-of-log results with the new naming
+    # Incorporate spread-of-log results 
     metrics.update(spread_results)
 
     return metrics
+
+
 def build_qfim_dataframe(df_all, threshold=1e-12):
     """
     1) Convert all_qfim_eigvals -> qfim_eigs_2d

@@ -291,103 +291,13 @@ def spread_pooling_vectorized(
     else:
         raise ValueError(f"Unknown method: {method}")
 
-def effective_dimension_from_paper(
-    fisher_eigenvalues: np.ndarray,
-    n: int,
-    gamma: float,
-    V_theta: float
-) -> float:
-    """
-    Compute the effective dimension d_{gamma,n}(M_theta) as in Eq. (2) of the paper:
-
-        d_{gamma,n} = 2 * log( (1/sqrt(V_theta)) * sqrt(det(I_d + alpha * Fhat(theta))) )
-                     = - log(V_theta) + log( prod_i (1 + alpha * lambda_i) )
-
-    where alpha = gamma * n / (2 * log(n)) and the product runs over the eigenvalues lambda_i
-    of the Fisher matrix.
-
-    Parameters
-    ----------
-    fisher_eigenvalues : np.ndarray
-        1D array of eigenvalues (nonnegative) of the Fisher matrix Fhat(theta).
-    n : int
-        Number of data samples, used in alpha = gamma*n / (2*log(n)).
-    gamma : float
-        Constant in (0, 1], controlling how strongly the Fisher enters the dimension.
-    V_theta : float
-        The volume of the parameter space.  (Set to 1 if unsure.)
-
-    Returns
-    -------
-    d_eff : float
-        The effective dimension from the paper's Eq. (2).
-    """
-    if n < 2 or np.log(n) <= 0:
-        # Edge case: can't compute alpha if n=1 or log(n) <= 0
-        return 0.0
-
-    alpha = gamma * n / (2.0 * np.log(n))
-
-    # Avoid negative or complex logs if alpha < 0 or fisher_eigenvalues < 0
-    # but these should be nonnegative anyway (Fisher is PSD).
-    log_det_term = 0.0
-    for lam in fisher_eigenvalues:
-        # (1 + alpha * lam)
-        log_det_term += np.log1p(alpha * lam) if lam > 0 else 0.0
-
-    # So the core formula from the paper: 
-    #    d_eff = - log(V_theta) + sum_i( log(1 + alpha * lam_i) )
-    d_eff = - np.log(V_theta) + log_det_term
-    return d_eff
-def approximate_effective_dimension(
-    eigenvalues: np.ndarray,
-    n: int,
-    gamma: float,
-    vol_param_space: float = 1.0
-) -> float:
-    """
-    Approximate the effective dimension d_{gamma,n} by summing log(1 + alpha * lambda_i).
-    This is a discrete local version of the formula from
-    'The power of quantum neural networks' Section 3.2, ignoring integrals over Theta.
-
-    Parameters
-    ----------
-    eigenvalues : np.ndarray
-        1D array of eigenvalues from a (local) Fisher matrix.
-    n : int
-        The sample size, used in the factor alpha = gamma*n / (2*log(n)).
-    gamma : float
-        The hyperparameter in (0,1], controlling how strongly the Fisher enters the dimension.
-    vol_param_space : float
-        Approximate volume of the parameter space, V_theta. Often set to 1 if unknown.
-
-    Returns
-    -------
-    d_eff : float
-        The approximate effective dimension for these eigenvalues.
-    """
-    # Avoid log(0) or log negative if n <= 1
-    if n <= 1:
-        return 0.0
-
-    alpha = gamma * n / (2.0 * np.log(n))
-
-    # sum(log(1 + alpha * lambda_i)) ignoring negative/zero-lambda issues
-    inside_sum = 0.0
-    for lam in eigenvalues:
-        if lam > 0.0:
-            inside_sum += np.log(1.0 + alpha * lam)
-
-    # The final formula is: d_eff = -log(V_theta) + sum(...)
-    d_eff = -np.log(vol_param_space) + inside_sum
-    return d_eff
 def compute_single_draw_stats(
     eigvals,
     threshold=1e-12,
     spread_methods=("variance", "mad"),
     ddof=1,
     scale="normal",
-    do_effective_dim=True,
+    # For approximate Abbas dimension
     vol_param_space=1.0,
     gamma=0.1,
     n=100,
@@ -395,78 +305,175 @@ def compute_single_draw_stats(
 ):
     """
     Compute QFIM statistics for a SINGLE set of eigenvalues (one draw).
+    
+    This is analogous to compute_all_stats, but for exactly one draw at a time.
+    We include:
+      - rank-based stats
+      - variance (all + nonzero)
+      - trace
+      - rank-normalized variance, rank-normalized trace
+      - IPR-based effective dimension, raw + normalized
+      - Abbas-based dimension, raw + normalized
+      - spread-of-log metrics for each method in spread_methods
 
-    For this single array `eigvals`, it computes:
-      - draw_rank: number of nonzero eigenvalues (after thresholding)
-      - variance_all_eigenvalues: variance computed on all eigenvalues
-      - variance_nonzero_eigenvalues: variance computed on nonzero eigenvalues only
-      - trace_eigenvalues: sum of eigenvalues (the trace)
-      - variance_normalized_by_length: variance_all_eigenvalues divided by the total number of eigenvalues
-      - trace_normalized_by_length: trace_eigenvalues divided by the total number of eigenvalues
-      - variance_normalized_by_rank: variance_all_eigenvalues divided by the draw_rank
-      - trace_normalized_by_rank: trace_eigenvalues divided by the draw_rank
-      - effective_dimension_paper: effective dimension computed using the paper's formula
-      - spread_metric_{method}: for each method in spread_methods, the spread of the log of normalized eigenvalues
+    Parameters
+    ----------
+    eigvals : list or np.ndarray
+        The QFIM eigenvalues for this single draw.
+    threshold : float
+        Threshold to zero-out small eigenvalues (default 1e-12).
+    spread_methods : tuple of str
+        E.g. ("variance", "mad") — we compute these spread-of-log metrics.
+    ddof : int
+        Delta degrees of freedom for variance-based computations (default=1).
+    scale : str
+        Scale for median_abs_deviation (default="normal").
+    vol_param_space : float
+        Unused here, but kept for consistency with your signature.
+    gamma : float
+        Scaling factor in Abbas dimension; usually in (0,1].
+    n : int
+        Interpreted as "number of data samples" for the Abbas dimension.
+    V_theta : float
+        Local parameter-space volume factor in Abbas dimension (set to 1.0 if unknown).
 
-    Returns a single dictionary with these metrics.
+    Returns
+    -------
+    stats_dict : dict
+        Dictionary of computed metrics for this single draw, e.g.:
+          {
+            "draw_rank": ...,
+            "var_all_eigenvalues": ...,
+            "var_nonzero_eigenvalues": ...,
+            "trace_eigenvalues": ...,
+            "var_normalized_by_rank": ...,
+            "trace_normalized_by_rank": ...,
+            "ipr_deff_raw": ...,
+            "ipr_deff_norm": ...,
+            "abbas_deff_raw": ...,
+            "abbas_deff_norm": ...,
+            "spread_metric_variance": ...,
+            "spread_metric_mad": ...,
+            ...
+          }
     """
     import numpy as np
+    
+    # Safety check: flatten if it’s a list
+    if isinstance(eigvals, list):
+        arr = np.array(eigvals, dtype=float)
+    else:
+        arr = eigvals.copy() if isinstance(eigvals, np.ndarray) else np.array(eigvals, dtype=float)
 
-    # If the row's 'qfim_eigvals' is a list with exactly one array, unwrap it.
-    if isinstance(eigvals, list) and len(eigvals) == 1 and isinstance(eigvals[0], (list, np.ndarray)):
-        eigvals = eigvals[0]
-
-    arr = np.array(eigvals, dtype=float)
-    # Zero out values below threshold.
+    # Threshold small eigenvalues
     arr = np.where(arr < threshold, 0.0, arr)
 
+    # Basic stats
     draw_rank = np.count_nonzero(arr)
-    variance_all_eigenvalues = np.var(arr)
+    var_all_eigenvalues = np.var(arr)
     nonzero = arr[arr > 0]
-    variance_nonzero_eigenvalues = np.var(nonzero) if nonzero.size > 1 else 0.0
+    var_nonzero_eigenvalues = np.var(nonzero) if nonzero.size > 1 else 0.0
     trace_eigenvalues = arr.sum()
 
-    length = len(arr) if len(arr) else 1
-    variance_normalized_by_length = variance_all_eigenvalues / length
-    trace_normalized_by_length = trace_eigenvalues / length
-    variance_normalized_by_rank = variance_all_eigenvalues / draw_rank if draw_rank > 0 else 0.0
+    # Rank-normalized
+    var_normalized_by_rank = var_all_eigenvalues / draw_rank if draw_rank > 0 else 0.0
     trace_normalized_by_rank = trace_eigenvalues / draw_rank if draw_rank > 0 else 0.0
 
-    # Compute spread metrics for this single draw.
-    arr_2d = arr.reshape(1, -1)
+    # ============== Compute IPR-based dimension ==============
+    # Raw
+    sum_eigs_sq = np.sum(arr**2)
+    if sum_eigs_sq > 0.0:
+        ipr_deff_raw = (trace_eigenvalues**2) / sum_eigs_sq
+    else:
+        ipr_deff_raw = 0.0
+
+    # Normalized
+    if trace_eigenvalues > 0.0:
+        arr_norm = arr / trace_eigenvalues
+        sum_norm_sq = np.sum(arr_norm**2)
+        if sum_norm_sq > 0.0:
+            ipr_deff_norm = 1.0 / sum_norm_sq
+        else:
+            ipr_deff_norm = 0.0
+    else:
+        ipr_deff_norm = 0.0
+
+    # ============== Compute Abbas-based dimension ==============
+    # alpha = gamma*n/(2 log(n)) if n>1, else alpha=0
+    if (n > 1) and (np.log(n) != 0.0):
+        alpha = (gamma * n) / (2.0 * np.log(n))
+    else:
+        alpha = 0.0
+
+    # (A) Raw
+    abbas_deff_raw = 0.0
+    for lam in arr:
+        val = 1.0 + alpha * lam
+        # ensure no negative
+        if val <= 0.0:
+            val = 1e-15
+        abbas_deff_raw += np.log(val)
+    # If V_theta != 1, abbas_deff_raw -= np.log(V_theta)
+
+    # (B) Normalized
+    if trace_eigenvalues > 0.0:
+        abbas_deff_norm = 0.0
+        for lam_norm in arr_norm:
+            val = 1.0 + alpha * lam_norm
+            if val <= 0.0:
+                val = 1e-15
+            abbas_deff_norm += np.log(val)
+        # if V_theta != 1.0: abbas_deff_norm -= np.log(V_theta)
+    else:
+        abbas_deff_norm = 0.0
+
+    # ============== Spread-of-log metrics ==============
+    # We'll reshape arr => (1, d) so we can reuse your spread_per_sample_vectorized
+    arr_2d = arr.reshape((1, -1))
+
+
     spread_metrics = {}
     for method in spread_methods:
-        spread_value = spread_per_sample_vectorized(
+        per_draw = spread_per_sample_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
         )
-        # For a single row, there's exactly 1 value.
-        spread_metrics[f"spread_metric_{method}"] = spread_value[0] if spread_value.size > 0 else 0.0
+        # For a single row, there's exactly 1 value
+        spread_metrics[f"spread_metric_{method}"] = per_draw[0] if per_draw.size > 0 else 0.0
 
-    # Compute effective dimension for this single draw, if desired.
-    effective_dimension_paper = 0.0
-    if do_effective_dim and arr.size > 0:
-        effective_dimension_paper = effective_dimension_from_paper(
-            fisher_eigenvalues=arr, n=n, gamma=gamma, V_theta=V_theta
-        )
 
-    # Build the dictionary with descriptive keys.
+    # Build final dictionary
     stats_dict = {
         "draw_rank": draw_rank,
-        "variance_all_eigenvalues": variance_all_eigenvalues,
-        "variance_nonzero_eigenvalues": variance_nonzero_eigenvalues,
+        "var_all_eigenvalues": var_all_eigenvalues,
+        "var_nonzero_eigenvalues": var_nonzero_eigenvalues,
         "trace_eigenvalues": trace_eigenvalues,
-        "variance_normalized_by_length": variance_normalized_by_length,
-        "trace_normalized_by_length": trace_normalized_by_length,
-        "variance_normalized_by_rank": variance_normalized_by_rank,
+        "var_normalized_by_rank": var_normalized_by_rank,
         "trace_normalized_by_rank": trace_normalized_by_rank,
-        "effective_dimension_paper": effective_dimension_paper,
+
+        "ipr_deff_raw": ipr_deff_raw,
+        "ipr_deff_norm": ipr_deff_norm,
+        "abbas_deff_raw": abbas_deff_raw,
+        "abbas_deff_norm": abbas_deff_norm,
     }
     stats_dict.update(spread_metrics)
 
     return stats_dict
+def isolate_qfim_subset(df_expanded, N_ctrl=None, fixed_params_key=None, N_reserv=None, trotter_step=None):
+    """
+    Return a subset of df_expanded matching the provided filters.
+    """
+    subset = df_expanded.copy()
+    if N_ctrl is not None:
+        subset = subset[subset["N_ctrl"] == N_ctrl]
+    if fixed_params_key is not None:
+        subset = subset[subset["fixed_params_key"] == fixed_params_key]
+    if N_reserv is not None:
+        subset = subset[subset["N_reserv"] == N_reserv]
+    if trotter_step is not None:
+        subset = subset[subset["Trotter_Step"] == trotter_step]
+    return subset
 
 if __name__ == "__main__":
-    from qfim_store import maybe_rebuild_or_process
     base_path = "/Users/sophieblock/QRCcapstone/parameter_analysis_directory/"
     model_type = "gate"
     N_ctrls = [2,3]
@@ -474,15 +481,9 @@ if __name__ == "__main__":
     K_str = "1"
     threshold = 1e-10
     by_test = False
-
-    # 1) Possibly we do:
-    #    df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
-    #    if df_all.empty, we call process_and_cache_new_files
-    #    or we do the combined approach:
-    df_all, df_expanded = maybe_rebuild_or_process(
-        base_path, sample_range, model_type, N_ctrls, K_str,
-        threshold=threshold, by_test=by_test
-    )
+    # Build df_expanded directly from the raw files; this completely ignores any cache.
+    df_expanded = build_df_expanded_from_raw(base_path, sample_range, model_type, N_ctrls, K_str, threshold, by_test)
+    print("Built df_expanded from raw data. Shape:", df_expanded.shape)
 
     df_sub = isolate_qfim_subset(
         df_expanded,
@@ -490,7 +491,3 @@ if __name__ == "__main__":
         N_reserv=1,
         trotter_step=10
     )
-    print(f"SHAPE OF SPECIFIC FUCKING CONFIGURATION: {df_sub.shape}")
-    print(f"KEYS OF SPECIFIC FUCKING CONFIGURATION: {df_sub.keys()}")
-    print(f"TEST FUCKING KEYS: {df_sub[''].shape}")
-
