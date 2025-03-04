@@ -186,7 +186,7 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
     entropies = []
     # Suppose 'df' is a dict-of-dicts with structure df[fixed_params][test], etc.
     # You adapt to your real logic:
-
+    key_tuple = []
     for fixed_params_dict in df.keys():
         for test_id in df[fixed_params_dict].keys():
             # If the pickle structure has 'qfim_eigvals' stored in some sub-key:
@@ -198,6 +198,7 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
             entval = df[fixed_params_dict][test_id].get('entropy', None)
             if entval is not None:
                 entropies.append(entval)
+            key_tuple.append((fixed_params_dict,test_id))
     keys_snapshot = get_keys(df)
     num_test_keys = sum(len(tests) for tests in keys_snapshot.values())
 
@@ -208,7 +209,8 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
         "Trotter_Step": trot,
         "all_qfim_eigvals": qfim_eigval_list,
         "mean_entropy": np.mean(entropies) if entropies else np.nan,
-        "num_test_keys": num_test_keys
+        "num_test_keys": num_test_keys,
+        "key_pair_tuple":key_tuple,
         # etc. if needed
     }
     return processed_data
@@ -273,20 +275,12 @@ def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrl
 ###############################################################################
 # 4) The function to incorporate newly generated data pickles
 ###############################################################################
-
 def update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshold):
-    """
-    Update a cached entry for data_file if new fixed_param keys or new test keys are present.
-    Instead of storing the entire raw DataFrame, we keep a snapshot of its keys ("raw_keys").
-    If differences are detected, we re-load the file, re-run process_data_combined,
-    and update both the processed_data and the stored keys.
-    """
     file_id = str(data_file)
     df = load_and_clean_pickle(data_file)
     new_keys = get_keys(df)
     old_keys = cached_data[file_id].get("raw_keys", {})
 
-    # Check for any new fixed_param keys or new tests for an existing fixed_param.
     needs_update = False
     for fixed_param, tests in new_keys.items():
         if fixed_param not in old_keys:
@@ -309,7 +303,8 @@ def update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshol
         cached_data[file_id]["raw_keys"] = new_keys
 
     processed_files.add(file_id)
-    return cached_data, processed_files
+    return needs_update  # Return True if updated, else False
+
 def update_cache_with_new_data(
     base_path, 
     K_0, 
@@ -590,17 +585,51 @@ def compute_all_stats(
     scale="normal",
     # Additional args for the approximate effective dimension
     do_effective_dim=True,
-    vol_param_space=1.0,
-    gamma=0.1,    
-    n=100,
-    V_theta=1.0,
+ 
 ):
     """
-    Compute QFIM statistics for a list of draws (eigval_list),
-    plus spread-of-log metrics via sample & pooled approaches,
-    and an approximate 'effective dimension' from the paper.
-
-    Returns a dict with columns that match your usual naming scheme.
+    Compute QFIM statistics for a list of draws (eigval_list) corresponding to one experimental run.
+    
+    Here, each element of eigval_list represents the raw QFIM eigenvalues computed
+    from a single draw (i.e. one sample of randomly generated trainable parameters) for a 
+    given configuration (specified by a unique combination of N_ctrl, reservoir qubits (N_R),
+    and Trotter step (T)). 
+    
+    For each draw, the following metrics are computed:
+      - rank: Number of nonzero eigenvalues after applying the threshold.
+      - var_qfim_eigvals: Variance computed on all eigenvalues.
+      - var_qfim_eigvals_nonzero: Variance computed on nonzero eigenvalues only.
+      - trace: Sum of eigenvalues (i.e. the trace of the QFIM).
+      - var_norm_len: Variance normalized by the total number of eigenvalues.
+      - trace_norm_len: Trace normalized by the total number of eigenvalues.
+      - var_norm_rank: Variance normalized by the rank (number of nonzero eigenvalues).
+      - trace_norm_rank: Trace normalized by the rank.
+      - Spread metrics: For each method in spread_methods (e.g. "variance", "mad"), compute the spread of the log of the eigenvalues.
+      - effective_dimension: TODO
+    
+    In addition, pooled metrics are computed across all draws:
+      - Average and variance for each per-draw metric.
+      - Pooled spread-of-log metrics.
+      
+    Returns
+    -------
+    metrics : dict
+        A dictionary with keys that follow your naming convention. For example:
+          - "QFIM_ranks": List of ranks for each draw.
+          - "test_var_qfim_eigvals": List of variances (all eigenvalues) for each draw.
+          - "test_tr_qfim_eigvals": List of traces for each draw.
+          - "avg_test_var_qfim_eigvals": Average variance across draws.
+          - "avg_test_tr_qfim_eigvals": Average trace across draws.
+          - "effective_dimension": TODO
+          - Spread-of-log metrics for each method (e.g. "spread_mean_per_sample_variance_normal", etc.).
+    
+    Additional Notes:
+    -----------------
+    This function assumes that eigval_list is a list of 1D arrays (or lists),
+    where each array corresponds to the QFIM eigenvalues computed for a single
+    random draw of trainable parameters. The computed metrics are intended to capture
+    both per-draw variability and the overall (pooled) behavior of the QFIM eigenvalue distribution,
+    which are later used to correlate with measures of learnability and generalization.
     """
 
     import numpy as np
@@ -655,11 +684,7 @@ def compute_all_stats(
     var_var_all = np.var(var_all_per_draw) if len(var_all_per_draw) > 1 else 0.0
     var_var_nonzero = np.var(var_nonzero_per_draw) if len(var_nonzero_per_draw) > 1 else 0.0
 
-    # 3) Flatten eigenvalues to build a single array for "effective dimension"
-    #    We'll do a naive 'pooled' approach:
-    all_eigs_concat = np.concatenate([
-        np.where(np.array(eigs) < threshold, 0.0, eigs) for eigs in eigval_list
-    ]) if eigval_list else np.array([])
+   
    
    
     # TODO: Effective Dimension from Eq. (32) in the paper (captures concentration of QFIM spectrum)
