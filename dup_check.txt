@@ -1,0 +1,22 @@
+df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
+# df_all.keys()
+print(f"df_all.shape: {df_all.shape}")
+print(df_all[['key_pair_tuple']].dtypes)
+
+def all_tuples_unique(tuples_list):
+    # Return True if all items are unique (no duplicates)
+    return len(tuples_list) == len(set(tuples_list))
+
+df_all["all_key_pairs_unique"] = df_all["key_pair_tuple"].apply(all_tuples_unique)
+df_all['num_keys'] = df_all["key_pair_tuple"].apply(lambda x: len(x))
+df_all[['N_ctrl','N_reserv','Trotter_Step', 'key_pair_tuple']].head()
+
+for idx, row in df_all.iterrows():
+    # Extract the list of tuples from the current row
+    tuples_list = row["key_pair_tuple"]
+    
+    # Collect the second element of each tuple
+    second_elems = [t[1] for t in tuples_list]
+    
+    # Assert that the second elements are unique
+    assert len(second_elems) == len(set(second_elems)), f"Duplicate second element found in row {idx}!"
