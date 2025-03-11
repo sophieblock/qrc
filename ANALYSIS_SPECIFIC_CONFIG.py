@@ -13,7 +13,7 @@ import sympy
 import matplotlib.pyplot as plt
 import base64
 import pickle
-from qutip import *
+
 
  # Using pennylane's wrapped numpy
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
@@ -231,6 +231,83 @@ def build_df_expanded_from_raw(base_path, sample_range, model_type, N_ctrls, K_s
     return pd.DataFrame(all_expanded_rows)
 
 
+def process_data_dqfim(df, threshold, by_test, Nc, N_R, trot, print_bool=False):
+    """
+    Create a list of dictionaries, each representing one (fixed_params_key, test_key) row.
+    Returns a list of row-dicts for direct DataFrame construction.
+    """
+    rows = []
+    for fixed_params_key, test_dict in df.items():
+        for test_key, results in test_dict.items():
+            qfim_eigvals = results.get('qfim_eigvals', None)
+            qfim_mat = results.get('qfim',None)
+            entropy      = results.get('entropy', None)
+            row = {
+                "N_ctrl": Nc,
+                "N_reserv": N_R,
+                "Trotter_Step": trot,
+                "fixed_params_key": fixed_params_key,
+                "test_key": test_key,
+                "qfim_eigvals": qfim_eigvals,
+                "qfim_mat":qfim_mat,
+                "entropy": entropy,
+                # Add any other fields you might need later
+            }
+            rows.append(row)
+    return rows
+def build_df_expanded_DQFIM(base_path, sample_range, model_type, N_ctrls, K_str,datasize, threshold, by_test):
+    """
+   
+    """
+    from pathlib import Path
+    import os
+    import pandas as pd
+
+    all_expanded_rows = []
+    
+    # Iterate over each N_ctrl value
+    for N_ctrl in N_ctrls:
+        model_path = Path(base_path) / "QFIM_global_results" / f"{model_type}_model_DQFIM" / f"Nc_{N_ctrl}" / f"sample_{sample_range}/{K_str}xK"
+        if not model_path.exists():
+            print(f"[WARN] Model path {model_path} does not exist for N_ctrl={N_ctrl}.")
+            continue
+        
+        # Iterate over each Nr directory
+        for Nr in sorted(os.listdir(model_path)):
+            Nr_path = model_path / Nr
+            if not Nr_path.is_dir():
+                continue
+            
+            # Iterate over each trotter step directory
+            for trotter_step_dir in sorted(os.listdir(Nr_path)):
+                trotter_step_path = Nr_path / trotter_step_dir
+                if not trotter_step_path.is_dir():
+                    continue
+                
+                data_file = trotter_step_path / f"L_{datasize}/data.pickle"
+                if not data_file.exists():
+                    continue
+                # Validate the pickle file without using cached results
+                if not is_valid_pickle_file(data_file):
+                    continue
+                
+                # Load the raw pickle data
+                raw_data = load_and_clean_pickle(data_file)
+                # Extract trotter step and reservoir count from the directory structure
+                try:
+                    trotter_step_num = extract_trotter_step(data_file)
+                    reservoir_count = extract_Nr(data_file)
+                except Exception as e:
+                    print(f"[ERROR] Could not extract parameters from {data_file}: {e}")
+                    continue
+
+                # Process raw data using your expanded function (do not use cached expanded rows)
+                expanded_rows = process_data_dqfim(raw_data, threshold, by_test, N_ctrl, reservoir_count, trotter_step_num)
+                all_expanded_rows.extend(expanded_rows)
+
+    return pd.DataFrame(all_expanded_rows)
+
+
 from scipy.stats import median_abs_deviation
 def spread_per_sample_vectorized(
     eigs_2d, method="variance", threshold=1e-12, ddof=1, scale="normal"
@@ -297,167 +374,192 @@ def compute_single_draw_stats(
     spread_methods=("variance", "mad"),
     ddof=1,
     scale="normal",
-    # For approximate Abbas dimension
-    vol_param_space=1.0,
+    # Approximate Abbas dimension parameters
+    # We'll expose them as function arguments so you can override defaults:
     gamma=0.1,
-    n=100,
+    n=1,
     V_theta=1.0,
 ):
     """
-    Compute QFIM statistics for a SINGLE set of eigenvalues (one draw).
+    Compute QFIM statistics for a SINGLE set of eigenvalues (one 'draw').
+
+    'n' is interpreted as the 'number of data samples' in the
+    Abbas local dimension approach, i.e. alpha = gamma*n/(2 log(n)) if n>1.
+
+    If you truly want to treat this single draw as 'just 1 data sample',
+    you can set n=1. If you prefer to interpret the entire set of
+    random draws as your 'sample size', you could pass that bigger number
+    here. It's up to how you interpret the local dimension formula.
+
+    Similarly, 'gamma' in (0,1] is a scaling constant in Abbas's formula,
+    and 'V_theta' is the parameter-space volume factor (assumed = 1 if unknown).
     
-    This is analogous to compute_all_stats, but for exactly one draw at a time.
-    We include:
-      - rank-based stats
-      - variance (all + nonzero)
-      - trace
-      - rank-normalized variance, rank-normalized trace
-      - IPR-based effective dimension, raw + normalized
-      - Abbas-based dimension, raw + normalized
-      - spread-of-log metrics for each method in spread_methods
+    Categories of Metrics:
+      1. ABSOLUTE SCALE: e.g., raw variance, raw trace.
+      2. SHAPE of the spectrum (distribution only, ignoring total magnitude):
+         e.g., normalized IPR or normalized Abbas dimension.
+      3. AVERAGE PER NONZERO MODE: e.g., var / rank, trace / rank.
 
     Parameters
     ----------
     eigvals : list or np.ndarray
-        The QFIM eigenvalues for this single draw.
+        QFIM eigenvalues for this single draw.
     threshold : float
-        Threshold to zero-out small eigenvalues (default 1e-12).
+        Threshold for zeroing out tiny eigenvalues.
     spread_methods : tuple of str
-        E.g. ("variance", "mad") — we compute these spread-of-log metrics.
+        E.g. ("variance", "mad") => compute these spread-of-log metrics on the 
+        normalized (per-draw) eigenvalue distribution (like the multi-draw function).
     ddof : int
-        Delta degrees of freedom for variance-based computations (default=1).
+        Delta degrees of freedom for variance-based computations.
     scale : str
-        Scale for median_abs_deviation (default="normal").
+        Scale for 'median_abs_deviation'.
     vol_param_space : float
-        Unused here, but kept for consistency with your signature.
+        Not used here but kept to match your signature if you want the option to 
+        subtract log(vol_param_space) for local definitions.
     gamma : float
-        Scaling factor in Abbas dimension; usually in (0,1].
+        Scaling factor in Abbas dimension (typ. 0 < gamma <= 1).
     n : int
-        Interpreted as "number of data samples" for the Abbas dimension.
+        Interpreted as # data samples for the Abbas dimension formula.
     V_theta : float
-        Local parameter-space volume factor in Abbas dimension (set to 1.0 if unknown).
+        Local parameter-space volume for Abbas dimension (set 1.0 if unknown).
 
     Returns
     -------
     stats_dict : dict
-        Dictionary of computed metrics for this single draw, e.g.:
-          {
-            "draw_rank": ...,
-            "var_all_eigenvalues": ...,
-            "var_nonzero_eigenvalues": ...,
-            "trace_eigenvalues": ...,
-            "var_normalized_by_rank": ...,
-            "trace_normalized_by_rank": ...,
-            "ipr_deff_raw": ...,
-            "ipr_deff_norm": ...,
-            "abbas_deff_raw": ...,
-            "abbas_deff_norm": ...,
-            "spread_metric_variance": ...,
-            "spread_metric_mad": ...,
-            ...
-          }
+        With keys that are grouped by the three categories above, plus 
+        rank-based items and spread-of-log metrics. For example:
+
+        {
+          # Basic rank and raw measurements:
+          "draw_rank": ...,
+          "absolute_scale_var_all": ...,
+          "absolute_scale_var_nonzero": ...,
+          "absolute_scale_trace": ...,
+
+          # Average per nonzero mode:
+          "avg_per_active_mode_var_rank": ...,
+          "avg_per_active_mode_trace_rank": ...,
+
+          # Spectrum shape (normalized metrics):
+          "spectrum_shape_ipr_norm": ...,
+          "spectrum_shape_abbas_norm": ...,
+
+          # Raw IPR & Abbas (still an 'absolute scale' dimension):
+          "ipr_deff_raw": ...,
+          "abbas_deff_raw": ...,
+
+          # Spread-of-log:
+          "spread_metric_variance": ...,
+          "spread_metric_mad": ...,
+          ...
+        }
     """
     import numpy as np
-    
-    # Safety check: flatten if it’s a list
+
+    # 1) Convert input to array, threshold small eigenvalues
     if isinstance(eigvals, list):
         arr = np.array(eigvals, dtype=float)
+    elif isinstance(eigvals, np.ndarray):
+        arr = eigvals.copy()
     else:
-        arr = eigvals.copy() if isinstance(eigvals, np.ndarray) else np.array(eigvals, dtype=float)
+        arr = np.array(eigvals, dtype=float)
 
-    # Threshold small eigenvalues
     arr = np.where(arr < threshold, 0.0, arr)
 
-    # Basic stats
+    # 2) Basic stats
     draw_rank = np.count_nonzero(arr)
-    var_all_eigenvalues = np.var(arr)
+    var_all_eigenvalues = np.var(arr)  # absolute scale
     nonzero = arr[arr > 0]
     var_nonzero_eigenvalues = np.var(nonzero) if nonzero.size > 1 else 0.0
     trace_eigenvalues = arr.sum()
 
-    # Rank-normalized
-    var_normalized_by_rank = var_all_eigenvalues / draw_rank if draw_rank > 0 else 0.0
-    trace_normalized_by_rank = trace_eigenvalues / draw_rank if draw_rank > 0 else 0.0
+    # 3) Average per nonzero mode => rank-based
+    if draw_rank > 0:
+        var_normalized_by_rank = var_all_eigenvalues / draw_rank
+        trace_normalized_by_rank = trace_eigenvalues / draw_rank
+    else:
+        var_normalized_by_rank = 0.0
+        trace_normalized_by_rank = 0.0
 
-    # ============== Compute IPR-based dimension ==============
-    # Raw
+    # 4) IPR-based dimension
     sum_eigs_sq = np.sum(arr**2)
     if sum_eigs_sq > 0.0:
         ipr_deff_raw = (trace_eigenvalues**2) / sum_eigs_sq
     else:
         ipr_deff_raw = 0.0
 
-    # Normalized
+    # normalized => shape of spectrum
     if trace_eigenvalues > 0.0:
         arr_norm = arr / trace_eigenvalues
         sum_norm_sq = np.sum(arr_norm**2)
-        if sum_norm_sq > 0.0:
-            ipr_deff_norm = 1.0 / sum_norm_sq
-        else:
-            ipr_deff_norm = 0.0
+        ipr_deff_norm = 1.0 / sum_norm_sq if sum_norm_sq > 0 else 0.0
     else:
+        arr_norm = None
         ipr_deff_norm = 0.0
 
-    # ============== Compute Abbas-based dimension ==============
-    # alpha = gamma*n/(2 log(n)) if n>1, else alpha=0
+    # 5) Abbas-based dimension
+    # alpha = gamma*n / (2 * log(n)) if n>1
     if (n > 1) and (np.log(n) != 0.0):
         alpha = (gamma * n) / (2.0 * np.log(n))
     else:
         alpha = 0.0
 
-    # (A) Raw
+    # (A) raw => absolute scale
     abbas_deff_raw = 0.0
     for lam in arr:
         val = 1.0 + alpha * lam
-        # ensure no negative
         if val <= 0.0:
             val = 1e-15
         abbas_deff_raw += np.log(val)
-    # If V_theta != 1, abbas_deff_raw -= np.log(V_theta)
+    # Subtract log(V_theta) if you have a real param volume
+    # if V_theta != 1.0:
+    #     abbas_deff_raw -= np.log(V_theta)
 
-    # (B) Normalized
-    if trace_eigenvalues > 0.0:
-        abbas_deff_norm = 0.0
+    # (B) normalized => shape
+    abbas_deff_norm = 0.0
+    if arr_norm is not None:
         for lam_norm in arr_norm:
             val = 1.0 + alpha * lam_norm
             if val <= 0.0:
                 val = 1e-15
             abbas_deff_norm += np.log(val)
-        # if V_theta != 1.0: abbas_deff_norm -= np.log(V_theta)
-    else:
-        abbas_deff_norm = 0.0
+        # if V_theta != 1.0:
+        #     abbas_deff_norm -= np.log(V_theta)
 
-    # ============== Spread-of-log metrics ==============
-    # We'll reshape arr => (1, d) so we can reuse your spread_per_sample_vectorized
+    # 6) Spread-of-log => shape
     arr_2d = arr.reshape((1, -1))
-
-
+    
     spread_metrics = {}
     for method in spread_methods:
         per_draw = spread_per_sample_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
         )
-        # For a single row, there's exactly 1 value
-        spread_metrics[f"spread_metric_{method}"] = per_draw[0] if per_draw.size > 0 else 0.0
+        val = per_draw[0] if per_draw.size > 0 else 0.0
+        spread_metrics[f"spread_metric_{method}"] = val
 
-
-    # Build final dictionary
+    # 7) Build final dictionary
     stats_dict = {
+        # Basic rank & stats
         "draw_rank": draw_rank,
-        "var_all_eigenvalues": var_all_eigenvalues,
-        "var_nonzero_eigenvalues": var_nonzero_eigenvalues,
-        "trace_eigenvalues": trace_eigenvalues,
-        "var_normalized_by_rank": var_normalized_by_rank,
-        "trace_normalized_by_rank": trace_normalized_by_rank,
 
+        # -- Absolute scale
+        "absolute_scale_var_all": var_all_eigenvalues,
+        "absolute_scale_var_nonzero": var_nonzero_eigenvalues,
+        "absolute_scale_trace": trace_eigenvalues,
         "ipr_deff_raw": ipr_deff_raw,
-        "ipr_deff_norm": ipr_deff_norm,
         "abbas_deff_raw": abbas_deff_raw,
-        "abbas_deff_norm": abbas_deff_norm,
-    }
-    stats_dict.update(spread_metrics)
 
+        # -- Shape
+        "spectrum_shape_ipr_norm": ipr_deff_norm,
+        "spectrum_shape_abbas_norm": abbas_deff_norm,
+        **spread_metrics,
+
+        # -- Average per active mode
+        "avg_per_active_mode_var_rank": var_normalized_by_rank,
+        "avg_per_active_mode_trace_rank": trace_normalized_by_rank,
+    }
     return stats_dict
+
 def isolate_qfim_subset(df_expanded, N_ctrl=None, fixed_params_key=None, N_reserv=None, trotter_step=None):
     """
     Return a subset of df_expanded matching the provided filters.

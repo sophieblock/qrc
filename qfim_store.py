@@ -13,7 +13,6 @@ import sympy
 import matplotlib.pyplot as plt
 import base64
 import pickle
-from qutip import *
 
  # Using pennylane's wrapped numpy
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
@@ -56,7 +55,34 @@ import pennylane as qml
 import time
 #from pennylane.pulse import ParametrizedEvolution, ParametrizedHamiltonian,HardwareHamiltonian
 from jax.experimental.ode import odeint
+"""
+original compute_all_stats(..) keys:
 
+            # Aggregated
+        "D_C": D_C,  # rank-based dimension
+        "avg_test_var_qfim_eigvals": avg_var_all,
+        "avg_test_var_qfim_eigvals_nonzero": avg_var_nonzero,
+        "avg_test_tr_qfim_eigvals": avg_trace,
+        "avg_test_var_qfim_eigvals_normalized_by_rank": avg_var_norm_rank,
+        "avg_test_tr_qfim_eigvals_norm_by_rank": avg_trace_norm_rank,
+        "var_test_var_qfim_eigvals": var_var_all,
+        "var_test_var_qfim_eigvals_nonzero": var_var_nonzero,
+
+        # --- NEW: IPR-based dimension (raw + normalized) and Abbas dimension (raw + normalized) ---
+        "ipr_deffs_raw": ipr_deffs_raw,
+        "ipr_deffs_norm": ipr_deffs_norm,
+        "abbas_deffs_raw": abbas_deffs_raw,
+        "abbas_deffs_norm": abbas_deffs_norm,
+
+        "avg_ipr_deffs_raw": avg_ipr_raw,
+        "avg_ipr_deffs_norm": avg_ipr_norm,
+        "avg_abbas_deffs_raw": avg_abbas_raw,
+        "avg_abbas_deffs_norm": avg_abbas_norm,
+    }
+
+
+
+"""
 has_jax = True
 diable_jit = False
 config.update('jax_disable_jit', diable_jit)
@@ -108,28 +134,7 @@ def clean_array(data):
         return data
     else:
         return data  # Return as is if not an array or collection
-def get_cached_data_once(base_path, N_ctrl, K_0):
-    """
-    Load cached_data if it exists, else return empty placeholders.
-    Returns (cached_data, processed_files).
-    
-    Expects a cache file named: 'digital_results_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
-    """
-    global global_cache_data, global_processed_files
-    cache_file = os.path.join(base_path, f'digital_new_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
 
-    if global_cache_data and global_processed_files:
-        print(f"Using cached data from memory for N_ctrl={N_ctrl}.")
-        return global_cache_data, global_processed_files
-
-    if os.path.exists(cache_file):
-        with open(cache_file, 'rb') as f:
-            global_cache_data, global_processed_files = pickle.load(f)
-        print(f"Loaded cache for N_ctrl={N_ctrl} from disk.")
-        return global_cache_data, global_processed_files
-
-    global_cache_data, global_processed_files = {}, set()
-    return global_cache_data, global_processed_files
 
 def get_cached_data(base_path, N_ctrl, K_0):
     """
@@ -181,24 +186,27 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
       - maybe 'entropy', 'cond_nums'
     Return a dictionary with the essential fields you want to cache.
     """
-    # Example logic:
+
     qfim_eigval_list = []
+    qfim_mats_list = []
     entropies = []
-    # Suppose 'df' is a dict-of-dicts with structure df[fixed_params][test], etc.
-    # You adapt to your real logic:
+    #  'df' is a dict-of-dicts with structure df[fixed_params_key][test_key], etc.
+    
     key_tuple = []
-    for fixed_params_dict in df.keys():
-        for test_id in df[fixed_params_dict].keys():
+    for fixed_params_key in df.keys():
+        for test_key in df[fixed_params_key].keys():
             # If the pickle structure has 'qfim_eigvals' stored in some sub-key:
-            qfim_eigvals = df[fixed_params_dict][test_id].get('qfim_eigvals', None)
+            qfim_eigvals = df[fixed_params_key][test_key].get('qfim_eigvals', None)
+            qfim_mat = df[fixed_params_key][test_key].get('qfim',None)
             if qfim_eigvals is not None:
                 qfim_eigval_list.append(qfim_eigvals)
+                qfim_mats_list.append(qfim_mat)
 
             # Similarly for entropy
-            entval = df[fixed_params_dict][test_id].get('entropy', None)
+            entval = df[fixed_params_key][test_key].get('entropy', None)
             if entval is not None:
                 entropies.append(entval)
-            key_tuple.append((fixed_params_dict,test_id))
+            key_tuple.append((fixed_params_key,test_key))
     keys_snapshot = get_keys(df)
     num_test_keys = sum(len(tests) for tests in keys_snapshot.values())
 
@@ -208,6 +216,7 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
         "N_reserv": N_R,
         "Trotter_Step": trot,
         "all_qfim_eigvals": qfim_eigval_list,
+        "all_full_qfim_mats":qfim_mats_list,
         "mean_entropy": np.mean(entropies) if entropies else np.nan,
         "num_test_keys": num_test_keys,
         "key_pair_tuple":key_tuple,
@@ -215,6 +224,126 @@ def process_data_combined(df, threshold, by_test, Nc, N_R, trot, print_bool=Fals
     }
     return processed_data
 
+def process_data_expanded(df, threshold, by_test, Nc, N_R, trot, print_bool=False):
+
+
+    #  'df' is a dict-of-dicts with structure df[fixed_params_key][test_key], etc.
+    
+    rows = []
+    for fixed_params_key in df.keys():
+        for test_key in df[fixed_params_key].keys():
+           
+            qfim_eigvals = df[fixed_params_key][test_key].get('qfim_eigvals', None)
+            qfim_mat = df[fixed_params_key][test_key].get('qfim',None)
+            row = {
+                "N_ctrl": Nc,
+                "N_reserv": N_R,
+                "Trotter_Step": trot,
+                "fixed_params_key": fixed_params_key,
+                "test_key": test_key,
+                "qfim_eigvals": qfim_eigvals,
+                "qfim_mat":qfim_mat,
+                "entropy": entropy,
+                # Add any other fields you might need later
+            }
+            rows.append(row)
+    return rows
+def process_and_cache_new_files_expanded(base_path,
+                                         K_0,
+                                         sample_range,
+                                         model_type,
+                                         N_ctrls,
+                                         threshold,
+                                         by_test,
+                                         check_for_new_data,
+                                         cached_data,
+                                         processed_files):
+    """
+    Similar logic to process_and_cache_new_files, but uses process_data_expanded
+    to produce multiple rows per (N_ctrl, N_reserv, Trotter_Step).
+    Then caches them in 'digital_expanded_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'.
+    """
+    import os
+    from pathlib import Path
+    import pickle
+    import pandas as pd
+
+    all_data = []
+
+    for N_ctrl in N_ctrls:
+        model_path = Path(base_path) / 'QFIM_results' / model_type / f'Nc_{N_ctrl}' / f'sample_{sample_range}/{K_0}xK'
+
+        if not model_path.exists():
+            print(f"[WARN] Directory {model_path} does not exist for N_ctrl={N_ctrl}.")
+            continue
+
+        for Nr in sorted(os.listdir(model_path)):
+            Nr_path = model_path / Nr
+            if not Nr_path.is_dir():
+                continue
+
+            for trotter_step_dir in sorted(os.listdir(Nr_path)):
+                trotter_step_path = Nr_path / trotter_step_dir
+                if not trotter_step_path.is_dir():
+                    continue
+
+                data_file = trotter_step_path / 'data.pickle'
+                file_id = str(data_file)
+
+                if is_valid_pickle_file(data_file):
+                    print(f"[INFO] Reading new file: {data_file}")
+                    raw_df = load_and_clean_pickle(data_file)
+                    trotter_step_num = extract_trotter_step(data_file)
+                    reservoir_count = extract_Nr(data_file)
+
+                    # Expand -> multiple row dicts
+                    expanded_rows = process_data_expanded(
+                        df=raw_df,
+                        threshold=threshold,
+                        by_test=by_test,
+                        Nc=N_ctrl,
+                        N_R=reservoir_count,
+                        trot=trotter_step_num
+                    )
+                    # Possibly store to cache
+                    cached_data[file_id] = {
+                        "processed_rows": expanded_rows,  # Instead of "processed_data"
+                        "raw_data": raw_df
+                    }
+                    processed_files.add(file_id)
+                    all_data.extend(expanded_rows)
+
+        # After scanning all directories for this N_ctrl, save the updated cache
+        # Use a new name e.g. 'digital_expanded_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
+        new_cache_file = os.path.join(base_path, f'digital_expanded_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
+        with open(new_cache_file, 'wb') as f:
+            pickle.dump((cached_data, processed_files), f)
+        print(f"[INFO] Expanded cache saved for N_ctrl={N_ctrl} at {new_cache_file}.")
+
+    return cached_data, processed_files, pd.DataFrame(all_data)
+def rebuild_df_expanded_from_cache(base_path, N_ctrls, K_0):
+    """
+    For each N_ctrl, load the expanded cache file 
+      'digital_expanded_QFIM_Nc_{N_ctrl}_{K_0}K.pkl'
+    Then combine all 'processed_rows' into one big df.
+    """
+    import os, pickle
+    import pandas as pd
+
+    all_data = []
+    for N_ctrl in N_ctrls:
+        cache_file = os.path.join(base_path, f'digital_expanded_QFIM_Nc_{N_ctrl}_{K_0}K.pkl')
+        if not os.path.isfile(cache_file):
+            print(f"[WARN] No expanded cache for N_ctrl={N_ctrl}. Skipping.")
+            continue
+        with open(cache_file, 'rb') as f:
+            cached_data, processed_files = pickle.load(f)
+        # each entry in cached_data is { "processed_rows": [...], "raw_data":... }
+        for file_id, file_dict in cached_data.items():
+            rows = file_dict.get("processed_rows", [])
+            all_data.extend(rows)
+    df_all = pd.DataFrame(all_data)
+    return df_all
 def process_and_cache_new_files(base_path, K_0, sample_range, model_type, N_ctrls, threshold, by_test, 
                                 check_for_new_data, cached_data, processed_files):
     """
@@ -496,6 +625,161 @@ def maybe_rebuild_or_process(base_path, sample_range, model_type, N_ctrls, K_0, 
         df_all = pd.DataFrame()
     return df_all
 
+
+#######################################################
+# 3) PROCESSING DQFIM: Build a DataFrame from data-based QFIM pickles
+#######################################################
+def process_data_dqfim(raw_dict, n_ctrl, n_reserv, trotter_steps, threshold=1e-12):
+    """
+    Convert a single raw dictionary for DQFIM into a list of row dicts.
+    Each row might correspond to (fixed_param_key, test_key) in your file.
+
+    Typically, the dictionary structure is:
+      raw_dict[fixed_param_key][test_key] = {
+          'L': array_of_input_states,   # optional
+          'qfim_eigvals': ...,
+          'qfim': ...,  # NxN matrix
+          'entropies': ...,  # optional
+          ...
+      }
+
+    Returns a list of row dicts for direct DataFrame creation.
+    """
+    rows = []
+    for fixed_param_key, test_entries in raw_dict.items():
+        for test_key, results in test_entries.items():
+            qfim_eigvals = results.get('qfim_eigvals', None)
+            qfim_mat = results.get('qfim', None)  # NxN
+            entropies = results.get('entropies', None)
+            # Possibly also store L = results.get('L', None) => the input states used
+
+            row = {
+                "N_ctrl": n_ctrl,
+                "N_reserv": n_reserv,
+                "Trotter_Step": trotter_steps,
+                "fixed_param_key": fixed_param_key,
+                "test_key": test_key,
+
+                "qfim_eigvals": qfim_eigvals,
+                "qfim_mats_list": [qfim_mat] if qfim_mat is not None else [],
+                # store as a single-item list if you want to do the Qiskit dimension approach
+                "entropies": entropies,
+            }
+            rows.append(row)
+    return rows
+
+def build_df_expanded_DQFIM(base_path, sample_range, model_type, N_ctrls, K_str,datasize, threshold, by_test):
+    """
+   
+    """
+    from pathlib import Path
+    import os
+    import pandas as pd
+
+    all_expanded_rows = []
+    
+    # Iterate over each N_ctrl value
+    for N_ctrl in N_ctrls:
+        model_path = Path(base_path) / "QFIM_global_results" / f"{model_type}_model_DQFIM" / f"Nc_{N_ctrl}" / f"sample_{sample_range}/{K_str}xK"
+        if not model_path.exists():
+            print(f"[WARN] Model path {model_path} does not exist for N_ctrl={N_ctrl}.")
+            continue
+        
+        # Iterate over each Nr directory
+        for Nr in sorted(os.listdir(model_path)):
+            Nr_path = model_path / Nr
+            if not Nr_path.is_dir():
+                continue
+            
+            # Iterate over each trotter step directory
+            for trotter_step_dir in sorted(os.listdir(Nr_path)):
+                trotter_step_path = Nr_path / trotter_step_dir
+                if not trotter_step_path.is_dir():
+                    continue
+                
+                data_file = trotter_step_path / f"L_{datasize}/data.pickle"
+                if not data_file.exists():
+                    continue
+                # Validate the pickle file without using cached results
+                if not is_valid_pickle_file(data_file):
+                    continue
+                
+                # Load the raw pickle data
+                raw_data = load_and_clean_pickle(data_file)
+                # Extract trotter step and reservoir count from the directory structure
+                try:
+                    trotter_step_num = extract_trotter_step(data_file)
+                    reservoir_count = extract_Nr(data_file)
+                except Exception as e:
+                    print(f"[ERROR] Could not extract parameters from {data_file}: {e}")
+                    continue
+
+                # Process raw data using your expanded function (do not use cached expanded rows)
+                expanded_rows = process_data_dqfim(raw_data, threshold, by_test, N_ctrl, reservoir_count, trotter_step_num)
+                all_expanded_rows.extend(expanded_rows)
+
+    return pd.DataFrame(all_expanded_rows)
+
+
+def build_df_dqfim_dataframe(base_path,
+                             n_ctrl,
+                             k_str,
+                             n_reserv_list,
+                             trot_list,
+                             num_input_states,  # this is the # of training states used to build the DQFIM
+                             threshold=1e-12):
+    """
+    Example function that scans for DQFIM data pickles (like 'data.pickle') in your
+    'QFIM_global_results/gate_model_DQFIM/...' directory, loads them, and builds
+    a DataFrame with one row per (fixed_params, test_key).
+
+    Then we'll call compute_all_stats(..., dataset_sizes=num_input_states)
+    so that if you want Qiskit dimension, it uses that as well.
+
+    Returns
+    -------
+    df_out : pd.DataFrame
+        Each row has QFIM data from one random draw. We then compute the usual
+        rank, trace, etc. plus the potential Qiskit dimension if qfim_mats_list is present.
+    """
+
+    # or adapt if your 'analysis_specific_config' is integrated, etc.
+
+    all_rows = []
+
+    # Example path for DQFIM: base_path/QFIM_global_results/gate_model_DQFIM/Nc_{n_ctrl}/sample_pi/1xK...
+    dqfim_root = Path(base_path) / "QFIM_global_results" / "gate_model_DQFIM" / f"Nc_{n_ctrl}" / f"sample_pi/{k_str}xK"  # adapt if needed
+    for n_rsv in n_reserv_list:
+        nr_folder = dqfim_root / f"Nr_{n_rsv}"
+        if not nr_folder.exists():
+            continue
+
+        for trot in trot_list:
+            trot_folder = nr_folder / f"trotter_step_{trot}" / f"L_{num_input_states}"
+            if not trot_folder.exists():
+                continue
+
+            data_file = trot_folder / "data.pickle"
+            if not data_file.exists():
+                continue
+            if not is_valid_pickle_file(data_file):
+                continue
+
+            raw_dict = load_and_clean_pickle(data_file)
+            # parse it
+            row_dicts = process_data_dqfim(raw_dict, n_ctrl, n_rsv, trot, threshold=threshold)
+            all_rows.extend(row_dicts)
+
+    df_dqfim = pd.DataFrame(all_rows)
+    if df_dqfim.empty:
+        print("[WARN] No DQFIM data found.")
+        return df_dqfim
+
+    # Now compute the usual QFIM-based stats using compute_all_stats
+    df_out = build_qfim_dataframe_dqfim(df_dqfim, threshold=threshold, dataset_sizes=num_input_states)
+    return df_out
+
+
 ###############################################################################
 #  "Build QFIM DataFrame" pipeline (the code from your question)
 ###############################################################################
@@ -543,8 +827,9 @@ def spread_pooling_vectorized(eigs_2d, method="variance", threshold=1e-12, ddof=
         return 0.0
     s = filtered.sum()
     filtered /= s
-    with np.errstate(divide='ignore'):
-        logs = np.log(filtered)
+    logs = np.zeros_like(filtered)
+    with np.errstate(divide="ignore"):
+        logs[filtered>0]=np.log(filtered[filtered>0])
     return compute_spread_metric(logs, method=method, ddof=ddof, scale=scale)
 
 def compute_spread_columns(df, eigs_2d_col="qfim_eigs_2d", threshold=1e-12, ddof=1, scale="normal", spread_method="variance"):
@@ -576,7 +861,29 @@ def compute_spread_columns(df, eigs_2d_col="qfim_eigs_2d", threshold=1e-12, ddof
     df[f"spread_std_per_sample_{prefix}"]  = per_sample_stds
     df[f"spread_val_pooled_{prefix}"]      = pooled_vals
     return df
-
+def compute_ipr_dimension(eigenvalues, threshold=1e-10):
+    """
+    Compute the inverse-participation-ratio-based dimension for a
+    single list of eigenvalues, following eq. (32):
+        d_eff = (sum(eigvals)^2) / sum(eigvals^2)
+    Eigenvalues below 'threshold' are treated as negligible.
+    """
+    # Filter out very small eigenvalues
+    valid_eigs = [val for val in eigenvalues if val > threshold]
+    
+    if not valid_eigs:
+        # If all eigenvalues are below threshold, return 0
+        return 0.0
+    
+    sum_eigs = sum(valid_eigs)
+    sum_eigs_sq = sum(val**2 for val in valid_eigs)
+    
+    # If sum_eigs_sq == 0 (which is extremely unlikely if valid_eigs is non-empty),
+    # set dimension to 0 to avoid divide-by-zero
+    if sum_eigs_sq == 0:
+        return 0.0
+    
+    return (sum_eigs ** 2) / sum_eigs_sq
 def compute_all_stats(
     eigval_list,
     threshold=1e-12,
@@ -585,6 +892,10 @@ def compute_all_stats(
     scale="normal",
     # Additional args for the approximate effective dimension
     do_effective_dim=True,
+    n = 1,
+     # NEW ARGS for Qiskit-like step:
+    qfim_mats_list=None,
+    dataset_sizes=None,
  
 ):
     """
@@ -610,7 +921,15 @@ def compute_all_stats(
         Scale for median_abs_deviation in "mad" case.
     do_effective_dim : bool
         Whether to compute IPR-based and Abbas-based effective dimension metrics.
-    
+    qfim_mats_list : List[np.ndarray], optional
+        If provided, each element is the *full NxN QFIM matrix* for that draw. 
+        Must be the same length as eigval_list. 
+        We'll average them and do the determinant-based dimension from Qiskit's approach.
+    dataset_sizes : int or list of ints, optional
+        The 'n' or array of 'n' values for computing the final dimension. 
+        By default, Qiskit's code calls this 'dataset_size'. 
+        If None, we skip the global ED calculation.
+
         Notes on the Three Categories of Metrics:
       1) ABSOLUTE SCALE: e.g. raw trace and raw variance (sums of eigenvalues, etc.).
       2) SHAPE OF THE SPECTRUM: e.g. normalized IPR, normalized Abbas dimension, 
@@ -669,6 +988,7 @@ def compute_all_stats(
     ipr_deffs_norm   = []
     abbas_deffs_raw  = []
     abbas_deffs_norm = []
+    abbas_deffs_norm_by_gc = []
 
     # For Abbas measure (optional local dimension approach)
     # =============== NEW #2: Abbas local dimension ===============
@@ -677,16 +997,19 @@ def compute_all_stats(
     # Then we do sum(log(1 + alpha * lambda_i)).
     # If alpha*lambda_i < -1, that log is undefined; in practice, alpha*lambda_i >= 0 if alpha>0, lambda_i >= 0
 
-    n = len(eigval_list)   # interpret as number of data samples
+    # n_draws = len(eigval_list)   # interpret as "number of random draws"
+    n_draws = n
+    # For Abbas measure (a local version)
     gamma = 1.0
-    if n > 1:
-        alpha = (gamma * n) / (2.0 * np.log(n))
+    if n_draws > 1:
+        alpha = (gamma * n_draws) / (2.0 * np.log(n_draws))
     else:
         alpha = 0.0
-    V_theta = 1.0  # Placeholder
+    V_theta = 1.0  # placeholder
 
     for eigs in eigval_list:
         arr = np.array(eigs, dtype=float)
+       
         arr = np.where(arr < threshold, 0.0, arr)   # threshold small values
         # rank = #nonzero eigenvalues
         rank = np.count_nonzero(arr)
@@ -704,33 +1027,26 @@ def compute_all_stats(
         var_non = np.var(nonz) if nonz.size > 1 else 0.0
         var_nonzero_per_draw.append(var_non)
 
-         # [3] average per nonzero mode => divide by rank if rank>0
-        if rank > 0:
-            var_norm_rank_per_draw.append(var_all / rank)
-            trace_norm_rank_per_draw.append(trace_val / rank)
-        else:
-            var_norm_rank_per_draw.append(0.0)
-            trace_norm_rank_per_draw.append(0.0)
+        
+        var_norm_rank_per_draw.append(var_all / rank)
+        trace_norm_rank_per_draw.append(trace_val / rank)
 
          # --------------------------- IPR-based d_eff ---------------------------
         # raw
         sum_eigs_sq = np.sum(arr**2)
-        if sum_eigs_sq > 0:
-            ipr_raw = (trace_val**2) / sum_eigs_sq
-        else:
-            ipr_raw = 0.0
+        ipr_raw = (trace_val**2) / sum_eigs_sq
+
         ipr_deffs_raw.append(ipr_raw)
 
         # normalized (i.e., shape only)
-        if trace_val > 0:
-            arr_norm = arr / trace_val
-            sum_norm_sq = np.sum(arr_norm**2)
-            if sum_norm_sq > 0.0:
-                ipr_norm = 1.0 / sum_norm_sq
-            else:
-                ipr_norm = 0.0
+      
+        arr_norm = arr / trace_val
+        sum_norm_sq = np.sum(arr_norm**2)
+        if sum_norm_sq > 0.0:
+            ipr_norm = 1.0 / sum_norm_sq
         else:
             ipr_norm = 0.0
+
         ipr_deffs_norm.append(ipr_norm)
 
         # --------------------------- Abbas-based d_eff -------------------------
@@ -743,17 +1059,36 @@ def compute_all_stats(
             abbas_raw += np.log(val)
         # if V_theta != 1: abbas_raw -= np.log(V_theta)
         abbas_deffs_raw.append(abbas_raw)
+        abbas_deffs_norm_by_gc.append(compute_ipr_dimension(eigs))
 
         # normalized
-        abbas_norm = 0.0
-        if trace_val > 0:
-            for lam_norm in (arr / trace_val):
-                val = 1.0 + alpha * lam_norm
-                if val <= 0.0:
-                    val = 1e-15
-                abbas_norm += np.log(val)
-        # if V_theta != 1: abbas_norm -= np.log(V_theta)
+        # abbas_norm = 0.0
+        # if trace_val > 0:
+        #     for lam_norm in (arr / trace_val):
+        #         val = 1.0 + alpha * lam_norm
+        #         if val <= 0.0:
+        #             val = 1e-15
+        #         abbas_norm += np.log(val)
+        # if trace_val > 0:
+        #     abbas_norm = 0.0
+        #     for lam_norm in (arr / trace_val):
+        #         val = 1.0 + alpha * lam_norm
+        #         if val <= 0.0:
+        #             val = 1e-15
+        #         abbas_norm += np.log(val)
+        # else:
+        #     abbas_norm = 0.0
+
+        abbas_norm=0.0
+        arr_norm = arr/trace_val
+        for lam_norm in arr_norm:
+            val = 1.0+ alpha*lam_norm
+            if val<=0.0:
+                val=1e-15
+            abbas_norm+=np.log(val)
         abbas_deffs_norm.append(abbas_norm)
+        # if V_theta != 1: abbas_norm -= np.log(V_theta)
+        # abbas_deffs_norm.append(abbas_norm)
 
 
     # -------------------------------------------------------------------------
@@ -761,28 +1096,29 @@ def compute_all_stats(
     # -------------------------------------------------------------------------
     D_C = max(ranks_per_draw) if ranks_per_draw else 0
 
-    avg_var_all = np.mean(var_all_per_draw) if var_all_per_draw else 0.0
-    avg_trace = np.mean(trace_per_draw) if trace_per_draw else 0.0
-    avg_var_nonzero = np.mean(var_nonzero_per_draw) if var_nonzero_per_draw else 0.0
+    avg_var_all = float(np.mean(var_all_per_draw)) if var_all_per_draw else 0.0
+    avg_trace = float(np.mean(trace_per_draw)) if trace_per_draw else 0.0
+    avg_var_nonzero = float(np.mean(var_nonzero_per_draw)) if var_nonzero_per_draw else 0.0
+    avg_var_norm_rank = float(np.mean(var_norm_rank_per_draw)) if var_norm_rank_per_draw else 0.0
+    avg_trace_norm_rank = float(np.mean(trace_norm_rank_per_draw)) if trace_norm_rank_per_draw else 0.0
 
-    avg_var_norm_rank = np.mean(var_norm_rank_per_draw) if var_norm_rank_per_draw else 0.0
-    avg_trace_norm_rank = np.mean(trace_norm_rank_per_draw) if trace_norm_rank_per_draw else 0.0
+    var_var_all = float(np.var(var_all_per_draw)) if len(var_all_per_draw) > 1 else 0.0
+    var_var_nonzero = float(np.var(var_nonzero_per_draw)) if len(var_nonzero_per_draw) > 1 else 0.0
 
-    var_var_all = np.var(var_all_per_draw) if len(var_all_per_draw) > 1 else 0.0
-    var_var_nonzero = np.var(var_nonzero_per_draw) if len(var_nonzero_per_draw) > 1 else 0.0
-
-    # Summaries for the new effective dimension lists
     avg_ipr_raw   = float(np.mean(ipr_deffs_raw))  if ipr_deffs_raw  else 0.0
     avg_ipr_norm  = float(np.mean(ipr_deffs_norm)) if ipr_deffs_norm else 0.0
     avg_abbas_raw = float(np.mean(abbas_deffs_raw))  if abbas_deffs_raw  else 0.0
     avg_abbas_norm= float(np.mean(abbas_deffs_norm)) if abbas_deffs_norm else 0.0
+    abbas_deffs_simple = float(np.mean(abbas_deffs_norm_by_gc))
 
     # -------------------------------------------------------------------------
-    # 3) Spread-of-log metrics (unchanged)
-    #    We interpret each row of arr_2d as one draw's eigenvalues
-    #    => Then we do the 'spread_of_log' across them.
+    # 3) Spread-of-log metrics on the entire 2D array of eigenvalues
     # -------------------------------------------------------------------------
-    arr_2d = np.zeros((len(eigval_list), max(len(x) for x in eigval_list))) if eigval_list else np.zeros((0,0))
+    if eigval_list:
+        max_len = max(len(x) for x in eigval_list)
+    else:
+        max_len = 0
+    arr_2d = np.zeros((n_draws, max_len))
     for i, e in enumerate(eigval_list):
         tmp = np.array(e, dtype=float)
         tmp = np.where(tmp < threshold, 0.0, tmp)
@@ -793,105 +1129,227 @@ def compute_all_stats(
         per_draw = spread_per_sample_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
         )
-        spread_mean = per_draw.mean() if per_draw.size else 0.0
-        spread_std  = per_draw.std()  if per_draw.size > 1 else 0.0
-        pooled_val  = spread_pooling_vectorized(
+        spread_mean = float(per_draw.mean()) if per_draw.size else 0.0
+        spread_std  = float(per_draw.std())  if per_draw.size > 1 else 0.0
+        pooled_val  = float(spread_pooling_vectorized(
             arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
-        )
+        ))
         prefix = method.lower()
         spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
         spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
         spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
 
+    # # -------------------------------------------------------------------------
+    # # 4) Build Final Dictionary with CLEAR Category Labels
+    # # -------------------------------------------------------------------------
+    # metrics = {
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # Category [A]: Basic Info & Per-draw lists
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "QFIM_ranks": ranks_per_draw,
+    #     "var_all_eigenvals_per_draw": var_all_per_draw,       # absolute scale
+    #     "var_nonzero_eigenvals_per_draw": var_nonzero_per_draw,# absolute scale
+    #     "trace_eigenvals_per_draw": trace_per_draw,           # absolute scale
 
-    # -------------------------------------------------------------------------
-    # 4) Build Final Dictionary with CLEAR Category Labels
-    # -------------------------------------------------------------------------
-    metrics = {
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Category [A]: Basic Info & Per-draw lists
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "QFIM_ranks": ranks_per_draw,
-        "var_all_eigenvals_per_draw": var_all_per_draw,       # absolute scale
-        "var_nonzero_eigenvals_per_draw": var_nonzero_per_draw,# absolute scale
-        "trace_eigenvals_per_draw": trace_per_draw,           # absolute scale
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # Category [1]: ABSOLUTE SCALE (aggregated)
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "absolute_scale_avg_var_all": avg_var_all,
+    #     "absolute_scale_avg_var_nonzero": avg_var_nonzero,
+    #     "absolute_scale_avg_trace": avg_trace,
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Category [1]: ABSOLUTE SCALE (aggregated)
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "absolute_scale_avg_var_all": avg_var_all,
-        "absolute_scale_avg_var_nonzero": avg_var_nonzero,
-        "absolute_scale_avg_trace": avg_trace,
+    #     # For those wanting the variance of the 'var_all_eigenvals_per_draw'
+    #     "absolute_scale_var_of_var_all": var_var_all,
+    #     "absolute_scale_var_of_var_nonzero": var_var_nonzero,
 
-        # For those wanting the variance of the 'var_all_eigenvals_per_draw'
-        "absolute_scale_var_of_var_all": var_var_all,
-        "absolute_scale_var_of_var_nonzero": var_var_nonzero,
-
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Category [2]: SHAPE OF THE SPECTRUM
-        # (these are the normalized versions of IPR & Abbas)
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "spectrum_shape_ipr_deffs_norm_per_draw": ipr_deffs_norm,
-        "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # Category [2]: SHAPE OF THE SPECTRUM
+    #     # (these are the normalized versions of IPR & Abbas)
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "spectrum_shape_ipr_deffs_norm_per_draw": ipr_deffs_norm,
+    #     "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
         
-        "spectrum_shape_abbas_deffs_norm_per_draw": abbas_deffs_norm,
-        "spectrum_shape_avg_abbas_deffs_norm": avg_abbas_norm,
+    #     "spectrum_shape_abbas_deffs_norm_per_draw": abbas_deffs_norm,
+    #     "spectrum_shape_avg_abbas_deffs_norm": avg_abbas_norm,
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Category [3]: AVERAGE PER NONZERO MODE
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
-        "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # Category [3]: AVERAGE PER NONZERO MODE
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
+    #     "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
 
-        "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
-        "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
+    #     "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
+    #     "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # Rank-based dimension as a simpler measure of capacity
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "D_C": D_C,  # max rank observed across draws
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # Rank-based dimension as a simpler measure of capacity
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "D_C": D_C,  # max rank observed across draws
 
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # RAW IPR & ABBAS for absolute scale dimension
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        "ipr_deffs_raw_per_draw": ipr_deffs_raw,
-        "avg_ipr_deffs_raw": avg_ipr_raw,
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     # RAW IPR & ABBAS for absolute scale dimension
+    #     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    #     "ipr_deffs_raw_per_draw": ipr_deffs_raw,
+    #     "avg_ipr_deffs_raw": avg_ipr_raw,
 
-        "abbas_deffs_raw_per_draw": abbas_deffs_raw,
-        "avg_abbas_deffs_raw": avg_abbas_raw,
+    #     "abbas_deffs_raw_per_draw": abbas_deffs_raw,
+    #     "avg_abbas_deffs_raw": avg_abbas_raw,
+    # }
+
+
+    ###############
+    # 4) Optionally: "global" dimension approach from the references
+    ###############
+    # (like the integral-based approach in [Abbas2020], but we do 
+    #  a simpler average-Fisher approach if qfim_mats_list is provided).
+    global_dim_results = {}
+    if (qfim_mats_list is not None) and (dataset_sizes is not None) and len(qfim_mats_list)==n_draws:
+        # We'll do a simple "empirical average fisher" -> normalized fisher -> logdet approach
+        # to replicate a global dimension measure.
+        fisher_stack = np.stack(qfim_mats_list, axis=0)  # shape (n_draws, N, N)
+        # average them -> 'empirical fisher'
+        avg_fisher = np.mean(fisher_stack, axis=0)       # shape (N,N)
+        # check trace
+        fisher_trace = np.trace(avg_fisher)
+        n_params = avg_fisher.shape[0]
+        if fisher_trace<1e-14:
+            # degenerate
+            normalized_fisher = np.zeros_like(avg_fisher)
+        else:
+            normalized_fisher = (n_params * avg_fisher)/fisher_trace
+        
+        # define helper to compute the effective dimension from [Abbas2020 eq ...].
+        # We'll do a single or list of dataset_sizes
+        if isinstance(dataset_sizes, (int,float)):
+            dataset_sizes = [dataset_sizes]
+        import numpy.linalg as la
+        from math import log
+        out_dims = []
+        for ds in dataset_sizes:
+            if ds<=1 or np.log(ds)<=0:
+                out_dims.append(0.0)
+                continue
+            # build f_mod
+            factor = ds/(2.0*np.pi*log(ds))
+            f_mod = normalized_fisher*factor
+            one_plus = np.eye(n_params)+f_mod
+            sign, logdet_val = la.slogdet(one_plus)
+            if sign<=0:
+                # negative or zero => dimension = 0?
+                out_dims.append(0.0)
+                continue
+            # eq dimension
+            det_div = 0.5*logdet_val
+            denom = log(ds/(2.0*np.pi*log(ds)))
+            # no logsumexp needed, we do single average approach
+            eff_dim = 2.0*det_div/denom if denom!=0 else 0.0
+            out_dims.append(eff_dim)
+        if len(out_dims)==1:
+            global_dim_results["global_effective_dimension"] = out_dims[0]
+        else:
+            global_dim_results["global_effective_dimension"] = out_dims
+        global_dim_results["fisher_trace"] = fisher_trace
+
+    ###############
+    # 5) Build final dictionary
+    ###############
+    metrics = {
+        # Per-draw
+        "QFIM_ranks": ranks_per_draw,
+        "test_var_qfim_eigvals": var_all_per_draw,
+        "test_var_qfim_eigvals_nonzero": var_nonzero_per_draw,
+        "test_tr_qfim_eigvals": trace_per_draw,
+        "test_var_qfim_eigvals_normalized_by_rank": var_norm_rank_per_draw,
+        "test_tr_qfim_eigvals_norm_by_rank": trace_norm_rank_per_draw,
+
+        # Summaries
+        "D_C": D_C,  # rank-based dimension (max rank)
+        "avg_test_var_qfim_eigvals": float(avg_var_all),
+        "avg_test_var_qfim_eigvals_nonzero": float(avg_var_nonzero),
+        "avg_test_tr_qfim_eigvals": float(avg_trace),
+        "avg_test_var_qfim_eigvals_normalized_by_rank": float(avg_var_norm_rank),
+        "avg_test_tr_qfim_eigvals_norm_by_rank": float(avg_trace_norm_rank),
+        "var_test_var_qfim_eigvals": float(var_var_all),
+        "var_test_var_qfim_eigvals_nonzero": float(var_var_nonzero),
+        
+        # IPR-based local dimension
+        "ipr_deffs_raw": ipr_deffs_raw,
+        "ipr_deffs_norm": ipr_deffs_norm,
+        "avg_ipr_deffs_raw": float(avg_ipr_raw),
+        "avg_ipr_deffs_norm": float(avg_ipr_norm),
+        
+        # Abbas-based local dimension
+        "abbas_deffs_raw": abbas_deffs_raw,
+        "abbas_deffs_norm": abbas_deffs_norm,
+        "avg_abbas_deffs_raw": float(avg_abbas_raw),
+        "avg_abbas_deffs_norm": float(avg_abbas_norm),
+        "abbas_deffs_simple":abbas_deffs_simple,
     }
 
-    # Incorporate spread-of-log results 
+    # Add in spread-of-log results
     metrics.update(spread_results)
 
+    # Possibly add global dimension results if computed
+    if global_dim_results:
+        metrics.update(global_dim_results)
+
     return metrics
+   
 
-
-def build_qfim_dataframe(df_all, threshold=1e-12):
+def build_qfim_dataframe(df_all, threshold=1e-12, dataset_sizes=None):
     """
-    1) Convert all_qfim_eigvals -> qfim_eigs_2d
-    2) Single-pass stats => expanded columns (including spread-of-log)
-    3) Optionally, extra 'compute_spread_columns' calls 
-       if you want separate columns for 'median', etc.
-    4) Return final df_all with everything included.
+    1) Convert all_qfim_eigvals -> qfim_eigs_2d (convenience for some spread-of-log steps).
+    2) For each row, call compute_all_stats, which calculates:
+       - Rank, trace, variance, IPR-based dimension, Abbas dimension, etc. from the eigenvalues,
+       - If 'qfim_mats_list' is present, also compute Qiskit-style global ED for the given 'dataset_sizes'.
+
+    Parameters
+    ----------
+    df_all : pd.DataFrame
+        Must have columns:
+            - "all_qfim_eigvals": List of eigenvalue arrays (one set per row).
+            - "qfim_mats_list" (optional): List of QFIM NxN matrices (same length as eigenvals).
+              If present, we can compute global dimension from them.
+    threshold : float
+        For zeroing out small eigenvalues.
+    dataset_sizes : int or list of int, optional
+        If provided, replicate Qiskit's global ED for each dataset size in this argument.
+        E.g. could be 100, or [50, 100, 200]. If None, skip Qiskit-style ED.
+
+    Returns
+    -------
+    df_out : pd.DataFrame
+        The original df_all with additional columns for stats, including potential global ED results
+        in "qiskit_style_globalED" and "qiskit_style_avgFisherTrace".
     """
     # 1) Convert for convenience
     df_all["qfim_eigs_2d"] = df_all["all_qfim_eigvals"].apply(to_2d)
 
-    # 2) Single-pass stats
-    stats_series = df_all["all_qfim_eigvals"].apply(
-        lambda x: compute_all_stats(
-            x, 
-            threshold=threshold, 
-            spread_methods=["variance", "mad"], # you can add 'median' if you like
-            ddof=1, 
-            scale="normal"
-        )
-    )
-    df_stats = pd.json_normalize(stats_series)
-    df_out = pd.concat([df_all.reset_index(drop=True), df_stats.reset_index(drop=True)], axis=1)
+    # 2) Single-pass stats for each row
+    def _per_row_stats(row):
+        eigs_list = row["all_qfim_eigvals"]  # list of 1D arrays
+        # optional: None if not present
+        qfim_mats_list = row.get("qfim_mats_list", None)
 
-    # 3) If you still want “extra” spread columns for e.g. 'median' or other transformations,
+        # call compute_all_stats with or without qfim_mats_list
+        stats = compute_all_stats(
+            eigval_list=eigs_list,
+            threshold=threshold,
+            spread_methods=["variance", "mad"],  # or add 'median'
+            ddof=1,
+            scale="normal",
+            qfim_mats_list=qfim_mats_list,   # newly added param
+            dataset_sizes=dataset_sizes      # newly added param
+        )
+        return stats
+
+    # Apply row-wise
+    stats_series = df_all.apply(_per_row_stats, axis=1)
+    # 3) Flatten stats (dict) to columns
+    df_stats = pd.json_normalize(stats_series)
+    # Combine with original
+    df_out = pd.concat([df_all.reset_index(drop=True), df_stats.reset_index(drop=True)], axis=1)
+        # 3) If you still want “extra” spread columns for e.g. 'median' or other transformations,
     #    you can also call your existing compute_spread_columns(...) here:
     # df_out = compute_spread_columns(df_out, threshold=threshold, spread_method="median", scale="normal")
     # etc.
@@ -901,8 +1359,9 @@ def build_qfim_dataframe(df_all, threshold=1e-12):
     # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="variance", scale="normal")
     # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="mad", scale="normal")
     # df_all = compute_spread_columns(df_all, threshold=threshold, spread_method="median", scale="normal")
+    return df_out
 
-    return df_all
+
 
 
 if __name__ == "__main__":
@@ -914,7 +1373,7 @@ if __name__ == "__main__":
     threshold = 1e-10
     by_test = False
 
-    # 1) Possibly we do:
+    # 1) fetch cached data:
     #    df_all = rebuild_df_from_existing_cache(base_path, N_ctrls, K_str)
     #    if df_all.empty, we call process_and_cache_new_files
     #    or we do the combined approach:
@@ -926,6 +1385,6 @@ if __name__ == "__main__":
     print("[INFO] df_all shape after reading cache or scanning directories:", df_all.shape)
 
     # # 2) Build QFIM DataFrame with advanced metrics
-    df_all = build_qfim_dataframe(df_all, threshold=1e-12)
-    print("[INFO] df_all final shape:", df_all.shape)
-    print(df_all.head())
+    # df_all = build_qfim_dataframe(df_all, threshold=threshold)
+    # print("[INFO] df_all final shape:", df_all.shape)
+    # print(df_all.head())
