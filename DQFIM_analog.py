@@ -406,7 +406,7 @@ def main():
     Kfactors = [1]
     # folder = f'./QFIM_traced_final_results/gate_model_DQFIM/Nc_{N_ctrl}/{base_state}/{kFactor}xK/'
     #folder = f'./QFIM_traced_trainable_global/analog_model/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
-    key = jax.random.PRNGKey(103450*N_ctrl)
+
     batch = True
     sample_range = np.pi
     sample_range_label = 'pi'
@@ -418,23 +418,21 @@ def main():
                 
                 for bath in baths:
                     print(f"N_ctrl: {N_ctrl}, N_R: {N_reserv}, time_steps: {time_steps}, num_bath: {num_bath}")
-                    folder = f'./QFIM_traced_final_results/analog_model_DQFIM/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
+                    folder = f'./QFIM_global_results/analog_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{Kfactor}xK/'
                     # folder = f'./QFIM_traced_final_results/analog_model_DQFIM/Nc_{N_ctrl}/{base_state}/'
                     folder_gate = os.path.join(folder, f'Nr_{N_reserv}', f'trotter_step_{time_steps}',f'L_{num_input_states}')
                     print("\nfolder_gate: ",folder_gate)
                     Path(folder_gate).mkdir(parents=True, exist_ok=True)
                     N = N_reserv+N_ctrl
+                    data_filename = os.path.join(folder_gate, 'data.pickle')
                     num_J = N_reserv*N_ctrl
-                    if sample_range:
-                        data_filename = os.path.join(folder_gate, f'data_{sample_range_label}.pickle')
-                    else:
-                        data_filename = os.path.join(folder_gate, 'data.pickle')
+                   
                     base_key_seed = 123* N_reserv + 12345 * time_steps *N_reserv
                     params_key = jax.random.PRNGKey(base_key_seed)
                     params_subkey0, params_subkey1 = jax.random.split(params_key, 2)
                      
-                    L = generate_dataset(N_ctrl,N_reserv, num_input_states,params_subkey0)
-                    print(data_filename)
+                    L = generate_dataset(N_ctrl,N_reserv, num_input_states,params_subkey1)
+                    # print(data_filename)
                     all_tests_data = {}
 
                     if is_non_empty_file(data_filename):

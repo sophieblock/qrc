@@ -12,10 +12,7 @@ import sympy
 import matplotlib.pyplot as plt
 import base64
 import pickle
-from qutip import *
-from qutip.qip.operations import cnot,rz,rx,ry,snot
-from qutip.qip.circuit import QubitCircuit
- # Using pennylane's wrapped numpy
+
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
 import jax
 import numpy as np
@@ -60,17 +57,7 @@ from pennylane.operation import (
 )
 from jax import jit
 import pennylane as qml
-from pennylane.operation import AnyWires, Operation
-from pennylane.typing import TensorLike
-from pennylane.ops import functions
-from pennylane.ops import Evolution
-from parametrized_hamiltonian import ParametrizedHamiltonian
-from parametrized_ham_pytree import ParametrizedHamiltonianPytree
-from hard_ham import HardwareHamiltonian
-from evolution2 import Evolution
-#from pennylane.pulse import ParametrizedEvolution, ParametrizedHamiltonian,HardwareHamiltonian
-from jax.experimental.ode import odeint
-from pennylane.devices.qubit.apply_operation import _evolve_state_vector_under_parametrized_evolution,apply_parametrized_evolution
+
 has_jax = True
 diable_jit = False
 config.update('jax_disable_jit', diable_jit)
@@ -334,7 +321,7 @@ def main():
     def is_normalized_density_matrix(density_matrix):
         trace_value = jnp.trace(density_matrix)
         return jnp.isclose(trace_value, 1.0)
-    N_ctrl = 1
+    N_ctrl = 2
     baths = [False]
     num_bath = 0
     number_of_fixed_param_tests = 10
@@ -348,8 +335,8 @@ def main():
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
     # trots = [1,4,6,8,9,10,12,16,20,24]
     # trots = [1,2,3,4,4,5,6,7,8,9,10,12,16,20,24]
-    trots = [1]
-    reservoirs = [2,3,4,5,6,7,8]
+    trots = [1,4,8,12,16]
+    reservoirs = [1,2]
    
     
    
@@ -526,7 +513,7 @@ def main():
 
 
                         # Restructuring results
-                        restructured_results = [(batch_results[0][i], batch_results[1][i], batch_results[2][i]) for i in range(number_trainable_params_tests)]
+                        restructured_results = [(batch_results[0][i], batch_results[1][i], batch_results[2][i]) for i in range(len(param_batch))]
 
                         
                         
