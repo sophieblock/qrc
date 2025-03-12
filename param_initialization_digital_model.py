@@ -628,6 +628,109 @@ def convert_to_float(value):
         # Return the value as-is if it's not a recognized numeric type
         return value
 
+def compute_single_draw_stats(
+    eigvals,
+    threshold=1e-8,
+    spread_methods=("variance", "mad"),
+    ddof=1,
+    scale="normal",
+    # For Abbas dimension
+    gamma=1.0,
+    n=1,
+    V_theta=1.0,
+):
+    """
+    Compute QFIM (or DQFIM) statistics for a SINGLE set of eigenvalues (one draw).
+
+    This function mirrors the fields from compute_all_stats for a single-draw scenario.
+
+    Returned dict includes:
+      - "draw_rank"
+      - "var_all_eigenvalues"
+      - "var_nonzero_eigenvalues"
+      - "trace_eigenvalues"
+      - "var_normalized_by_rank"
+      - "trace_normalized_by_rank"
+      - "ipr_deff_raw"        (a "raw" dimension measure)
+      - "ipr_deff_norm"       (a shape-based dimension measure)
+      - "abbas_deff_raw"      (another "raw" dimension measure)
+      - "abbas_deff_norm"     (another shape-based measure)
+      - "spread_metric_{method}" for each method in spread_methods
+         e.g. "spread_metric_variance", "spread_metric_mad"
+
+    If you want to rename these keys to match precisely your multi-draw dictionary,
+    you can do so by changing the dict keys below.
+
+    Parameters
+    ----------
+    eigvals : array-like
+        Eigenvalues for this single QFIM (or DQFIM) draw.
+    threshold : float
+        Zero out small eigenvalues below this threshold.
+    spread_methods : tuple of str
+        Methods for "spread-of-log" metrics. E.g. ("variance", "mad").
+    ddof : int
+        Degrees of freedom for variance computations.
+    scale : str
+        Scale for median_abs_deviation if using "mad".
+    gamma : float
+        In Abbas dimension formula, typically in (0, 1].
+    n : int
+        "Number of data samples" in that Abbas formula. If you only have a single set, you can set it = 1.
+    V_theta : float
+        Volume factor if you want to subtract log(V_theta). Typically 1.0 if unknown.
+
+    Returns
+    -------
+    stats_dict : dict
+        Dictionary of single-draw statistics as described.
+    """
+    import numpy as np
+
+    # Make sure it's an array
+    if isinstance(eigvals, (list, tuple)):
+        arr = np.array(eigvals, dtype=float)
+    elif isinstance(eigvals, np.ndarray):
+        arr = eigvals.astype(float)
+    else:
+        arr = np.array(eigvals, dtype=float)
+
+    # Threshold small eigenvalues
+    arr = np.where(arr < threshold, 0.0, arr)
+
+    # --- 1) Basic stats ---
+    draw_rank = np.count_nonzero(arr)
+    var_all_eigenvalues = np.var(arr)
+    # Nonzero subset
+    nonzero = arr[arr > threshold]
+    var_nonzero_eigenvalues = np.var(nonzero) if nonzero.size > 1 else 0.0
+    var_normalized_by_rank = var_all_eigenvalues / draw_rank
+    trace_eigenvalues = np.sum(arr)
+    trace_normalized_by_rank = trace_eigenvalues / draw_rank
+
+
+def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, L = 1,threshold=1e-10):
+    file_path = Path(file_path) / f'L_{L}/data.pickle'
+    print(file_path)
+    with open(file_path, 'rb') as f:
+        all_tests_data = pickle.load(f)
+    results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
+
+    assert 'qfim_eigvals' in results
+    print(results.keys())
+    eigvals = results.get('qfim_eigvals', None)
+    nonzero = eigvals[eigvals > threshold]
+    return {
+        'dqfim_eigvals':results.get('qfim_eigvals', None),
+        'raw_trace':np.sum(eigvals),
+        'raw_var_nonzero':  np.var(nonzero),
+        'entropies':results.get('entropies', None),
+        'trainable_params':results.get('trainable_params', None),
+    }
+
+
+
+
 def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     """
     Load data from a pickle file and return QFIM eigenvalues for the given fixed and trainable parameter dictionary keys.
@@ -640,6 +743,7 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     Returns:
     - qfim_eigvals: list of QFIM eigenvalues.
     """
+    file_path = Path(file_path) / f'data.pickle'
     # Ensure file_path is a Path object
     file_path = Path(file_path) if not isinstance(file_path, Path) else file_path
     
@@ -652,28 +756,25 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     
     # Initialize variables
     qfim_eigvals = None
-    
-    for fixed_params_dict in df.keys():
-        if fixed_params_dict == fixed_param_dict_key:
-            for trainable_params_dict in df[fixed_params_dict].keys():
-                if trainable_params_dict == trainable_param_dict_key:
-                    results = df[fixed_params_dict][trainable_params_dict]
-                    if 'qfim_eigvals' in results:
-                       
-                        qfim_eigvals = results['qfim_eigvals']
-                        fixed_params = results['K_coeffs']
-                        try:
-                            jacobian = results['jacobian']
-                            det = results['det']
-                        except KeyError:
-                            jacobian = None
-                            det = None
-                        # entropy = results['entropy']
-                        qfim = results['qfim']
-                        params = results['trainable_params']
-                        entropy = results['entropy']
-                       
-                        return qfim_eigvals,fixed_params,params,qfim,entropy
+    test_data = df[fixed_param_dict_key]
+    results = test_data[trainable_param_dict_key]
+
+    if 'qfim_eigvals' in results:
+        
+        qfim_eigvals = results['qfim_eigvals']
+        fixed_params = results['K_coeffs']
+        try:
+            jacobian = results['jacobian']
+            det = results['det']
+        except KeyError:
+            jacobian = None
+            det = None
+        # entropy = results['entropy']
+        qfim = results['qfim']
+        params = results['trainable_params']
+        entropy = results['entropy']
+        
+        return qfim_eigvals,fixed_params,params,qfim,entropy
     
     print("QFIM eigenvalues not found for the given parameter keys.")
     return None,None,None, None,None
@@ -687,7 +788,7 @@ if __name__=='__main__':
 
     
 
-    steps = 1500
+    steps = 500
     training_size_list = [10]
     noise_central = 0.1
     noise_range = 0.002
@@ -707,13 +808,13 @@ if __name__=='__main__':
     parameters = []
     
     N_r = 1
-    trotter_steps = 8
+    trotter_steps = 14
   
     bath = False
     static = False
     N_ctrl = 2
 
-    folder = f'./param_initialization_final/digital_results/Nc_{N_ctrl}/'
+    folder = f'./param_initialization_final/digital_results/Nc_{N_ctrl}/epochs_{steps}'
     gates_random = []
     for i in range(30):
         U = random_unitary(2**N_ctrl, i).to_matrix()
@@ -727,10 +828,12 @@ if __name__=='__main__':
  
     fp_idx = 0
    
-    trainable_param_keys = [f'test{i}' for i in range(100)]
-    # trainable_param_keys = ['test6','test82','test79','test66','test13','test4'] trot = 10
-    # trainable_param_keys = ['test79', 'test47','test46', 'test2','test32','test27','test45','test14','test84']
+    # trainable_param_keys = [f'test{i}' for i in range(100)]
+    # trainable_param_keys =['test31', 'test78', 'test20', 'test15', 'test44', 'test40', 'test61', 'test35', 'test55', 'test67', 'test17'] # trot = 10
+    trainable_param_keys =['test84', 'test71', 'test74', 'test37', 'test26', 'test5', 'test56', 'test20', 'test98', 'test78', 'test29', 'test31'] # based on trace
     # print(len(fixed_param_keys), len(trainable_param_keys))
+    trainable_param_keys = ['test19', 'test6', 'test22', 'test16', 'test67', 'test72', 'test52' ,'test38','test50', 'test46', 'test55','test79']
+    trainable_param_keys = ['test184','test156','test79','test137','test52', 'test41', 'test96', 'test30', 'test69', 'test166', 'test151', 'test48', 'test40', 'test177', 'test98', 'test152', 'test132', 'test111', 'test5', 'test106', 'test65', 'test110', 'test45', 'test24', 'test163', 'test130', 'test171', 'test49', 'test8', 'test6', 'test136', 'test63', 'test145', 'test3', 'test36', 'test158', 'test86', 'test21', 'test80', 'test29', 'test56', 'test31', 'test157', 'test71', 'test0', 'test189', 'test181', 'test28']
     fixed_param_name='fixed_params0'
     all_gates = gates_random
     base_state = 'GHZ_state'
@@ -740,8 +843,9 @@ if __name__=='__main__':
     K_0 = '1'
     opt_lr = None
     delta_x = 1.49011612e-08
-    threshold = 1.e-14
+    threshold = 1.e-10
     all_gates = gates_random
+    L = 100
     for gate_idx,gate in enumerate(all_gates):
         
         for test_key in trainable_param_keys:
@@ -758,6 +862,7 @@ if __name__=='__main__':
             )
             Path(folder_gate).mkdir(parents=True, exist_ok=True)
             temp_list = list(Path(folder_gate).glob('*'))
+            print(f"temp_list: {temp_list}")
             files_in_folder = []
             for f in temp_list:
                 temp_f = f.name.split('/')[-1]
@@ -778,24 +883,27 @@ if __name__=='__main__':
             
             print("________________________________________________________________________________")
             filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
+            print(f"filename: {filename}")
             # filename = os.path.join(folder_gate, f'{test_key}.pickle')
             
             N = N_ctrl + N_r
             
             qfim_base_path = f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_results/gate/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK'
-            # qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' /  f'data2.pickle'
+            dqfim_file_path =f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_global_results/gate_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{trotter_steps}/'
+            dqfim_stats_dict = get_dqfim_stats(dqfim_file_path, fixed_param_dict_key=fixed_param_name, trainable_param_dict_key=test_key, L = L)
 
-            qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' /  f'data.pickle'
+            qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' 
             print(qfim_file_path)
             print(f"{test_key} params (range: (-{sample_range_label}, {sample_range_label}))")
             print(f"{fixed_param_name}")
 
             eigvals, K_coeffs,params,qfim,entropy = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
-            
+            assert params[0] == dqfim_stats_dict['trainable_params'][0]
             trace_qfim = np.sum(eigvals)
-            var_qfim = np.var(eigvals)
-            print(f"QFIM trace: {trace_qfim}")
-            print(f"QFIM var: {var_qfim}")
+            nonzero = eigvals[eigvals > threshold]
+            var_qfim = np.var(nonzero)
+            print(f"QFIM trace: {trace_qfim:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
+            print(f"QFIM Var: {var_qfim:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
 
 
             data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static, dataset_key=dataset_key, gate=gate,gate_name= gate.name,folder= folder,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=None,qfim=qfim)
@@ -807,6 +915,7 @@ if __name__=='__main__':
             'trace':trace_qfim,
 
                 }
+            data['DQFIM_stats'] = dqfim_stats_dict
             
             df = pd.DataFrame([data])
             while os.path.exists(filename):
