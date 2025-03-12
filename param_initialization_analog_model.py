@@ -512,51 +512,81 @@ def get_target_state(gate, input_state, qubits):
 
 
 
-
-def generate_dataset(gate, n_qubits, training_size,testing_size, key, L=[]):
-    '''
-    Generate the dataset of input and output states according to the gate provided.
-    Uses a seed for reproducibility.
-    '''
+def generate_dataset(gate, n_qubits, size, key, L=None):
+    """
+    Generate a dataset of input and output states for the given gate.
     
-    if len(L) == 0:
-        # Generate random state vectors
-        X = []
-        for _ in range(training_size + testing_size):
-            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-            # Extract the scalar seed value explicitly to avoid deprecation warning
-            seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-            # Use the extracted scalar seed value
-            state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-            X.append(np.asarray(state_vec))
+    Parameters:
+      gate: The quantum gate to apply.
+      n_qubits: Number of qubits in the system.
+      size: Number of states to generate.
+      key: JAX random key for reproducibility.
+      L: (Optional) Pre-selected states (used for training).
+      
+    Returns:
+      Tuple (X, y) where X are the input states and y are the output states.
+    """
+    if L is not None:
+        # Use the provided states for the first 'size' training samples.
+        X = np.asarray(L[:size])
+        print(f"Using pre-selected states for training. Number of training states: {X.shape[0]}")
     else:
-        L = np.asarray(L) 
-        print(f"Using pre-selected states for training")
-        X = [state for i,state in enumerate(L) if i < training_size]
-        print(f"len(x): {len(X)}")
-        for _ in range(testing_size):
-            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-            # Extract the scalar seed value explicitly to avoid deprecation warning
+        X = []
+        for _ in range(size):
+            key, subkey = jax.random.split(key)
             seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-            # Use the extracted scalar seed value
             state_vec = random_statevector(2**n_qubits, seed=seed_value).data
             X.append(np.asarray(state_vec))
-
-    # Convert lists to np.ndarrays before concatenating
-    # X = np.asarray(X)  # Convert list X to an ndarray
-    #  # Convert list L to an ndarray
-
-    # # Concatenate the arrays
-    # X = np.concatenate([L, X], axis=0)
-    X = np.stack(X)
+        X = np.stack(X)
     qubits = Wires(list(range(n_qubits)))
-    dev_data = qml.device('default.qubit', wires=qubits)
-    circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
-    
-    # Execute the circuit for each input state
-    y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(training_size + testing_size)])
-    
+    dev_data = qml.device("default.qubit", wires=qubits)
+    circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
+    y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(size)])
     return X, y
+# def generate_dataset(gate, n_qubits, training_size,testing_size, key, L=[]):
+#     '''
+#     Generate the dataset of input and output states according to the gate provided.
+#     Uses a seed for reproducibility.
+#     '''
+    
+#     if len(L) == 0:
+#         # Generate random state vectors
+#         X = []
+#         for _ in range(training_size + testing_size):
+#             key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
+#             # Extract the scalar seed value explicitly to avoid deprecation warning
+#             seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
+#             # Use the extracted scalar seed value
+#             state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+#             X.append(np.asarray(state_vec))
+#     else:
+#         L = np.asarray(L) 
+#         print(f"Using pre-selected states for training")
+#         X = [state for i,state in enumerate(L) if i < training_size]
+#         print(f"len(x): {len(X)}")
+#         for _ in range(testing_size):
+#             key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
+#             # Extract the scalar seed value explicitly to avoid deprecation warning
+#             seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
+#             # Use the extracted scalar seed value
+#             state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+#             X.append(np.asarray(state_vec))
+
+#     # Convert lists to np.ndarrays before concatenating
+#     # X = np.asarray(X)  # Convert list X to an ndarray
+#     #  # Convert list L to an ndarray
+
+#     # # Concatenate the arrays
+#     # X = np.concatenate([L, X], axis=0)
+#     X = np.stack(X)
+#     qubits = Wires(list(range(n_qubits)))
+#     dev_data = qml.device('default.qubit', wires=qubits)
+#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
+    
+#     # Execute the circuit for each input state
+#     y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(training_size + testing_size)])
+    
+#     return X, y
 
 def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate,gate_name,init_params_dict,filename,dataset_key, L = [], use_L=False):
     opt_lr = None
@@ -567,17 +597,24 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
     # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,10,key)
     #key,subkey = jax.random.split(states_key)
     #add_a,add_b =  np.asarray(worst_a[:N_train]), np.asarray(worst_b[:N_train])
+    # Generate training dataset
     if use_L:
-        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, N_test, dataset_key, L) 
+        train_X, train_y = generate_dataset(gate, N_ctrl, N_train, dataset_key, L)
     else:
-        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, N_test, dataset_key) 
-    input_states, target_states = np.asarray(opt_a[:N_train]), np.asarray(opt_b[:N_train])
-    print(f"opt_a.shape: {opt_a.shape}; train_in shape: {input_states.shape}")
-    # print(f"opt_b.shape: {opt_b.shape}; train_in shape: {target_states.shape}")
-    test_in, test_targ = opt_a[N_train:], opt_b[N_train:]
-    # print(f"test_in.shape: {test_in.shape}; test_targ shape: {test_targ.shape}")
-    if len(L) > 0:
-        assert np.array_equal(input_states, L), f"Training set not set correctly. input_states[0]: {input_states[0]}, L[0]: {L[0]}"
+        train_X, train_y = generate_dataset(gate, N_ctrl, N_train, dataset_key)
+        
+    # Generate testing dataset with a new key for independence.
+    test_dataset_key = jax.random.split(dataset_key)[1]
+    test_X, test_y = generate_dataset(gate, N_ctrl, N_test, test_dataset_key)
+
+    input_states, target_states = np.asarray(train_X), np.asarray(train_y)
+    print(f"Training dataset shapes: input_states: {input_states.shape}, target_states: {target_states.shape}")
+    print(f"Testing dataset shapes: test_X: {test_X.shape}, test_y: {test_y.shape}")
+    
+    if use_L and len(L) > 0:
+        assert np.array_equal(input_states, np.asarray(L)[:N_train]), (
+            f"Training set not set correctly. input_states[0]: {input_states[0]}, L[0]: {L[0]}"
+        )
     sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, N_reserv * N_ctrl,time_steps)
     
     
