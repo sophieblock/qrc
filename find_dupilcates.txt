@@ -1,0 +1,15 @@
+config_df = df_all[(df_all['N_ctrl'] == 2) & (df_all['N_reserv'] == 1)]
+print("Number of rows for configuration (N_ctrl=2, N_reserv=1):", config_df.shape[0])
+print(np.array(config_df['all_qfim_eigvals'][1]).shape)
+print(config_df['qfim_eigs_2d'][1].shape)
+# Option 1: Check uniqueness within each row.
+print("\nChecking uniqueness within each row:")
+for idx, row in config_df.iterrows():
+    eig_sets = row["all_qfim_eigvals"]
+    # Convert each eigenvalue set to a hashable tuple.
+    # (Flatten the array, round for stability, and convert to a tuple.)
+    eig_tuples = [tuple(np.round(np.array(eig).flatten(), decimals=5)) for eig in eig_sets]
+    if len(eig_tuples) == len(set(eig_tuples)):
+         print(f"T={row['Trotter_Step']}: All {len(eig_tuples)} eigenvalue sets are unique.")
+    else:
+         print(f"T={row['Trotter_Step']}: Duplicate eigenvalue sets found!")
