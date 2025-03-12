@@ -324,7 +324,7 @@ def main():
     N_ctrl = 2
     baths = [False]
     num_bath = 0
-    number_of_fixed_param_tests = 10
+    number_of_fixed_param_tests = 1
     number_trainable_params_tests =100 
 
     base_state = 'GHZ_state'
@@ -335,7 +335,7 @@ def main():
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
     # trots = [1,4,6,8,9,10,12,16,20,24]
     # trots = [1,2,3,4,4,5,6,7,8,9,10,12,16,20,24]
-    trots = [1,4,8,12,16]
+    trots = [1,2,3,4,5,6,7,8,9,10,11,12,14,16]
     reservoirs = [1,2]
    
     
@@ -344,8 +344,8 @@ def main():
 
     kFactor = 1
     K_0 = kFactor
-    sample_range = np.pi
-    sample_range_label = 'pi'
+    sample_range = np.pi/2
+    sample_range_label = '.5pi'
     batch =True
     #folder = f'./QFIM_traced_trainable_global/analog_model/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
     folder = f'./QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
@@ -355,7 +355,7 @@ def main():
             if N_reserv == 1:
                 number_of_fixed_param_tests = 1
             else:
-                number_of_fixed_param_tests = 10
+                number_of_fixed_param_tests = 5
             
             print("________________________________________________________________________________")
             print(f"N_ctrl: {N_ctrl}, N_R: {N_reserv}, time_steps: {time_steps}")
