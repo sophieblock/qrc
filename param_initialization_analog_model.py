@@ -3,6 +3,9 @@ from pennylane.math import vn_entropy
 import os
 import pickle
 import re
+import pickle
+from pathlib import Path
+
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -14,10 +17,7 @@ import matplotlib.pyplot as plt
 import base64
 from jax import numpy as jnp
 import pickle
-from qutip import *
-from qutip.qip.operations import cnot,rz,rx,ry,snot
-from qutip.qip.circuit import QubitCircuit
- # Using pennylane's wrapped numpy
+
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
 import jax
 import numpy as old_np
@@ -66,11 +66,7 @@ from pennylane.operation import AnyWires, Operation
 from pennylane.typing import TensorLike
 from pennylane.ops import functions
 from pennylane.ops import Evolution
-from parametrized_hamiltonian import ParametrizedHamiltonian
-from parametrized_ham_pytree import ParametrizedHamiltonianPytree
-from hard_ham import HardwareHamiltonian
-from evolution2 import Evolution
-from QFIM import get_qfim_data_analog
+
 #from pennylane.pulse import ParametrizedEvolution, ParametrizedHamiltonian,HardwareHamiltonian
 from jax.experimental.ode import odeint
 from pennylane.devices.qubit.apply_operation import _evolve_state_vector_under_parametrized_evolution,apply_parametrized_evolution
@@ -82,112 +78,49 @@ config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 
-def quantum_fun(gate, input_state, qubits):
-    '''
-    Apply the gate to the input state and return the output state.
-    '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
-    gate(wires=qubits)
-    return qml.density_matrix(wires=[*qubits])
+# def generate_dataset(
+#     gate, n_qubits, training_size, key, new_set=False
+# ):
+#     """
+#     Generate a deterministic dataset of input and output states for a given gate.
 
+#     Parameters:
+#         gate: The quantum gate to apply.
+#         n_qubits: Number of qubits in the system.
+#         training_size: Number of training states required.
+#         key: JAX random key for reproducibility.
+#         trot_step: (Optional) Trotter step for additional determinism.
+#         reservoir_count: (Optional) Reservoir count for additional determinism.
+#         new_set: If True, generate a new dataset even for the same parameters. Default is False.
 
-def get_target_state(gate, input_state, qubits):
-    '''
-    Apply the gate to the input state and return the output state.
-    '''
-    qml.QubitStateVector(input_state, wires=[*qubits])
-    gate(wires=qubits)
-    return qml.state()
+#     Returns:
+#         Tuple (input_states, output_states).
+#     """
+#     if new_set:
+#         # Use the raw key to generate a new dataset
+#         seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+#     else:
+       
+#         # Derive a deterministic seed that ignores trot_step and reservoir_count
+#         key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+#         seed = hash((n_qubits, key_int)) 
 
+#     # Generate random state vectors deterministically
+#     X = []
+#     for i in range(training_size):
+#         folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
+#         state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
+#         state_vec = random_statevector(2**n_qubits, seed=state_seed).data
+#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
 
+#     # Generate output states using the circuit
+#     qubits = Wires(list(range(n_qubits)))
+#     dev_data = qml.device("default.qubit", wires=qubits)
+#     circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
 
+#     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
 
-
-def generate_dataset(gate, n_qubits, training_size,testing_size, key, L=[]):
-    '''
-    Generate the dataset of input and output states according to the gate provided.
-    Uses a seed for reproducibility.
-    '''
-    
-    if len(L) == 0:
-        # Generate random state vectors
-        X = []
-        for _ in range(training_size + testing_size):
-            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-            # Extract the scalar seed value explicitly to avoid deprecation warning
-            seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-            # Use the extracted scalar seed value
-            state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-            X.append(np.asarray(state_vec))
-    else:
-        L = np.asarray(L) 
-        print(f"Using pre-selected states for training")
-        X = [state for i,state in enumerate(L) if i < training_size]
-        print(f"len(x): {len(X)}")
-        for _ in range(testing_size):
-            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-            # Extract the scalar seed value explicitly to avoid deprecation warning
-            seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-            # Use the extracted scalar seed value
-            state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-            X.append(np.asarray(state_vec))
-
-    # Convert lists to np.ndarrays before concatenating
-    # X = np.asarray(X)  # Convert list X to an ndarray
-    #  # Convert list L to an ndarray
-
-    # # Concatenate the arrays
-    # X = np.concatenate([L, X], axis=0)
-    X = np.stack(X)
-    qubits = Wires(list(range(n_qubits)))
-    dev_data = qml.device('default.qubit', wires=qubits)
-    circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
-    
-    # Execute the circuit for each input state
-    y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(training_size + testing_size)])
-    
-    return X, y
-def create_initial_state(num_qubits, base_state):
-    """
-    Create an initial state for a given number of qubits.
-    """
-    state = np.zeros(2**num_qubits)
-
-    if base_state == 'basis_state':
-        state = state.at[0].set(1)
-
-    elif base_state == 'GHZ_state':
-        state = state.at[0].set(1 / np.sqrt(2))
-        state = state.at[-1].set(1 / np.sqrt(2))
-
-    return state
-
-def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, base_key):
-    N = N_reserv + N_ctrl
-    # Adjust the key based on time_steps and fixed_param_num
-    key = jax.random.PRNGKey((base_key) * 123456789 % (2**32))  # Example combination
-    
-    N = N_reserv + N_ctrl
-    
-
-    
-    K_half = jax.random.uniform(key, (N, N))
-    K = (K_half + K_half.T) / 2  # making the matrix symmetric
-    K = 2. * K - 1.
-    
-    
-    if bath:
-        bath_array = 0.01 * jax.random.normal(key, (num_bath, N_ctrl + N_reserv))
-        return {
-            
-
-            'K_coef': jnp.asarray(K),
-            'bath':bath_array
-        }
-    return {
-
-            'K_coef': jnp.asarray(K)
-        }
+#     return np.asarray(X), np.asarray(y)
 
 class Sim_QuantumReservoir:
     def __init__(self, params, N_ctrl, N_reserv, num_J, time_steps=1,bath=False,num_bath = 0):
@@ -295,56 +228,27 @@ class Sim_QuantumReservoir:
 
         H_dynamic = qml.dot(coefficients,operators)
         #print(f"H_dynamic: {H_dynamic}")
-        ''' Construct the time-independent part of the Hamiltonian '''
+        ''' Construct the non-parametrized part of the Hamiltonian '''
         static_coefficients = []
         static_operators = []
 
         
         for qubit_a in range(len(self.reserv_qubits)):
-            #print(f"qubit_a: {qubit_a}")
+            
             for qubit_b in range(len(self.reserv_qubits)):
-                #print(f"qubit_b: {qubit_b}")
+                
                 if qubit_a != qubit_b:
-                    #print("K_coeff: ",self.k_coefficient)
+                    
                     interaction_coeff = self.k_coefficient[qubit_a, qubit_b]
-                    #print("interaction_coeff: ", interaction_coeff)
+                   
                     static_coefficients.append(interaction_coeff)
                     new_operator = self.get_XY_coupling(self.reserv_qubits[qubit_a], self.reserv_qubits[qubit_b])
                     static_operators.append(new_operator)
 
-        # if non-markovian noise present, add interactions
-        if self.bath:
-            
-            for bath_qubit_idx, bath_qubit in enumerate(self.bath_qubits):
-                # reservoir-bath interactions
-                for res_qubit_idx, res_qubit in enumerate(self.reserv_qubits):
-                    interaction_coeff = self.bath_interactions[bath_qubit_idx, res_qubit_idx]
-                    static_coefficients.append(interaction_coeff)
-                    new_operator = self.get_XY_coupling(bath_qubit, res_qubit)
-                    static_operators.append(new_operator)
-
-
-                    static_coefficients.append(interaction_coeff)
-                    new_operator = self.get_XY_coupling(res_qubit,bath_qubit)
-                    static_operators.append(new_operator)
-
-                # ctrl-bath interactions
-                for ctrl_qubit_idx, ctrl_qubit in enumerate(self.ctrl_qubits):
-                    
-                    interaction_coeff = self.bath_interactions[bath_qubit_idx, self.N_reserv + ctrl_qubit_idx]
-                    static_coefficients.append(interaction_coeff)
-                    new_operator = self.get_XY_coupling(bath_qubit, ctrl_qubit)
-                    static_operators.append(new_operator)
-
-
-                    #static_coefficients.append(interaction_coeff)
-                    #new_operator = self.get_XY_coupling(self.ctrl_qubits[qubit_b],self.bath_qubits[qubit_a])
-                    #static_operators.append(new_operator)
-
-
+        # tbd add bath
 
         #print(static_coefficients, static_operators)
-        if self.N_reserv == 1:
+        if self.N_reserv == 1 and self.bath == False:
             total_H = H_dynamic
         
         else:
@@ -356,132 +260,7 @@ class Sim_QuantumReservoir:
         
 
         return total_H
-
-def run_hyperparam_test(lr,num_epochs, N_reserv, N_ctrl, time_steps, folder, batch_size,gate,a,b,init_params_dict,sim_qr,params):
-    opt = optax.adam(learning_rate=lr)
-    input_states, target_states = a,b
-    assert len(input_states) == batch_size
-    num_J = N_ctrl*N_reserv
-    key = jax.random.PRNGKey(0)
-    #params = jax.random.normal(key, shape=(1+time_steps+(N_ctrl * N_reserv)*time_steps,))
-
-    #for i in range(time_steps):
-        #params = params.at[i].set(np.abs(params[i]))
-
-    
-
-    
-   # sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, N_reserv * N_ctrl, input_states, target_states,time_steps,bath,num_bath)
-    # get hamiltonian circuit variables
-    parameterized_ham = sim_qr.get_total_hamiltonian_components()
-    #print("\nParam ham: ", parameterized_ham)
-    ctrl_wires = sim_qr.get_ctrl_wires()
-    reserv_wires = sim_qr.get_reserv_wires()
-
-    qnode_dev = sim_qr.get_dev()
-    
-    costs = []
-    
-    opt_state = opt.init(params)
-    @qml.qnode(qnode_dev, interface="jax")
-    def circuit(params,state_input):
-        
-        taus = params[:time_steps]
-
-        qml.StatePrep(state_input, wires=[*ctrl_wires])
-        
-
-        for idx, tau in enumerate(taus):
-           
-            hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
-            hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
-            hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
-            J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
-
-            # Concatenate hx_array with J_values
-            current_step = np.concatenate([J_values,hx_array,hy_array,hz_array])
-            
-            qml.evolve(parameterized_ham)(current_step, t=tau)
-            
-        return qml.density_matrix(wires=[*ctrl_wires])
-    
-    
-    vcircuit = jax.vmap(circuit, in_axes=(None, 0))
-    def batched_cost_helper(params, input_states, target_states):
-        print(len(params))
-        # Process the batch of states
-        batched_output_states = vcircuit(params, input_states)
-        
-        # Compute fidelity for each pair in the batch and then average
-        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, target_states)
-        average_fidelity = np.sum(fidelities)/len(fidelities)
-        
-        return 1 - average_fidelity  # Minimizing infidelity
-
-    @partial(jit, static_argnums=(1, 2, 3))
-    def cost_func(params, time_steps, N_reserv, N_ctrl, input_states, target_states):
-        return batched_cost_helper(params, input_states, target_states)
-   
-
-    
-    for epoch in range(num_epochs):
-        
-        cost, grad_circuit = jax.value_and_grad(cost_func)(params, time_steps, N_reserv, N_ctrl, input_states, target_states)
-        
-        # Update parameters using the optimizer
-        updates, opt_state = opt.update(grad_circuit, opt_state)
-        params = optax.apply_updates(params, updates)
-        params = params.at[:time_steps].set(jax.numpy.where(params[:time_steps] < 0, jax.numpy.abs(params[:time_steps]), params[:time_steps]))
-
-        
-
-    print(f"Resulting fidelity for learning rate {lr}: {1-cost}")
-    return 1- cost
-
-
-def hyperparameter_optimization_batch(gate, num_epochs, N_reserv, N_ctrl, N_train, time_steps,folder,init_params_dict,a,b,sim_qr,params):
-    randomize = False
-    if N_ctrl == 1:
-        if N_reserv > 2:
-            return 0.1, randomize
-            learning_rates = np.array([0.1,0.2,0.3])
-
-
-        else:
-            learning_rates = np.array([0.01,0.05, 0.1,0.2])
-        #learning_rates = np.array([0.25,0.2, 0.15,0.1,0.05,0.01])
-        
-    elif N_ctrl == 2:
-        learning_rates = np.array([0.1,0.05])
-    else:
-        learning_rates = np.array([0.2,0.1,0.05,0.01])
-    
-    # Partially apply the fixed parameters to your test function
-    partial_hyperparam_test = partial(run_hyperparam_test, 
-                                      num_epochs=num_epochs, 
-                                      N_reserv=N_reserv, 
-                                      N_ctrl=N_ctrl, 
-                                      time_steps=time_steps, 
-                                      folder=folder, 
-                                      batch_size=N_train, 
-                                      gate=gate, 
-                                      
-                                      a=a, 
-                                      b=b, 
-                                      init_params_dict=init_params_dict,
-                                      sim_qr=sim_qr,
-                                      params=params)
-
-    vrun_hyperparam_test = jax.vmap(partial_hyperparam_test, in_axes=0)
-
-    # Run the tests in parallel
-    performances = vrun_hyperparam_test(learning_rates)
-
-    # Analyze the results to find the best learning rate
-    best_performance_index = jax.numpy.argmax(performances)
-    best_lr = learning_rates[best_performance_index]
-    
-    return best_lr, randomize
+ 
 
 def array(a,dtype):
     return np.asarray(a, dtype=np.float32)
@@ -696,214 +475,109 @@ def compute_initial_learning_rate(gradients, scale_factor=0.1, min_lr=1e-3, max_
     #initial_lr =initial_lr / (min_abs_grad * 10)
     initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
     return initial_lr
-def apply_adaptive_penalty(var_grad, iqr_var_grad,norm_var_grad_var, num_qubits, num_time_steps, num_parameters, weight_mean_grad, weight_aggregated_var, all_variances, all_iqrs,all_var_grad_vars):
-    """
-    Applies adaptive penalties to the variance and IQR based on system characteristics and number of parameters.
-    Logs details about penalties applied.
-    """
-    # Get the percentiles for variance and IQR for adaptive penalty
-    # Convert lists to NumPy arrays
-    all_variances = np.array(all_variances)
-    all_iqrs = np.array(all_iqrs)
-    all_var_grad_vars = np.array(all_var_grad_vars)  
-   
-    # print(f"all_variances.shape: {all_variances.shape}")
-    var_percentile_90 = np.percentile(all_variances, 90)  # 90th percentile of variance
-    iqr_percentile_10 = np.percentile(all_iqrs, 10)  # 10th percentile for IQR
-    var_grad_var_percentile_90 = np.percentile(all_var_grad_vars, 90)  # 90th percentile of var_grad variance
-    var_grad_var_percentile_10 = np.percentile(all_var_grad_vars, 50)  # 90th percentile of var_grad variance
+
+def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr=0.2):
+    """Estimate a more practical initial learning rate based on the gradient norms."""
+    grad_norm = jnp.linalg.norm(grads)
     
-    # print(f"var_percentile_90: {var_percentile_90:5e}, iqr_percentile_10: {iqr_percentile_10:5e}, var_grad_var_percentile_90: {var_grad_var_percentile_90:5e}, var_grad_var_percentile_10: {var_grad_var_percentile_10:5e}")
-    # Normalize based on system size (qubits * time_steps * num_parameters)
-    # norm_var_grad = var_grad / (num_qubits * num_time_steps * num_parameters)
-    # norm_iqr_var_grad = iqr_var_grad / (num_qubits * num_time_steps * num_parameters)
-    norm_var_grad = var_grad 
-    norm_iqr_var_grad = iqr_var_grad 
-   
-    # Initialize penalty factor
-    penalty_factor = 1.0
-    # print(f"\nEvaluating penalties for dataset with norm_var_grad: {norm_var_grad:.5e}, norm_iqr_var_grad: {norm_iqr_var_grad:.5e}, norm_var_grad_var: {norm_var_grad_var:.5e}")
-
-    # Only penalize if the variance is extremely high and the IQR is also large (indicating instability)
-    if norm_var_grad > var_percentile_90 and norm_iqr_var_grad > iqr_percentile_10:
-        penalty_factor *= 0.8  # Penalize unstable datasets (reduce to 70%)
-        # print(f"Penalized for high variance and high instability. Penalty factor reduced to {penalty_factor:.2f}")
+    initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
     
-    # Reward stability (low IQR, less than 10th percentile)
-    if norm_iqr_var_grad < iqr_percentile_10:
-        penalty_factor *= 1.2  # Reward more stable datasets
-        # print(f"Rewarded for stability (low IQR less than 10th percentile). Penalty factor increased to {penalty_factor:.2f}")
-    # Reward stability (low IQR, less than 10th percentile)
-    if norm_var_grad_var < var_grad_var_percentile_10:
-        penalty_factor *= 1.2  # Reward more stable datasets
-        # print(f"Rewarded for stability (low var(var_grad) less than 20th percentile). Penalty factor increased to {penalty_factor:.2f}")
+    initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    print(f"initial base lr: {initial_lr:.5f}")
+    return initial_lr, grad_norm
+def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-4, max_lr=0.2):
+    # print(f"grads: {grads}")
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    return lr_tree
+def quantum_fun(gate, input_state, qubits):
+    '''
+    Apply the gate to the input state and return the output state.
+    '''
+    qml.StatePrep(input_state, wires=[*qubits])
+    gate(wires=qubits)
+    return qml.density_matrix(wires=[*qubits])
+
+
+def get_target_state(gate, input_state, qubits):
+    '''
+    Apply the gate to the input state and return the output state.
+    '''
+    qml.StatePrep(input_state, wires=[*qubits])
+    gate(wires=qubits)
+    return qml.state()
+
+
+
+
+def generate_dataset(gate, n_qubits, training_size,testing_size, key, L=[]):
+    '''
+    Generate the dataset of input and output states according to the gate provided.
+    Uses a seed for reproducibility.
+    '''
     
-    # Penalize large variance of var_grad (instability)
-    if norm_var_grad_var > var_grad_var_percentile_90:
-        penalty_factor *= 0.8  # Penalize unstable datasets with large var_grad variance
-        # print(f"Penalized for large var_grad variance (greater than 95th percentile). Penalty factor reduced to {penalty_factor:.2f}")
-
-    # Calculate the weighted sum with penalties applied
-    weighted_sum = penalty_factor * norm_var_grad 
-    
-    # print(f"Final weighted sum with penalties applied: {weighted_sum:.5e} norm_var_grad: {norm_var_grad:.5e}")
-    return weighted_sum
-def optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,num_datasets, key):
-    datasets = []
-    print(f"Pre-processing a batch of {num_datasets} training sets for selection... ")
-    all_A, all_b = [],[]
-    for i in range(num_datasets):
-        key, subkey = jax.random.split(key)  # Split the key for each dataset generation
-        A,b = generate_dataset(gate, N_ctrl, N_train, 2000, subkey)  # Generate dataset with the subkey
-        all_A.append(A)
-        all_b.append(b)
-    all_A = jnp.stack(all_A)
-    all_b = jnp.stack(all_b)
-    # Convert datasets list into two arrays for inputs and targets
-    
-    num_J = N_reserv *N_ctrl
-    
-    sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, num_J,time_steps)
-    parameterized_ham = sim_qr.get_total_hamiltonian_components()
-
-
-    ctrl_wires = sim_qr.get_ctrl_wires()
-    reserv_wires = sim_qr.get_reserv_wires()
-    qnode_dev = sim_qr.get_dev()
-    all_wires = sim_qr.get_all_wires()
-
-    @qml.qnode(qnode_dev, interface="jax")
-    def circuit(params, state_input):
-        taus = params[:time_steps]
-        qml.StatePrep(state_input, wires=[*ctrl_wires])
-        for idx, tau in enumerate(taus):
-            hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
-            hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
-            hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
-            J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
-            current_step = np.concatenate([J_values, hx_array, hy_array, hz_array])
-            qml.evolve(parameterized_ham)(current_step, t=tau)
-        return qml.density_matrix(wires=[*ctrl_wires])
-
-    @jit
-    def cost_func(params, input_state, target_state):
-        output_state = circuit(params, input_state)
-        fidelity = qml.math.fidelity(output_state, target_state)
-        return 1 - fidelity  # Minimizing infidelity
-
-    @jit
-    def collect_gradients(params, input_states, target_states):
-        grad_fn = jax.grad(cost_func, argnums=0)
-        gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
-        return gradients
-    
-    def calculate_gradient_stats(gradients):
-        mean_grad = jnp.mean(gradients, axis=0)
-        mean_grad_squared = jnp.mean(gradients**2, axis=0)
-        var_grad = mean_grad_squared - mean_grad**2
-        return mean_grad, var_grad
-    batched_collect_gradients = jax.vmap(collect_gradients, in_axes=(None, 0, 0))
-
-    all_gradients = batched_collect_gradients(params, all_A[:, :N_train], all_b[:, :N_train])
-
-    all_variances = []
-    all_iqrs = []
-    all_var_grad_vars = []
-    for i in range(num_datasets):
-        _, var_grad = calculate_gradient_stats(all_gradients[i])
-        all_variances.append(var_grad.mean())
-        all_iqrs.append(stats.iqr(var_grad,rng=(30,70)))
-        all_var_grad_vars.append(np.var(var_grad)) 
-
-
-    best_dataset_idx = None
-    max_var_grad_sum = -jnp.inf
-    second_best_idx = None
-    min_var_grad_sum = jnp.inf
-# Define the weight factors for `mean_grad.mean()` and `aggregated_var`
-    weight_mean_grad = 0.4  # You can adjust this weight
-    weight_aggregated_var = 0.6  # You can adjust this weight
-    max_weighted_sum = -jnp.inf
-
-    min_weighted_sum = jnp.inf
-    # Calculate and print gradient statistics for each dataset
-    for i in range(num_datasets):
-        mean_grad, var_grad = calculate_gradient_stats(all_gradients[i])
-        mean_grad_var =jnp.var(mean_grad)
-        # Calculate the weighted average of `mean_grad.mean()` and `aggregated_var`
-        aggregated_var = var_grad.mean()
-        
-        
-        min_grad = jnp.min(jnp.abs(mean_grad))
-        max_grad = jnp.max(jnp.abs(mean_grad))
-        min_var = jnp.min(var_grad)
-        max_var = jnp.max(var_grad)
-        # Calculate IQR of the variances
-       
-        iqr_var_grad_25_75 = stats.iqr(var_grad, rng=(20,80))
-        iqr_var_grad_30_70 = stats.iqr(var_grad, rng=(30,70))
-        num_parameters = len(var_grad)
-        
-        # weighted_sum = apply_adaptive_penalty(aggregated_var, iqr_var_grad_25_75, N_ctrl, time_steps, weight_mean_grad, weight_aggregated_var, all_variances, all_iqrs)
-        # weighted_sum = apply_adaptive_penalty(aggregated_var, iqr_var_grad_25_75,np.var(var_grad), N_ctrl+N_reserv, time_steps, num_parameters, weight_mean_grad, weight_aggregated_var, all_variances, all_iqrs,all_var_grad_vars)
-        weighted_sum = aggregated_var
-
-        print(f"A{i+1}, b{i+1}): Variance of gradients = {aggregated_var:5e}; IQR of Variance (20,80) = {iqr_var_grad_25_75:5e};  IQR of Variance (30,70) = {iqr_var_grad_30_70:5e}\n")
-        # print(f"        - min/max varience: {min_var:5e}, {max_var:3e}")
-        # print(f"        - var(var_grad): {np.var(var_grad):5e}")
-        # print(f"Weighted sum: {weighted_sum:5e}")
-        # print(f"IQRs of var_grad: (10,90): {stats.iqr(var_grad,rng=(10,90)):5e}, (20,80): {stats.iqr(var_grad,rng=(20,80)):5e}):")
-        
-        # Update the best and second-best datasets based on the weighted sum
-        if weighted_sum > max_weighted_sum:
-            if best_dataset_idx is not None:
-                second_best_idx = best_dataset_idx
-            max_weighted_sum = weighted_sum
-            best_dataset_idx = i
-        elif best_dataset_idx is not None and (second_best_idx is None or weighted_sum > calculate_gradient_stats(all_gradients[second_best_idx])[1].mean()):
-            second_best_idx = i
-
-        if weighted_sum < min_weighted_sum:
-            min_weighted_sum = weighted_sum
-    
-    print(f"Selected Dataset: A{best_dataset_idx + 1}, b{best_dataset_idx + 1} with Variance Sum: {max_weighted_sum}\nsecond best:  A{second_best_idx + 1} ")
-    best_A = all_A[best_dataset_idx]
-    best_b = all_b[best_dataset_idx]
-    
-   
-    if second_best_idx is not None:
-        worst_A = all_A[second_best_idx]
-        worst_b = all_b[second_best_idx]
+    if len(L) == 0:
+        # Generate random state vectors
+        X = []
+        for _ in range(training_size + testing_size):
+            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
+            # Extract the scalar seed value explicitly to avoid deprecation warning
+            seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
+            # Use the extracted scalar seed value
+            state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+            X.append(np.asarray(state_vec))
     else:
-        raise ValueError("Second best dataset index was not correctly identified.")
-    best_gradients = all_gradients[best_dataset_idx]
-    initial_lr = compute_initial_learning_rate(best_gradients)
-    print(f"Initial Learning Rate: {initial_lr}")
-    assert best_dataset_idx != second_best_idx
-    return best_A, best_b, worst_A, worst_b, initial_lr
+        L = np.asarray(L) 
+        print(f"Using pre-selected states for training")
+        X = [state for i,state in enumerate(L) if i < training_size]
+        print(f"len(x): {len(X)}")
+        for _ in range(testing_size):
+            key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
+            # Extract the scalar seed value explicitly to avoid deprecation warning
+            seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
+            # Use the extracted scalar seed value
+            state_vec = random_statevector(2**n_qubits, seed=seed_value).data
+            X.append(np.asarray(state_vec))
 
+    # Convert lists to np.ndarrays before concatenating
+    # X = np.asarray(X)  # Convert list X to an ndarray
+    #  # Convert list L to an ndarray
 
-def run_test(num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate,gate_name,init_params_dict,params,filename,based_subkey, L = []):
+    # # Concatenate the arrays
+    # X = np.concatenate([L, X], axis=0)
+    X = np.stack(X)
+    qubits = Wires(list(range(n_qubits)))
+    dev_data = qml.device('default.qubit', wires=qubits)
+    circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
+    
+    # Execute the circuit for each input state
+    y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(training_size + testing_size)])
+    
+    return X, y
+
+def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate,gate_name,init_params_dict,filename,dataset_key, L = [], use_L=False):
     opt_lr = None
     num_J = N_ctrl*N_reserv
     init_params = params
     
-    states_key = jax.random.PRNGKey(based_subkey)
-    key,subkey = jax.random.split(states_key)
+    
     # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,10,key)
     #key,subkey = jax.random.split(states_key)
     #add_a,add_b =  np.asarray(worst_a[:N_train]), np.asarray(worst_b[:N_train])
-    if len(L) > 0:
-        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, 2000, subkey, L) 
+    if use_L:
+        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, N_test, dataset_key, L) 
     else:
-        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, 2000, subkey) 
+        opt_a,opt_b = generate_dataset(gate, N_ctrl, N_train, N_test, dataset_key) 
     input_states, target_states = np.asarray(opt_a[:N_train]), np.asarray(opt_b[:N_train])
     print(f"opt_a.shape: {opt_a.shape}; train_in shape: {input_states.shape}")
     # print(f"opt_b.shape: {opt_b.shape}; train_in shape: {target_states.shape}")
     test_in, test_targ = opt_a[N_train:], opt_b[N_train:]
     # print(f"test_in.shape: {test_in.shape}; test_targ shape: {test_targ.shape}")
     if len(L) > 0:
-        assert np.array_equal(input_states, L[:N_train]), f"Training set not set correctly. input_states[0]: {input_states[0]}, L[0]: {L[0]}"
+        assert np.array_equal(input_states, L), f"Training set not set correctly. input_states[0]: {input_states[0]}, L[0]: {L[0]}"
     sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, N_reserv * N_ctrl,time_steps)
     
     
@@ -914,9 +588,9 @@ def run_test(num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate
     print("Number of trainable parameters: ", len(params))
 
     ctrl_wires = sim_qr.get_ctrl_wires()
-    reserv_wires = sim_qr.get_reserv_wires()
+   
     qnode_dev = sim_qr.get_dev()
-    all_wires = sim_qr.get_all_wires()
+
 
 
     costs = []
@@ -944,159 +618,236 @@ def run_test(num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate
             qml.evolve(parameterized_ham)(current_step, t=tau)
             
         return qml.density_matrix(wires=[*ctrl_wires])
-    
-    vcircuit = jax.vmap(circuit, in_axes=(None, 0))
-    def batched_cost_helper(params, input_states, target_states):
+    specs_func = qml.specs(circuit)
+    specs = specs_func(params,input_states[0])
+    circuit_depth = specs['resources'].depth
+    num_gates = specs['resources'].num_gates
+    jit_circuit = jax.jit(circuit)
+    vcircuit = jax.vmap(jit_circuit, in_axes=(None, 0))
+    def batched_cost_helper(params, X, y):
         # Process the batch of states
-        batched_output_states = vcircuit(params, input_states)
+        batched_output_states = vcircuit(params, X)
         
         # Compute fidelity for each pair in the batch and then average
-        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, target_states)
-        average_fidelity = np.sum(fidelities)/len(fidelities)
-        
+        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
+        fidelities = jnp.clip(fidelities, 0.0, 1.0)
+        average_fidelity = jnp.mean(fidelities)
+       
         return 1 - average_fidelity  # Minimizing infidelity
-        
-    @partial(jit, static_argnums=(1, 2, 3))
-    def cost_func(params, time_steps, N_reserv, N_ctrl, input_states, target_states):
-        return batched_cost_helper(params, input_states, target_states)
+    @jit
+    def cost_func(params,input_states, target_states):
+        params = jnp.asarray(params, dtype=jnp.float64)
+        X = jnp.asarray(input_states, dtype=jnp.complex128)
+        y = jnp.asarray(target_states, dtype=jnp.complex128)
+        # Process the batch of states
+        loss = batched_cost_helper(params, X, y)
+        loss = jnp.maximum(loss, 0.0)  # Apply the cutoff to avoid negative costs
+
+        return loss
    
-    def final_test(params, time_steps, N_reserv, N_ctrl, test_in, test_targ):
-        
-        batched_output_states = vcircuit(params, test_in)
-        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, test_targ)        
-    
+    def final_test(params,test_in,test_targ):
+        params = jnp.asarray(params, dtype=jnp.float64)
+        X = jnp.asarray(test_in, dtype=jnp.complex128)
+        y = jnp.asarray(test_targ, dtype=jnp.complex128)
+        batched_output_states = vcircuit(params, X)
+
+        fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
+        fidelities = jnp.clip(fidelities, 0.0, 1.0)
+
         return fidelities
-
+ 
+    # Initial training to determine appropriate learning rate
     if opt_lr == None:
-        # s = time.time()
-        init_loss, init_grads = jax.value_and_grad(cost_func)(params, time_steps, N_reserv, N_ctrl, input_states, target_states)
-        # e = time.time()
-        # dt = e - s
-        # print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
-        opt_lr, dqfim_data = get_initial_learning_rate_DQFIM(params=params,qrc=sim_qr, X = input_states,y=target_states, gate=gate,init_grads=init_grads)
-        print(f"Adjusted initial learning rate: {opt_lr:.4f}")
+        s = time.time()
+        init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
+        e = time.time()
+        dt = e - s
+        # print(f"initial fidelity: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
+        # opt_lr,grad_norm = get_initial_learning_rate(init_grads)
+        max_lr,_ = get_initial_learning_rate(init_grads)
+        opt_lr = get_initial_lr_per_param(init_grads, max_lr=max_lr)
+        # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
+        cost = init_loss
+    else:
+        s = time.time()
+        init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
+        e = time.time()
+        dt = e - s
+        opt_lr,grad_norm = get_initial_learning_rate(init_grads)
+        cost = init_loss
+        # print(f"initial fidelity: {init_loss:.4f}, init opt: {maybe_lr}. Time: {dt:.2e}")
+        
+    opt_descr = 'per param'
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
+    #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
+    #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
+    # )
+    # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
     
-    # if opt_lr == None:
-    #     s = time.time()
-    #     init_loss, init_grads = jax.value_and_grad(cost_func)(params, time_steps, N_reserv, N_ctrl, input_states, target_states)
-    #     e = time.time()
-    #     dt = e - s
-    #     # print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
-    #     opt_lr,grad_norm = get_initial_learning_rate(init_grads,scale_factor=0.01)
-    #     print(f"Adjusted initial learning rate: {opt_lr:0.4e}. Grad_norm 1: {1/grad_norm:0.4e},Grad_norm 0.1: {0.1/grad_norm:0.4e}, Grad_norm 0.01: {0.01/grad_norm:0.4e}")
+    learning_rate_schedule = optax.constant_schedule(opt_lr)
+    opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
+        )
+    
 
 
-
+   
+    @jit
+    def update(params, opt_state, input_states, target_states, value):
+        """Update all parameters including tau."""
+        # params = jnp.asarray(params, dtype=jnp.float64)
+        # input_states = jnp.asarray(input_states, dtype=jnp.complex128)
+        # target_states = jnp.asarray(target_states, dtype=jnp.complex128)
+        loss, grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
+        if not isinstance(opt_state[-1], optax.contrib.ReduceLROnPlateauState):
+            updates, opt_state = opt.update(grads, opt_state, params)
+        else:
+            updates, opt_state = opt.update(grads, opt_state, params=params, value=value)
+        new_params = optax.apply_updates(params, updates)
+        # Ensure outputs are float64
+        loss = jnp.asarray(loss, dtype=jnp.float64)
+        grads = jnp.asarray(grads, dtype=jnp.float64)
+        return new_params, opt_state, loss, grads
+    print(f"per param lrs: \n{opt_lr}\n")
 
     print("________________________________________________________________________________")
-    print(f"Starting optimization for {gate_name} with {len(input_states)} training states, lr {opt_lr:5e} time_steps = {time_steps}, N_r = {N_reserv}...\n")
-
-    opt = optax.adam(learning_rate=opt_lr)
-    @jit
-    def update(params, opt_state, input_states, target_states):
-        loss, grads = jax.value_and_grad(cost_func)(params, time_steps, N_reserv, N_ctrl, input_states, target_states)
-        updates, new_opt_state = opt.update(grads, opt_state)
-        new_params = optax.apply_updates(params, updates)
-        return new_params, new_opt_state, loss, grads
-    prev_cost = float('inf')  # Initialize with infinity
-    threshold_counts = 0
-    cost_threshold = 1e-5
-    cost,grads_per_epoch = [],[]
-    param_per_epoch = []
+    print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) with optimal lr {np.mean(opt_lr)}, time_steps = {time_steps}, N_r = {N_reserv}...\n")
+    print(f"Initial Loss: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
+    print(f"Depth: {circuit_depth}, Num Gates: {num_gates} ")
     print("Number of trainable parameters: ", len(params))
-    opt_state = opt.init(params)
-    consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
-    prev_cost = float('inf')  # Initialize with infinity
-    threshold_counts = 0
-    conv_tol = 1e-08
-    consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
-    backup_params = None
-    improvement = True
+    costs = []
+    param_per_epoch,grads_per_epoch = [],[]
+   # print(f"Params: {params}")
     
-    backup_cost = float('inf')  
+    opt_state = opt.init(params)
+    prev_cost, second_prev_cost = float('inf'), float('inf')  # Initialize with infinity
+    threshold_counts = 0
+    acceleration = 0.0
+    rocs = []
+    consecutive_improvement_count = 0
+    cost_threshold = 1e-5
+    consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
+    backup_params = init_params
+    improvement = True
+    backup_cost,min_cost =init_loss,float('inf')   
+    freeze_tau = False
     epoch = 0
     s = time.time()
     full_s =s
+    training_state_metrics = {}
     add_more = False
+    a_condition_set = False
+    a_threshold =  0.0
+    stored_epoch = None
+    threshold_cond1, threshold_cond2 = [],[]
+    false_improvement = False
+    backup_epoch=0
+    scale_reduction_epochs,learning_rates = [],[]  # Track epochs where scale is reduced
+    scales_per_epoch = []  # Store scale values per epoch
+    new_scale = 1.0  # Initial scale value
     while epoch < num_epochs or improvement:
         #print(params, type(params))
-        
-        #cost, grad_circuit = jax.value_and_grad(partial(cost_func, time_steps=time_steps, N_reserv=N_reserv, N_ctrl=N_ctrl, input_states=input_states,target_states= target_states))(params)
-        params, opt_state, cost,grad = update(params, opt_state, input_states, target_states)
+        params, opt_state, cost, grad = update(params, opt_state, input_states, target_states,value=cost)
         
         # Store parameters and cost for analysis
         param_per_epoch.append(params)
         costs.append(cost)
         grads_per_epoch.append(grad)
         # Logging
-        if epoch == 0 or (epoch + 1) % 100 == 0:
+        max_abs_grad = jnp.max(jnp.abs(grad))
+        if epoch == 0 or (epoch + 1) % 250 == 0:
+            var_grad = np.var(grad,ddof=1)
+            mean_grad = np.mean(jnp.abs(grad))
             e = time.time()
             epoch_time = e - s
-            var_grad = np.var(grad)
-            mean_grad = np.mean(jnp.abs(grad))
-            normalized_var_grad = var_grad /  np.mean(grad**2) 
-            #print(params)
-            print(f'{epoch + 1}: {cost:.5f}. '
-                f'mean(grad): {mean_grad:.1e}, '
-                f'Var(grad): {var_grad:.1e}, '
-                # f'Mean(grad): {mean_grad:.1e}, '
-                f'Var(norm(grad)): {normalized_var_grad:.2e}  [t: {epoch_time:.2f}s]')
+            if cost < 1e-3:
+                print(f'Epoch {epoch + 1} --- cost: {cost:.3e}, '
+
+                    f'[t: {epoch_time:.1f}s]'
+                    )
+            else:
+                print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
+                # print(f'Epoch {epoch + 1} --- cost: {cost:.4f}, best={best_val:.4f}, avg: {current_avg:.4f}, lr={learning_rates[-1]:.4f} [{plateau_state.scale:.3f}], '
+                    #   f' count: {plateau_state.plateau_count} '
         
-            # print(f"Epoch {epoch+1}, cost {cost}, gradient: {round(max(grad),5)} time: {round(epoch_time,2)}s")
-            #print(f"step {epoch+1}, cost {cost}")
+                    # f'Var(grad): {var_grad:.1e}, '
+                    # f'GradNorm: {np.linalg.norm(grad):.1e}, '
+                    #  f'Mean(grad): {mean_grad:.1e}, '
+                    f'[t: {epoch_time:.1f}s]'
+                    )
+            # print(f" opt_state: {opt_state}")
+            # print(f"    --- Learning Rate: {learning_rate}")
+        
             s = time.time()
-        # Check if there is improvement
+
         if cost < prev_cost:
             
             improvement = True
-            if cost < backup_cost:
-
-                backup_cost = cost
+            consecutive_improvement_count += 1
+            # current_cost_check = cost
+            current_cost_check = cost_func(params, input_states,target_states)
+            backup_cost_check = cost_func(backup_params, input_states,target_states)
+            if np.abs(backup_cost_check-backup_cost) > 1e-6:
+                print(f"Back up cost different then its check. diff: {backup_cost_check-backup_cost:.3e}\nbackup params: {backup_params}")
+            if current_cost_check < backup_cost:
+                # print(f"Epoch {epoch}: Valid improvement found. Updating backup params: {backup_cost:.2e} > {current_cost_check:.2e}")
+                backup_cost = current_cost_check
                 backup_params = params
+                false_improvement = False
+                backup_epoch = epoch
+            if false_improvement:
+                print(f"Epoch {epoch}: False improvement detected, backup params not updated. Difference: {current_cost_check- backup_cost:.2e}")
+                false_improvement = True
+                 
         else:
             # print(f"    backup_cost: {backup_cost:.6f}")
             improvement = False  # Stop if no improvement
+            consecutive_improvement_count = 0  # Reset the improvement count if no improvement
 
+        # Termination check
+        if threshold_counts >= consecutive_threshold_limit:
+            print(f"Terminating optimization: cost {cost} is below the threshold {cost_threshold} for {consecutive_threshold_limit} consecutive epochs without improvement.")
+            break
+        # Check if there is improvement
+        second_prev_cost = prev_cost  # Move previous cost back one step
+        prev_cost = cost  # Update previous cost with the current cost
+
+        
+        # Apply tau parameter constraint (must be > 0.0)
         for i in range(time_steps):
             if params[i] < 0:
                 params = params.at[i].set(np.abs(params[i]))
-        # Termination check
-        if prev_cost <= conv_tol: 
-            print(f"Terminating optimization: cost {cost} is below the threshold {conv_tol}")
+       
+        # plateau_state = opt_state[-1]
+        if max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 or epoch >= 2*num_epochs:
+            print(f"max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 and plateau_state.scale <= MIN_SCALE. breaking at epoch {epoch}....")
+            # plateau_state = opt_state[-1]
+            # print(f"ReduceLROnPlateau hyps. avg: {plateau_state.avg_value:.2e}, best: {plateau_state.best_value:.2e}, new_scale: {plateau_state.scale:.5f}!")
+           
             break
-
-        if np.abs(max(grad)) < 1e-14 or epoch >= 5000:
-            break
-            # if epoch > num_epochs/2:
-            #     print(f"abs(max(grad) < 1e-14. Breaking...")
-            #     break
-            # else:
-            #     new_key = jax.random.PRNGKey(epoch)
-            #     new_in,new_targ = generate_dataset(gate, N_ctrl, 1, new_key)
-            #     print(f"grad low {np.var(grad)}, adding state(s) to the training")
-            #     input_states = jnp.concatenate([input_states, new_in], axis=0)
-            #     target_states = jnp.concatenate([target_states, new_targ], axis=0)
-        
-
-        #print(params)
-        prev_cost = cost
         epoch += 1  # Increment epoch count
 
-    if backup_cost < cost:
-        print(f"backup cost is better: {backup_cost:.6f} <  {cost:.6f}: {backup_cost < cost}")
-        params = backup_params
-    full_e = time.time()
-    epoch_time = full_e - full_s
-    print(f"Time optimizing: {epoch_time}")
 
-    testing_results = final_test(params, time_steps, N_reserv, N_ctrl, test_in, test_targ)
-    #for input_state,target_state in zip(test_in, test_targ):
-    total_tests = len(testing_results)
-    avg_fidelity = np.sum(np.asarray(testing_results))/total_tests
+
+    if backup_cost < cost and not epoch < num_epochs:
+        print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
+       
+        params = backup_params
+    # full_e = time.time()
+    # epoch_time = full_e - full_s
+    # print(f"Time optimizing: {epoch_time}")
+
+    testing_results = final_test(params,test_in, test_targ)
+    avg_fidelity = jnp.mean(testing_results)
+    infidelities = 1.00000000000000-testing_results
     print("\nAverage Final Fidelity: ", avg_fidelity)
     
     data = {'Gate':base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
-            'DQFIM_target_states':dqfim_data,
+            'opt_description': opt_descr,
+            'specs':specs,
+            
                 'epochs': num_epochs,
                 'trotter_step': time_steps,
                 'controls': N_ctrl, 
@@ -1109,17 +860,16 @@ def run_test(num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate
                 'costs': costs,
                 'params_per_epoch':param_per_epoch,
                 'training_states': input_states,
-                'target_states':target_states,
+               
                 'opt_params': params,
                 'opt_lr': opt_lr,
                 
                 'grads_per_epoch':grads_per_epoch,
-    
+                'init_grads':init_grads
+
             }
     return data
     
-import pickle
-from pathlib import Path
 
 
 def convert_to_float(value):
@@ -1146,6 +896,7 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     Returns:
     - qfim_eigvals: list of QFIM eigenvalues.
     """
+    file_path = Path(file_path) / f'data.pickle'
     # Ensure file_path is a Path object
     file_path = Path(file_path) if not isinstance(file_path, Path) else file_path
     
@@ -1158,26 +909,44 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     
     # Initialize variables
     qfim_eigvals = None
-    
-    for fixed_params_dict in df.keys():
-        if fixed_params_dict == fixed_param_dict_key:
-            for trainable_params_dict in df[fixed_params_dict].keys():
-                if trainable_params_dict == trainable_param_dict_key:
-                    results = df[fixed_params_dict][trainable_params_dict]
-                    if 'qfim_eigvals' in results:
-                        qfim_eigvals = results['qfim_eigvals']
-                        qfim = results['dqfim']
-                        fixed_params = results['fixed_params']
-                        fixed_params = results['fixed_params']
-                        params = results['trainable_params']
-                        entropies = results['entropies']
+    test_data = df[fixed_param_dict_key]
+    results = test_data[trainable_param_dict_key]
 
-                        return qfim_eigvals,fixed_params,params,qfim, results['L'],entropies
+    if 'qfim_eigvals' in results:
+        # print(results.keys())
+        qfim_eigvals = results['qfim_eigvals']
+        qfim = results['qfim']
+        K_coeffs = results['K_coeffs']
+        fixed_params = {'K_coef':K_coeffs}
+        params = results['trainable_params']
+        entropy = results['entropy']
+
+        return qfim_eigvals,fixed_params,params,qfim, entropy
     
     print("QFIM eigenvalues not found for the given parameter keys.")
-    return None,None,None, None, None
+    return None,None,None, None
 
 
+
+def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, num_L = 1,threshold=1e-10):
+    file_path = Path(file_path) / f'L_{num_L}/data.pickle'
+    print(file_path)
+    with open(file_path, 'rb') as f:
+        all_tests_data = pickle.load(f)
+    results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
+
+    assert 'qfim_eigvals' in results
+    print(results.keys())
+    eigvals = results.get('qfim_eigvals', None)
+    nonzero = eigvals[eigvals > threshold]
+    return {
+        'dqfim_eigvals':results.get('qfim_eigvals', None),
+        'L':results.get('L',None),
+        'raw_trace':np.sum(eigvals),
+        'raw_var_nonzero':  np.var(nonzero),
+        'entropies':results.get('entropies', None),
+        'trainable_params':results.get('trainable_params', None),
+    }
 
 
 if __name__ == '__main__':
@@ -1191,12 +960,12 @@ if __name__ == '__main__':
     gates_random = []
     
     
-    N_ctrl = 1
+    N_ctrl = 2
     N_r = 1
     num_J = N_ctrl*N_r
-    time_steps = 1
-    folder = f'./param_initialization_final/analog_results/Nc_{N_ctrl}/'
-    for i in range(37):
+    time_steps = 5
+    
+    for i in range(10):
         U = random_unitary(2**N_ctrl, i).to_matrix()
 
         g = partial(qml.QubitUnitary, U=U)
@@ -1204,38 +973,40 @@ if __name__ == '__main__':
         g.name = f'U{N_ctrl}_'+str(i)
         gates_random.append(g)
 
-    fp_idx = 0
-   
-    fixed_param_keys = [f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}',f'fixed_params{fp_idx}']
-    # trainable_param_keys = ['test53','test42','test177', 'test78','test38']
-    # trainable_param_keys = ['test147','test153','test22','test23', 'test45','test133']
-    # trainable_param_keys = ['test22','test50','test44','test2','test104', 'test88','test146','test138', 'test63'] 
-    # trainable_param_keys = ['test44','test43','test62','test69','test109','test145','test123']
-    # trainable_param_keys = ['test108','test0','test15','test186','test123', 'test49'] # N_ctrl = 1, N_r = 1, trot = 1
-
-    # trainable_param_keys = ['test76','test169','test61','test178','test107'] # N_ctrl = 2, N_r = 1, trot = 8
-    # trainable_param_keys = ['test33','test89','test80', 'test60','test20'] # lowest
-    # trainable_param_keys = ['test1','test6','test73', 'test15','test57'] # highest
-    
-    trainable_param_keys = ['test6', 'test41','test6', 'test57','test1','test53','test66', 'test96','test43','test33','test89','test80', 'test60','test20', 'test15']
-    trainable_param_keys =  ['test41', 'test57','test1','test53','test96','test43','test33','test89', 'test60','test20', 'test15']
-    trainable_param_keys = ['test65','test34','test40', 'test36','test32']
+    trainable_param_keys = ['test0']
     all_gates = gates_random
     base_state = 'GHZ_state'
 
     state = 'GHZ'
     Kfactor = '1.0'
-    num_L = 50
+    K_0 = '1'
+    sample_range_label = '.5pi'
+    num_L = 20
+    L = []
     delta_x = 1.49011612e-08
-    threshold = 1.e-14
-    get_states = True
+    threshold = 1.e-10
+    use_L = True
+    fixed_param_name='fixed_params0'
+    if use_L:
+        folder = f'./param_initialization_final/analog_results_{use_L}/Nc_{N_ctrl}/epochs_{num_epochs}'
+    else:
+        folder = f'./param_initialization_final/analog_results/Nc_{N_ctrl}/epochs_{num_epochs}'
     for gate_idx,gate in enumerate(all_gates):
-        for fixed_param_name, test_key in zip(fixed_param_keys,trainable_param_keys):
+        for test_key in trainable_param_keys:
+        # for fixed_param_name, test_key in zip(fixed_param_keys,trainable_param_keys):
             # print(fixed_param_name,test_key)
         
+            folder_gate = os.path.join(
+                folder,
+                f"reservoirs_{N_r}",
+                f"trotter_{time_steps}",
+                f"trainsize_{N_train}",
+                f"sample_{sample_range_label}",
+                fixed_param_name,
+                f"{test_key}",
+                gate.name
+            )
             
-            folder_gate = folder + '/reservoirs_' + str(N_r) + '/trotter_step_' + str(time_steps) +  '/' +f'{N_train}_training_states_random/'+ str(fixed_param_name)+f'/2pi/'+ test_key+'/' + gate.name + '/'
-
             Path(folder_gate).mkdir(parents=True, exist_ok=True)
             temp_list = list(Path(folder_gate).glob('*'))
             files_in_folder = []
@@ -1249,40 +1020,53 @@ if __name__ == '__main__':
                 print('Already Done. Skipping: '+folder_gate)
                 print('\n')
                 continue
-            set_key = jax.random.PRNGKey(gate_idx)
-            
+         
             
             print("________________________________________________________________________________")
-            
+            dataset_seed =  gate_idx*time_steps*N_r + gate_idx**2 + N_ctrl
+            dataset_key = jax.random.PRNGKey(dataset_seed)
 
             filename = os.path.join(folder_gate, f'data_run_{len(files_in_folder)}.pickle')
             
                     
             N =N_ctrl+N_r
+            dqfim_file_path =f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_global_results/analog_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{time_steps}/'
+            dqfim_stats_dict = get_dqfim_stats(dqfim_file_path, fixed_param_dict_key=fixed_param_name, trainable_param_dict_key=test_key, num_L = num_L)
+
+
+            qfim_base_path = f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK'
             
-            qfim_base_path = f'/Users/sophieblock/QRCCapstone/QFIM_traced_final_results/analog_model_DQFIM/Nc_{N_ctrl}/{state}_state/'
-
-
-            qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{time_steps}/L_{num_L}' / 'data_2pi.pickle'
+            qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{time_steps}/' 
             print(qfim_file_path)
-            eigvals, fixed_params_dict, params, qfim, L, entropies = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
-            L = []
+            print(f"{test_key} params (range: (-{sample_range_label}, {sample_range_label}))")
+            print(f"{fixed_param_name}")
+            eigvals, fixed_params_dict,params,qfim,entropy = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
+
+            # eigvals, fixed_params_dict, params, qfim, entropies = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
+            
             print(f"{test_key}")
             # print(f"{fixed_param_name}: {fixed_params_dict}")
             
             
             trace_qfim = np.sum(eigvals)
             var_qfim = np.var(eigvals)
-            print(f"QFIM trace: {trace_qfim:.6f}")
-            print(f"QFIM var: {var_qfim:.6f}")
-            
-            data = run_test(num_epochs=num_epochs, N_reserv=N_r,N_ctrl= N_ctrl, time_steps=time_steps,N_train=N_train,N_test=N_test,folder=folder,gate=gate,gate_name=gate.name,init_params_dict=fixed_params_dict,params=params,filename=filename,based_subkey= gate_idx*time_steps*N_r, L = L)
-            
+            print(f"QFIM trace: {trace_qfim:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
+            print(f"QFIM Var: {var_qfim:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
+
+            if use_L:
+                input_states = dqfim_stats_dict['L']
+                data = run_test(params=params,num_epochs=num_epochs, N_reserv=N_r,N_ctrl= N_ctrl, time_steps=time_steps,N_train=N_train,N_test=N_test,folder=folder,gate=gate,gate_name=gate.name,init_params_dict=fixed_params_dict,filename=filename,dataset_key= dataset_key, L = input_states, use_L=True)
+            else:
+                data = run_test(params=params,num_epochs=num_epochs, N_reserv=N_r,N_ctrl= N_ctrl, time_steps=time_steps,N_train=N_train,N_test=N_test,folder=folder,gate=gate,gate_name=gate.name,init_params_dict=fixed_params_dict,filename=filename,dataset_key= dataset_key,  use_L=False)
             data['QFIM Results'] = {"qfim_eigvals":eigvals,
-            'qfim':qfim,
+                                    "trainable_params": params,
+                                    "qfim": qfim,
+                                    "entropy":entropy,
+            'variance':var_qfim,
             'trace':trace_qfim,
-            'entropies': entropies,
+
                 }
+            data['DQFIM_stats'] = dqfim_stats_dict
             
             df = pd.DataFrame([data])
             while os.path.exists(filename):
@@ -1290,6 +1074,6 @@ if __name__ == '__main__':
                 filename = f"{name}_.{ext}"
 
             with open(filename, 'wb') as f:
-                pickle.dump(df, f)
+                pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
             print(f"Saved to path: {filename}")
 
