@@ -884,7 +884,279 @@ def compute_ipr_dimension(eigenvalues, threshold=1e-10):
         return 0.0
     
     return (sum_eigs ** 2) / sum_eigs_sq
+
 def compute_all_stats(
+    eigval_list,
+    threshold=1e-12,
+    spread_methods=("variance", "mad"),  # e.g. ["variance", "mad"]
+    ddof=1,
+    scale="normal",
+    qfim_mats_list=None,   # If you stored the NxN DQFIM matrices and want to do Qiskit-like ED
+    dataset_sizes=None,     # For Qiskit global ED or Abbas global dimension approach,
+    n = None,
+):
+    """
+    Compute statistics for a *data-based QFIM* (DQFIM) or normal QFIM.
+
+    We assume eigval_list is a list of 1D arrays. Each array corresponds
+    to the eigenvalues of one DQFIM/QFIM, typically for one parameter set.
+
+    Parameters
+    ----------
+    eigval_list : List[List[float]] or List[np.ndarray]
+        Each element is the QFIM (or DQFIM) eigenvalues for a single random draw (param set).
+        For a data-based QFIM, this is the matrix built from partial derivatives
+        of Pi_L wrt. each parameter. The dimension = M x M if you have M parameters.
+    threshold : float
+        Zero out small eigenvalues.
+    spread_methods : tuple
+        For spread-of-log computations. e.g., ("variance", "mad")
+    ddof : int
+        Degrees of freedom for variance (typical default=1).
+    scale : str
+        Scale for median_abs_deviation if "mad" is used.
+    qfim_mats_list : List[np.ndarray], optional
+        If you also have the full NxN DQFIM (or QFIM) matrices, pass them.  Then you can do
+        Qiskit-style dimension calculations. If None, we skip that step.
+    dataset_sizes : int or list of int, optional
+        If you want Qiskit’s “global effective dimension,” pass the # of input states (L)
+        or a range. If None, skip Qiskit global ED.
+
+    Returns
+    -------
+    metrics : dict
+        A dictionary of aggregated statistics about the eigenvalues. The entries are:
+          - Ranks, trace, var, IPR dimension, Abbas dimension, etc.
+          - "D_C": max rank among the draws
+          - Possibly includes "qiskit_style_globalED" if qfim_mats_list & dataset_sizes are used.
+
+    Notes
+    -----
+    - For a single data-based QFIM, pass eigval_list=[your_single_eigarray].
+    - If you have multiple param sets, each with a QFIM, pass them all in one list.
+    """
+
+    import numpy as np
+
+    # 1) Basic arrays to store per-draw results
+    ranks_per_draw = []
+    var_all_per_draw = []
+    var_nonzero_per_draw = []
+    trace_per_draw = []
+
+    var_norm_rank_per_draw = []
+    trace_norm_rank_per_draw = []
+
+    # IPR-based dimension
+    ipr_deffs_raw  = []
+    ipr_deffs_norm = []
+
+    # Abbas-based dimension (local) => sum(log(1 + alpha lam))
+    abbas_deffs_raw  = []
+    abbas_deffs_norm = []
+
+    # For an approximate local dimension approach, alpha = gamma * n / (2 * ln(n)), etc.
+    n_draws = n or len(eigval_list)
+    print(f"n_draws: {n_draws}")
+    gamma = 1.0
+    if n_draws > 1:
+        alpha = (gamma * n_draws) / (2.0 * np.log(n_draws))
+    else:
+        alpha = 0.0
+
+    # 2) Loop over each QFIM’s eigenvalues
+    for eigs in eigval_list:
+        arr = np.array(eigs, dtype=float)
+        arr = np.where(arr < threshold, 0.0, arr)  # zero out near-zero
+
+        rank = np.count_nonzero(arr)
+        ranks_per_draw.append(rank)
+
+        var_all = np.var(arr)
+        trace_val = np.sum(arr)
+        var_all_per_draw.append(var_all)
+        trace_per_draw.append(trace_val)
+
+        # variance of nonzero
+        nonz = arr[arr>0]
+        var_non = np.var(nonz) if len(nonz)>1 else 0.0
+        var_nonzero_per_draw.append(var_non)
+
+        # rank-based average
+        if rank>0:
+            var_norm_rank_per_draw.append(var_all / rank)
+            trace_norm_rank_per_draw.append(trace_val / rank)
+        else:
+            var_norm_rank_per_draw.append(0.0)
+            trace_norm_rank_per_draw.append(0.0)
+
+        # 2a) IPR-based dimension
+        sum_eigs_sq = np.sum(arr**2)
+        if sum_eigs_sq>0:
+            ipr_raw = (trace_val**2) / sum_eigs_sq
+        else:
+            ipr_raw = 0.0
+        ipr_deffs_raw.append(ipr_raw)
+
+        # Normalized version (shape only)
+        if trace_val>0:
+            arr_norm = arr / trace_val
+            sum_norm_sq = np.sum(arr_norm**2)
+            ipr_norm = 1.0 / sum_norm_sq if sum_norm_sq>0 else 0.0
+        else:
+            ipr_norm = 0.0
+        ipr_deffs_norm.append(ipr_norm)
+
+        # 2b) Abbas-based dimension
+        # raw
+        abbas_raw = 0.0
+        for lam in arr:
+            val = 1.0 + alpha*lam
+            if val<=0.0:
+                val = 1e-15
+            abbas_raw += np.log(val)
+        abbas_deffs_raw.append(abbas_raw)
+
+        # normalized
+        if trace_val>0:
+            abbas_norm = 0.0
+            for lam_norm in (arr/trace_val):
+                val = 1.0 + alpha*lam_norm
+                if val<=0.0:
+                    val=1e-15
+                abbas_norm += np.log(val)
+        else:
+            abbas_norm = 0.0
+        abbas_deffs_norm.append(abbas_norm)
+
+    # 3) Aggregation across draws
+    D_C = max(ranks_per_draw) if ranks_per_draw else 0
+
+    avg_var_all = float(np.mean(var_all_per_draw)) if var_all_per_draw else 0.0
+    avg_trace   = float(np.mean(trace_per_draw))   if trace_per_draw   else 0.0
+    avg_var_nonzero = float(np.mean(var_nonzero_per_draw)) if var_nonzero_per_draw else 0.0
+    avg_var_norm_rank   = float(np.mean(var_norm_rank_per_draw))   if var_norm_rank_per_draw   else 0.0
+    avg_trace_norm_rank = float(np.mean(trace_norm_rank_per_draw)) if trace_norm_rank_per_draw else 0.0
+
+    var_var_all     = float(np.var(var_all_per_draw)) if len(var_all_per_draw)>1 else 0.0
+    var_var_nonzero = float(np.var(var_nonzero_per_draw)) if len(var_nonzero_per_draw)>1 else 0.0
+
+    avg_ipr_raw   = float(np.mean(ipr_deffs_raw))   if ipr_deffs_raw  else 0.0
+    avg_ipr_norm  = float(np.mean(ipr_deffs_norm))  if ipr_deffs_norm else 0.0
+    avg_abbas_raw = float(np.mean(abbas_deffs_raw)) if abbas_deffs_raw  else 0.0
+    avg_abbas_norm= float(np.mean(abbas_deffs_norm)) if abbas_deffs_norm else 0.0
+
+    # 4) Possibly do "spread-of-log" calculations
+    arr_2d = np.zeros((n_draws, max(len(x) for x in eigval_list))) if eigval_list else np.zeros((0,0))
+    for i, e in enumerate(eigval_list):
+        tmp = np.array(e, dtype=float)
+        tmp = np.where(tmp<threshold, 0.0, tmp)
+        arr_2d[i,:len(tmp)] = tmp
+
+    spread_results = {}
+    for method in spread_methods:
+        # you presumably have these two helper functions from your code:
+        # spread_per_sample_vectorized(...)  and  spread_pooling_vectorized(...)
+        per_draw = spread_per_sample_vectorized(arr_2d, method=method,
+                                                threshold=threshold, ddof=ddof, scale=scale)
+        spread_mean = float(per_draw.mean()) if per_draw.size>0 else 0.0
+        spread_std  = float(per_draw.std())  if per_draw.size>1 else 0.0
+        pooled_val  = float(spread_pooling_vectorized(arr_2d, method=method,
+                                                      threshold=threshold, ddof=ddof, scale=scale))
+        prefix = method.lower()
+        spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
+        spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
+        spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
+     ###############
+    # 4) Optionally: "global" dimension approach from the references
+    ###############
+    # (like the integral-based approach in [Abbas2020], but we do 
+    #  a simpler average-Fisher approach if qfim_mats_list is provided).
+    global_dim_results = {}
+    if (qfim_mats_list is not None) and (dataset_sizes is not None) and len(qfim_mats_list)==n_draws:
+        # We'll do a simple "empirical average fisher" -> normalized fisher -> logdet approach
+        # to replicate a global dimension measure.
+        fisher_stack = np.stack(qfim_mats_list, axis=0)  # shape (n_draws, N, N)
+        # average them -> 'empirical fisher'
+        avg_fisher = np.mean(fisher_stack, axis=0)       # shape (N,N)
+        # check trace
+        fisher_trace = np.trace(avg_fisher)
+        n_params = avg_fisher.shape[0]
+        if fisher_trace<1e-14:
+            # degenerate
+            normalized_fisher = np.zeros_like(avg_fisher)
+        else:
+            normalized_fisher = (n_params * avg_fisher)/fisher_trace
+        
+        # define helper to compute the effective dimension from [Abbas2020 eq ...].
+        # We'll do a single or list of dataset_sizes
+        if isinstance(dataset_sizes, (int,float)):
+            dataset_sizes = [dataset_sizes]
+        import numpy.linalg as la
+        from math import log
+        out_dims = []
+        for ds in dataset_sizes:
+            if ds<=1 or np.log(ds)<=0:
+                out_dims.append(0.0)
+                continue
+            # build f_mod
+            factor = ds/(2.0*np.pi*log(ds))
+            f_mod = normalized_fisher*factor
+            one_plus = np.eye(n_params)+f_mod
+            sign, logdet_val = la.slogdet(one_plus)
+            if sign<=0:
+                # negative or zero => dimension = 0?
+                out_dims.append(0.0)
+                continue
+            # eq dimension
+            det_div = 0.5*logdet_val
+            denom = log(ds/(2.0*np.pi*log(ds)))
+            # no logsumexp needed, we do single average approach
+            eff_dim = 2.0*det_div/denom if denom!=0 else 0.0
+            out_dims.append(eff_dim)
+        if len(out_dims)==1:
+            global_dim_results["global_effective_dimension"] = out_dims[0]
+        else:
+            global_dim_results["global_effective_dimension"] = out_dims
+        global_dim_results["fisher_trace"] = fisher_trace
+    # 5) Build final dict
+    metrics = {
+        # Per-draw lists
+        "QFIM_ranks": ranks_per_draw,
+        "var_all_eigenvals_per_draw": var_all_per_draw,
+        "var_nonzero_eigenvals_per_draw": var_nonzero_per_draw,
+        "trace_eigenvals_per_draw": trace_per_draw,
+
+        # Aggregates
+        "D_C": D_C,
+        "absolute_scale_avg_var_all": avg_var_all,
+        "absolute_scale_avg_var_nonzero": avg_var_nonzero,
+        "absolute_scale_avg_trace": avg_trace,
+        "absolute_scale_var_of_var_all": var_var_all,
+        "absolute_scale_var_of_var_nonzero": var_var_nonzero,
+
+        "spectrum_shape_ipr_deffs_norm_per_draw": ipr_deffs_norm,
+        "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
+        "spectrum_shape_abbas_deffs_norm_per_draw": abbas_deffs_norm,
+        "spectrum_shape_avg_abbas_deffs_norm": avg_abbas_norm,
+
+        "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
+        "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
+        "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
+        "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
+
+        "ipr_deffs_raw_per_draw": ipr_deffs_raw,
+        "avg_ipr_deffs_raw": avg_ipr_raw,
+        "abbas_deffs_raw_per_draw": abbas_deffs_raw,
+        "avg_abbas_deffs_raw": avg_abbas_raw,
+    }
+    metrics.update(spread_results)
+    if global_dim_results:
+        metrics.update(global_dim_results)
+
+    return metrics
+
+def compute_all_stats_older_version(
     eigval_list,
     threshold=1e-12,
     spread_methods=("variance", "mad"),  # e.g. ["variance", "mad"]
@@ -997,8 +1269,8 @@ def compute_all_stats(
     # Then we do sum(log(1 + alpha * lambda_i)).
     # If alpha*lambda_i < -1, that log is undefined; in practice, alpha*lambda_i >= 0 if alpha>0, lambda_i >= 0
 
-    # n_draws = len(eigval_list)   # interpret as "number of random draws"
-    n_draws = n
+    n_draws = len(eigval_list)   # interpret as "number of random draws"
+    # n_draws = n
     # For Abbas measure (a local version)
     gamma = 1.0
     if n_draws > 1:
