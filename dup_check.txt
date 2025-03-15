@@ -1,3 +1,68 @@
+# Define a dictionary of your sorted metric lists
+metrics_sorted = {
+    "trace": sorted_qfim_trace,
+    "var": sorted_qfim_var,
+    "spread_var": sorted_qfim_spread_var,
+    "abbas_d_eff": sorted_qfim_abbas_d_eff,
+    
+    # "ipr_d_eff":sorted_qfim_ipr_d_eff,
+    # "entropy":sorted_qfim_entropy
+}
+num_print = 2  # number of unique keys to select from each end for each metric
+
+# Create an empty set to collect keys
+selected_from_all = set()
+
+for metric_name, sorted_list in metrics_sorted.items():
+    if not sorted_list:
+        print(f"No data for metric {metric_name}")
+        continue  # Skip if the list is empty
+
+    # --- Select lower end keys ---
+    lower_count = 0
+    i = 0
+    while lower_count < num_print and i < len(sorted_list):
+        key_candidate = sorted_list[i][0]
+        if key_candidate not in selected_from_all:
+            selected_from_all.add(key_candidate)
+            lower_count += 1
+        i += 1
+
+    # --- Select upper end keys ---
+    upper_count = 0
+    j = len(sorted_list) - 1
+    while upper_count < num_print and j >= 0:
+        key_candidate = sorted_list[j][0]
+        if key_candidate not in selected_from_all:
+            selected_from_all.add(key_candidate)
+            upper_count += 1
+        j -= 1
+
+    # --- Select a middle key ---
+    # If the middle candidate is already in selected_from_all, then search outward until a new key is found.
+    mid_index = len(sorted_list) // 2
+    offset = 0
+    found_mid = False
+    while (mid_index - offset >= 0 or mid_index + offset < len(sorted_list)) and not found_mid:
+        # Check left candidate if in range:
+        if mid_index - offset >= 0:
+            key_candidate = sorted_list[mid_index - offset][0]
+            if key_candidate not in selected_from_all:
+                selected_from_all.add(key_candidate)
+                found_mid = True
+                break
+        # Check right candidate if in range:
+        if mid_index + offset < len(sorted_list):
+            key_candidate = sorted_list[mid_index + offset][0]
+            if key_candidate not in selected_from_all:
+                selected_from_all.add(key_candidate)
+                found_mid = True
+                break
+        offset += 1
+
+print("Selected keys from min, max, and middle of each metric:", selected_from_all)
+print("Total number of selected keys:", len(selected_from_all))
+
 from collections import Counter
 
 for idx, row in df_all.iterrows():
