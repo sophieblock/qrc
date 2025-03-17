@@ -267,13 +267,6 @@ class QuantumReservoirGate:
 
 
 import jax.numpy as jnp
-@jit
-def get_initial_learning_rate(grads, scale_factor=0.01, min_lr=1e-3, max_lr = 0.2):
-    """Estimate a more practical initial learning rate based on the gradient norms."""
-    grad_norm = jnp.linalg.norm(grads)
-    initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
-    clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    return clipped_lr, initial_lr
 
 def compute_initial_learning_rate(gradients, scale_factor=0.1, min_lr=1e-3, max_lr = 0.3):
     """
@@ -554,7 +547,13 @@ def calculate_gradient_stats(gradients):
     var_grad = mean_grad_squared - mean_grad ** 2
     grad_norm = jnp.linalg.norm(mean_grad)
     return mean_grad, var_grad, grad_norm
-def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-3, max_lr=0.2):
+def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr = 0.2):
+    """Estimate a more practical initial learning rate based on the gradient norms."""
+    grad_norm = jnp.linalg.norm(grads)
+    initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
+    clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    return clipped_lr, initial_lr
+def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-4, max_lr=0.2):
     # print(f"grads: {grads}")
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
     # print(f"grad_magnitudes: {grad_magnitudes}")
@@ -683,7 +682,9 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         # print(f"initial fidelity: {init_loss}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt}")
         # print(f"initial fidelity: {init_loss}, initial_gradients: {init_grads}. Time: {dt}")
         # opt_lr, raw_lr = get_initial_learning_rate(init_grads)
-        opt_lr = get_initial_lr_per_param(init_grads)
+        # opt_lr = get_initial_lr_per_param(init_grads)
+        max_lr,_ = get_initial_learning_rate(init_grads)
+        opt_lr = get_initial_lr_per_param(init_grads, max_lr=max_lr)
         # print(f"Adjusted initial learning rate: {opt_lr:.4f}.")
         cost = init_loss
     
@@ -873,9 +874,9 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     @jit
     def update(params, opt_state, X, y, value):
         # Ensure inputs are float64
-        params = jnp.asarray(params, dtype=jnp.float64)
-        X = jnp.asarray(X, dtype=jnp.complex128)
-        y = jnp.asarray(y, dtype=jnp.complex128)
+        # params = jnp.asarray(params, dtype=jnp.float64)
+        # X = jnp.asarray(X, dtype=jnp.complex128)
+        # y = jnp.asarray(y, dtype=jnp.complex128)
         
         loss, grads = jax.value_and_grad(cost_func)(params, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
         if not isinstance(opt_state[-1], optax.contrib.ReduceLROnPlateauState):
@@ -885,8 +886,8 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         new_params = optax.apply_updates(params, updates)
         
         # Ensure outputs are float64
-        loss = jnp.asarray(loss, dtype=jnp.float64)
-        grads = jnp.asarray(grads, dtype=jnp.float64)
+        # loss = jnp.asarray(loss, dtype=jnp.float64)
+        # grads = jnp.asarray(grads, dtype=jnp.float64)
         
     
         return new_params, opt_state, loss, grads
@@ -1182,18 +1183,19 @@ if __name__=='__main__':
     
     
     # trotter_step_list = [1,2,3,4,5]
-    trotter_step_list = [15,20,25,30,35,40,42,45,47,50]
+    # trotter_step_list = [15,20,25,30,35,40,42,45,47,50]
     # trotter_step_list = [1, 6, 8, 10, 12, 14, 16,18,20,22]
     # trotter_step_list = trotter_step_list[::-1]
     # trotter_step_list = [8,12,16,20,24,28,32]
     # trotter_step_list = [1,2,3,4,5,6,8,10,12]
     # trotter_step_list = [3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45]
-    # trotter_step_list = [4,6,8,10,12,14,18,22]
-    
+    trotter_step_list = [1,4,10,11,12,13,14,15]
+    trotter_step_list = [1,11,13,14,15]
+    trotter_step_list = [1,10,14,18]
     # rsv_qubits_list = [1,2,3]
-    rsv_qubits_list = [1]
+    rsv_qubits_list = [1,2,3]
 
-    N_ctrl = 3
+    N_ctrl = 2
     # omegas = generate_omegas(N_ctrl)
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_same_epoch{steps}/'
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_optimized_by_cost3/'
@@ -1214,7 +1216,7 @@ if __name__=='__main__':
     opt_lr = None
     baths = [False]
     num_baths = [0]
-    training_size = 20
+    training_size =20
     static =False
 
     steps = 1500
