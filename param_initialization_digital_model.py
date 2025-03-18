@@ -31,67 +31,6 @@ config.update('jax_disable_jit', diable_jit)
 config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
-def quantum_fun(gate, input_state, qubits):
-    '''
-    Apply the gate to the input state and return the output state.
-    '''
-    qml.StatePrep(input_state, wires=[*qubits])
-    gate(wires=qubits)
-    return qml.density_matrix(wires=[*qubits])
-
-
-def get_target_state(gate, input_state, qubits):
-    '''
-    Apply the gate to the input state and return the output state.
-    '''
-    qml.StatePrep(input_state, wires=[*qubits])
-    gate(wires=qubits)
-    return qml.state()
-
-def generate_dataset(
-    gate, n_qubits, training_size, key, new_set=False
-):
-    """
-    Generate a deterministic dataset of input and output states for a given gate.
-
-    Parameters:
-        gate: The quantum gate to apply.
-        n_qubits: Number of qubits in the system.
-        training_size: Number of training states required.
-        key: JAX random key for reproducibility.
-        trot_step: (Optional) Trotter step for additional determinism.
-        reservoir_count: (Optional) Reservoir count for additional determinism.
-        new_set: If True, generate a new dataset even for the same parameters. Default is False.
-
-    Returns:
-        Tuple (input_states, output_states).
-    """
-    if new_set:
-        # Use the raw key to generate a new dataset
-        seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-    else:
-       
-        # Derive a deterministic seed that ignores trot_step and reservoir_count
-        key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-        seed = hash((n_qubits, key_int)) 
-
-    # Generate random state vectors deterministically
-    X = []
-    for i in range(training_size):
-        folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
-        state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
-        state_vec = random_statevector(2**n_qubits, seed=state_seed).data
-        X.append(np.asarray(state_vec, dtype=jnp.complex128))
-
-    # Generate output states using the circuit
-    qubits = Wires(list(range(n_qubits)))
-    dev_data = qml.device("default.qubit", wires=qubits)
-    circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
-
-    y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
-
-    return np.asarray(X), np.asarray(y)
-
 
 class QuantumReservoirGate:
 
@@ -165,6 +104,76 @@ def get_data_quantum_natural_gradient(params, dqfim, density_matrix_grads):
     natural_gradient = jnp.dot(dqfim_inv, classical_grads)
     
     return natural_gradient
+
+def calculate_gradient_stats(gradients):
+    mean_grad = jnp.mean(gradients, axis=0)
+    mean_grad_squared = jnp.mean(gradients ** 2, axis=0)
+    var_grad = mean_grad_squared - mean_grad ** 2
+    grad_norm = jnp.linalg.norm(mean_grad)
+    return mean_grad, var_grad, grad_norm
+def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-3, max_lr=0.2):
+    # print(f"grads: {grads}")
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    return lr_tree
+
+def quantum_fun(gate, input_state, qubits):
+    '''
+    Apply the gate to the input state and return the output state.
+    '''
+    qml.StatePrep(input_state, wires=[*qubits])
+    gate(wires=qubits)
+    return qml.density_matrix(wires=[*qubits])
+
+
+def get_target_state(gate, input_state, qubits):
+    '''
+    Apply the gate to the input state and return the output state.
+    '''
+    qml.StatePrep(input_state, wires=[*qubits])
+    gate(wires=qubits)
+    return qml.state()
+def generate_dataset(gate, n_qubits, training_size, key, new_set=False, L=None):
+    """
+    Generate a deterministic dataset of input and output states for a given gate.
+    
+    Parameters:
+        gate: The quantum gate to apply.
+        n_qubits: Number of qubits in the system.
+        training_size: Number of states to generate.
+        key: JAX random key for reproducibility.
+        new_set: (Optional) If True, generate a new dataset even for the same parameters.
+        L: (Optional) Pre-selected states for training. If provided, the first `training_size` states are used.
+        
+    Returns:
+        Tuple (X, y) of np.ndarrays for the input states and the corresponding output states.
+    """
+    if L is not None:
+        # X = np.asarray(L[:training_size])
+        X = L
+        print(f"Using pre-selected states for training. Number of training states: {X.shape[0]}")
+    else:
+        if new_set:
+            seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+        else:
+            key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
+            seed = hash((n_qubits, key_int))
+        X = []
+        for i in range(training_size):
+            folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
+            state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
+            state_vec = random_statevector(2**n_qubits, seed=state_seed).data
+            X.append(np.asarray(state_vec, dtype=jnp.complex128))
+        X = np.stack(X)
+    qubits = Wires(list(range(n_qubits)))
+    dev_data = qml.device("default.qubit", wires=qubits)
+    circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
+    y = [np.asarray(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
+    return np.asarray(X), np.asarray(y)
+
 def get_initial_learning_rate_DQFIM(params,qrc,X,gate,init_grads, scale_factor=0.1, min_lr=9e-5, max_lr = 1.0):
     """
     Compute an initial learning rate based on the norm of gradients.
@@ -172,19 +181,20 @@ def get_initial_learning_rate_DQFIM(params,qrc,X,gate,init_grads, scale_factor=0
     ctrl_qubits = qrc.ctrl_qubits # wires of the reservoir qubits (i.e. number of qubits in the reservoir)
     rsv_qubits = qrc.rsv_qubits# wires of the control qubits (i.e. number of qubits in the control)
     grad_norm = jnp.linalg.norm(init_grads)
-    print(f"grad_norm: {grad_norm} max_grad: {max(np.abs(init_grads))}")
+    # print(f"grad_norm: {grad_norm} max_grad: {max(np.abs(init_grads))}")
     dev =qrc.dev
 
     
     dev_data = qml.device('default.qubit', wires=ctrl_qubits)
-    circuit = qml.QNode(get_target_state, device=dev_data, interface='jax')
+    target_circuit = qml.QNode(get_target_state, device=dev_data, interface='jax')
     
     # Execute the circuit for each input state
-    L = np.stack([np.asarray(circuit(gate, x, ctrl_qubits)) for x in X])
+    L = np.stack([np.asarray(target_circuit(gate, x, ctrl_qubits)) for x in X])
+    # L = X
     
 
     @jax.jit
-    @qml.qnode(dev,interface='jax',diff_method="backprop")
+    @qml.qnode(dev,interface='jax')
     def circuit(params,input_state):
         x_coeff = params[0]
         z_coeff = params[1]
@@ -319,37 +329,55 @@ def get_initial_learning_rate_DQFIM(params,qrc,X,gate,init_grads, scale_factor=0
 
 
     initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    
-    # print(f"lambda_max: {lambda_max}")
-    # # print(f"Initial learning rate: {initial_lr}")
+ 
     
     return initial_lr, {"dqfim_eigvals": dqfim_eigvals,"dqfim_eigvecs": dqfim_eigvecs, "DQFIM": DQFIM,"entropies": entropies}
-def calculate_gradient_stats(gradients):
-    mean_grad = jnp.mean(gradients, axis=0)
-    mean_grad_squared = jnp.mean(gradients ** 2, axis=0)
-    var_grad = mean_grad_squared - mean_grad ** 2
-    grad_norm = jnp.linalg.norm(mean_grad)
-    return mean_grad, var_grad, grad_norm
-def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-3, max_lr=0.2):
-    # print(f"grads: {grads}")
-    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
-    # print(f"grad_magnitudes: {grad_magnitudes}")
-    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
-    # print(f"lr_tree: {lr_tree}")
-    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
-    return lr_tree
-
-def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotter_steps, static, dataset_key, gate, gate_name, folder, test_size, training_size,opt_lr,L,qfim):
+def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits, K_coeffs, trotter_steps,
+                   static, dataset_key, gate, gate_name, folder, test_size, training_size,
+                   opt_lr, L=None, use_L=False, qfim=None):
+    """
+    Run an optimization experiment for the digital model.
+    
+    Parameters:
+        params: Initial parameters.
+        steps: Maximum number of optimization steps.
+        n_rsv_qubits: Number of reservoir qubits.
+        n_ctrl_qubits: Number of control qubits.
+        K_coeffs: Coefficients for the gate.
+        trotter_steps: Number of trotter steps.
+        static: Boolean flag controlling static/dynamic parameters.
+        dataset_key: JAX random key for dataset generation.
+        gate: The quantum gate to apply.
+        gate_name: Name of the gate.
+        folder: Folder where results will be saved.
+        test_size: Number of test states.
+        training_size: Number of training states.
+        opt_lr: Optional learning rate.
+        L: (Optional) Pre-selected training states.
+        use_L: Boolean flag; if True, use L for training states.
+        qfim: Optional QFIM information.
+    
+    Returns:
+        A data dictionary with experiment results.
+    """
     bath = False
     dqfim_data = None
     init_params = params
-    X, y =generate_dataset(gate, N_ctrl,training_size= training_size, key= dataset_key, new_set=False)
-
+    # Generate training dataset (use L if use_L is True)
+    if use_L and (L is not None):
+        X, y = generate_dataset(gate, n_qubits=n_ctrl_qubits, training_size=training_size,
+                                key=dataset_key, new_set=False, L=L)
+    else:
+        X, y = generate_dataset(gate, n_qubits=n_ctrl_qubits, training_size=training_size,
+                                key=dataset_key, new_set=False)
+    # Generate testing dataset with a new key for independence.
     test_dataset_key = jax.random.split(dataset_key)[1]
-    test_X, test_y = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=False)
-   
+    test_X, test_y = generate_dataset(gate, n_qubits=n_ctrl_qubits, training_size=test_size,
+                                      key=test_dataset_key, new_set=False)
     
-    print(f"N_r = {n_rsv_qubits}, N_ctrl = {n_ctrl_qubits}")
+    # print(f"Training dataset shapes: X: {X.shape}, y: {y.shape}")
+    # print(f"Testing dataset shapes: X: {test_X.shape}, y: {test_y.shape}")
+    # print(f"N_r = {n_rsv_qubits}, N_ctrl = {n_ctrl_qubits}")
     
     #print(f"K_coeffs {type(K_coeffs)}: {K_coeffs}")
     # print(f"X shape: {X.shape}")
@@ -421,6 +449,14 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         opt_lr = get_initial_lr_per_param(init_grads)
         # print(f"Adjusted initial learning rate: {opt_lr:.4f}.")
         cost = init_loss
+        # initial_lr, {"dqfim_eigvals": dqfim_eigvals,"dqfim_eigvecs": dqfim_eigvecs, "DQFIM": DQFIM,"entropies": entropies}
+        dqfim_initial_lr, dqfim_dict_target = get_initial_learning_rate_DQFIM(params=params,qrc=qrc,X=X,gate=gate, init_grads=init_grads)
+        DQFIM = dqfim_dict_target.get('DQFIM', None)
+        tr_dqfim_targ=jnp.trace(DQFIM)
+        evals, evecs = jnp.linalg.eigh(DQFIM)
+        # evs = dqfim_dict.get('qfim_eigvals', None)
+        nonzero = evals[evals > threshold]
+        print(f"DQFIM w/ target y: lr: {dqfim_initial_lr:.5f}\n - Tr(DQFIM)={tr_dqfim_targ:.3f}\n - var(DQFIM eigs)={np.var(nonzero):.3f}")
     opt_descr = 'per param'
     learning_rate_schedule = optax.constant_schedule(opt_lr)
     opt = optax.chain(
@@ -469,21 +505,15 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
 
     fullstr = time.time()
     improvement_count = 0
-    a_threshold, acceleration =  0.0, 0.0
-    threshold_cond1, threshold_cond2 = [],[]
-    a_condition_set = False
-    a_threshold =  0.0
-    stored_epoch = None
+  
     false_improvement = False
     # Introduce tracking for barren plateaus
 
     scale_reduction_epochs = []  # Track epochs where scale is reduced
     scales_per_epoch = []  # Store scale values per epoch
-    new_scale = 1.0  # Initial scale value
+   
     learning_rates = []
-    # print(f"params: {type(params)}, {params.dtype}")
-    num_reductions = 0
-    new_scale = 1.0
+   
     while epoch  < steps or improvement:
         params, opt_state, cost,grad_circuit = update(params, opt_state, X, y,value=cost)
         grad =grad_circuit
@@ -498,17 +528,14 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
             e = time.time()
             epoch_time = e - s
             print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
-                #   f'a: {acceleration:.2e} '
-                # f'Var(grad): {var_grad:.1e}, '
-                # f"opt_state[1]['learning_rate']= {opt_state[1].hyperparams['learning_rate']}",
-                # f'GradNorm: {np.linalg.norm(grad):.1e}, '
+               
                  f'Mean(grad): {mean_grad:.1e}, '
                  f'Max(grad): {max_grad:.1e}, '
                 f'[t: {epoch_time:.1f}s]')
         # Check if there is improvement
         if cost < prev_cost:
             prev_cost = cost  # Update previous cost to current cost
-            # improvement = True
+      
 
             current_cost_check = cost_func(params, X, y,n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
             if current_cost_check < backup_cost:
@@ -550,10 +577,7 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         epoch += 1
     if backup_cost < cost:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
-        # print(f"recomputed cost (i.e. cost_func(backup_params,input_states, target_states)): {cost_func(backup_params,input_states, target_states)}")
-        # print(f"cost_func(params, input_states,target_states): {cost_func(params, input_states,target_states)}")
-        # print(f"final_test(backup_params,test_in, test_targ): {final_test(backup_params,test_in, test_targ)}")
-        # print(f"final_test(params,test_in, test_targ): {final_test(params,test_in, test_targ)}")
+       
         params = backup_params
     fullend = time.time()
     print(f"time optimizing: {fullend-fullstr} improvement count: {improvement_count}")
@@ -563,16 +587,14 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
 
     
     fidelities =  final_costs(params, X=test_X, y=test_y, n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits, trotter_steps=trotter_steps, static=static)
-    # fidelities =  final_fidelities(params, X=test_X, y=test_y,V=gate, n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits, trotter_steps=trotter_steps, static=static)
-    #print('Prev fidelity: ', np.mean(tempt_infidelies))
+   
     infidelities = 1.00000000000000-fidelities
-    # print(f"infidelities dtype: {np.array(infidelities).tolist()[0].dtype}")
+
     avg_infidelity = np.mean(infidelities)
     # print(f"avg_infidelity dtype: {avg_infidelity.dtype}")
     avg_fidelity = np.mean(fidelities)
     print(f'Avg Fidelity: {avg_fidelity:.5f}')
-   # infidelities_backup =  final_costs(backup_params, X=test_X, y=test_y, n_rsv_qubits=n_rsv_qubits, n_ctrl_qubits=n_ctrl_qubits, trotter_steps=trotter_steps, static=static)
-  #  print('Backup params infidelity: ', np.mean(infidelities_backup))
+
     x_coeff = params[0]
     z_coeff = params[1]
     y_coeff = params[2]
@@ -608,10 +630,11 @@ def run_experiment(params, steps, n_rsv_qubits, n_ctrl_qubits,  K_coeffs, trotte
         'testing_results': np.array(fidelities).tolist(),
         'training_size': training_size,
         'X': np.array(X).tolist(),
-        'y': np.array(y).tolist(),
+        
         'bath': bath,
         'static': static,
     }
+    data["target DQFIM stats"] = dqfim_dict_target
     return data
    
     
@@ -628,100 +651,23 @@ def convert_to_float(value):
         # Return the value as-is if it's not a recognized numeric type
         return value
 
-def compute_single_draw_stats(
-    eigvals,
-    threshold=1e-8,
-    spread_methods=("variance", "mad"),
-    ddof=1,
-    scale="normal",
-    # For Abbas dimension
-    gamma=1.0,
-    n=1,
-    V_theta=1.0,
-):
-    """
-    Compute QFIM (or DQFIM) statistics for a SINGLE set of eigenvalues (one draw).
-
-    This function mirrors the fields from compute_all_stats for a single-draw scenario.
-
-    Returned dict includes:
-      - "draw_rank"
-      - "var_all_eigenvalues"
-      - "var_nonzero_eigenvalues"
-      - "trace_eigenvalues"
-      - "var_normalized_by_rank"
-      - "trace_normalized_by_rank"
-      - "ipr_deff_raw"        (a "raw" dimension measure)
-      - "ipr_deff_norm"       (a shape-based dimension measure)
-      - "abbas_deff_raw"      (another "raw" dimension measure)
-      - "abbas_deff_norm"     (another shape-based measure)
-      - "spread_metric_{method}" for each method in spread_methods
-         e.g. "spread_metric_variance", "spread_metric_mad"
-
-    If you want to rename these keys to match precisely your multi-draw dictionary,
-    you can do so by changing the dict keys below.
-
-    Parameters
-    ----------
-    eigvals : array-like
-        Eigenvalues for this single QFIM (or DQFIM) draw.
-    threshold : float
-        Zero out small eigenvalues below this threshold.
-    spread_methods : tuple of str
-        Methods for "spread-of-log" metrics. E.g. ("variance", "mad").
-    ddof : int
-        Degrees of freedom for variance computations.
-    scale : str
-        Scale for median_abs_deviation if using "mad".
-    gamma : float
-        In Abbas dimension formula, typically in (0, 1].
-    n : int
-        "Number of data samples" in that Abbas formula. If you only have a single set, you can set it = 1.
-    V_theta : float
-        Volume factor if you want to subtract log(V_theta). Typically 1.0 if unknown.
-
-    Returns
-    -------
-    stats_dict : dict
-        Dictionary of single-draw statistics as described.
-    """
-    import numpy as np
-
-    # Make sure it's an array
-    if isinstance(eigvals, (list, tuple)):
-        arr = np.array(eigvals, dtype=float)
-    elif isinstance(eigvals, np.ndarray):
-        arr = eigvals.astype(float)
-    else:
-        arr = np.array(eigvals, dtype=float)
-
-    # Threshold small eigenvalues
-    arr = np.where(arr < threshold, 0.0, arr)
-
-    # --- 1) Basic stats ---
-    draw_rank = np.count_nonzero(arr)
-    var_all_eigenvalues = np.var(arr)
-    # Nonzero subset
-    nonzero = arr[arr > threshold]
-    var_nonzero_eigenvalues = np.var(nonzero) if nonzero.size > 1 else 0.0
-    var_normalized_by_rank = var_all_eigenvalues / draw_rank
-    trace_eigenvalues = np.sum(arr)
-    trace_normalized_by_rank = trace_eigenvalues / draw_rank
 
 
-def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, L = 1,threshold=1e-10):
-    file_path = Path(file_path) / f'L_{L}/data.pickle'
-    print(file_path)
+
+def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, num_L = 1,threshold=1e-10):
+    file_path = Path(file_path) / f'L_{num_L}/data.pickle'
+    # print(file_path)
     with open(file_path, 'rb') as f:
         all_tests_data = pickle.load(f)
     results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
 
     assert 'qfim_eigvals' in results
-    print(results.keys())
+    # print(results.keys())
     eigvals = results.get('qfim_eigvals', None)
     nonzero = eigvals[eigvals > threshold]
     return {
         'dqfim_eigvals':results.get('qfim_eigvals', None),
+        'L':results.get('L',None),
         'raw_trace':np.sum(eigvals),
         'raw_var_nonzero':  np.var(nonzero),
         'entropies':results.get('entropies', None),
@@ -729,6 +675,25 @@ def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, L 
     }
 
 
+def get_qfim_stats_basis_state(file_path,fixed_param_dict_key, trainable_param_dict_key):
+    file_path = Path(file_path) / f'data.pickle'
+    # print(file_path)
+    with open(file_path, 'rb') as f:
+        all_tests_data = pickle.load(f)
+    results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
+
+    assert 'qfim_eigvals' in results
+    # print(results.keys())
+    eigvals = results.get('qfim_eigvals', None)
+    nonzero = eigvals[eigvals > threshold]
+    return {
+        'qfim':results.get('qfim', None),
+        'qfim_eigvals':eigvals,
+        'raw_trace':np.sum(eigvals),
+        'raw_var_nonzero':  np.var(nonzero),
+        'entropy':results.get('entropy', None),
+        'trainable_params':results.get('trainable_params', None),
+    }
 
 
 def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
@@ -788,8 +753,8 @@ if __name__=='__main__':
 
     
 
-    steps = 500
-    training_size_list = [10]
+    steps = 1000
+    training_size_list = [20]
     noise_central = 0.1
     noise_range = 0.002
     test_size = 2000
@@ -808,15 +773,15 @@ if __name__=='__main__':
     parameters = []
     
     N_r = 1
-    trotter_steps = 14
+    trotter_steps = 12
   
     bath = False
     static = False
     N_ctrl = 2
 
-    folder = f'./param_initialization_final/digital_results/Nc_{N_ctrl}/epochs_{steps}'
+    
     gates_random = []
-    for i in range(30):
+    for i in range(15):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         g = partial(qml.QubitUnitary, U=U)
         g.num_wires = N_ctrl
@@ -826,26 +791,29 @@ if __name__=='__main__':
     gates =   gates_random 
 
  
-    fp_idx = 0
    
-    # trainable_param_keys = [f'test{i}' for i in range(100)]
-    # trainable_param_keys =['test31', 'test78', 'test20', 'test15', 'test44', 'test40', 'test61', 'test35', 'test55', 'test67', 'test17'] # trot = 10
-    trainable_param_keys =['test84', 'test71', 'test74', 'test37', 'test26', 'test5', 'test56', 'test20', 'test98', 'test78', 'test29', 'test31'] # based on trace
-    # print(len(fixed_param_keys), len(trainable_param_keys))
-    trainable_param_keys = ['test19', 'test6', 'test22', 'test16', 'test67', 'test72', 'test52' ,'test38','test50', 'test46', 'test55','test79']
-    trainable_param_keys = ['test184','test156','test79','test137','test52', 'test41', 'test96', 'test30', 'test69', 'test166', 'test151', 'test48', 'test40', 'test177', 'test98', 'test152', 'test132', 'test111', 'test5', 'test106', 'test65', 'test110', 'test45', 'test24', 'test163', 'test130', 'test171', 'test49', 'test8', 'test6', 'test136', 'test63', 'test145', 'test3', 'test36', 'test158', 'test86', 'test21', 'test80', 'test29', 'test56', 'test31', 'test157', 'test71', 'test0', 'test189', 'test181', 'test28']
+    trainable_param_keys = ['test110', 'test26', 'test146', 'test100', 'test152', 'test189', 'test8', 'test62', 'test43', 'test80', 'test64', 'test96', 'test1', 'test109', 'test199', 'test0', 'test160', 'test195', 'test192', 'test198']
+    
     fixed_param_name='fixed_params0'
     all_gates = gates_random
     base_state = 'GHZ_state'
     state = 'GHZ'
-    sample_range_label = 'pi'
+    sample_range_label = 'positive_pi'
     
     K_0 = '1'
     opt_lr = None
     delta_x = 1.49011612e-08
     threshold = 1.e-10
     all_gates = gates_random
-    L = 100
+    L = []
+    num_L = 100
+    use_L = False
+    if use_L:
+        assert num_L == training_size
+        folder = f'./param_initialization_final/digital_results_use_L_{use_L}/Nc_{N_ctrl}/epochs_{steps}'
+    else:
+        folder = f'./param_initialization_final/digital_results/Nc_{N_ctrl}/epochs_{steps}'
+    # print(f"folder: {folder}")
     for gate_idx,gate in enumerate(all_gates):
         
         for test_key in trainable_param_keys:
@@ -862,7 +830,7 @@ if __name__=='__main__':
             )
             Path(folder_gate).mkdir(parents=True, exist_ok=True)
             temp_list = list(Path(folder_gate).glob('*'))
-            print(f"temp_list: {temp_list}")
+            # print(f"temp_list: {temp_list}")
             files_in_folder = []
             for f in temp_list:
                 temp_f = f.name.split('/')[-1]
@@ -887,26 +855,32 @@ if __name__=='__main__':
             # filename = os.path.join(folder_gate, f'{test_key}.pickle')
             
             N = N_ctrl + N_r
-            
+            qfim_base_path2 = f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_results_basis_state/gate/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{trotter_steps}'
+            qfim_basis_init_state_stats = get_qfim_stats_basis_state(qfim_base_path2,fixed_param_name, test_key)
             qfim_base_path = f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_results/gate/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK'
             dqfim_file_path =f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_global_results/gate_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{trotter_steps}/'
-            dqfim_stats_dict = get_dqfim_stats(dqfim_file_path, fixed_param_dict_key=fixed_param_name, trainable_param_dict_key=test_key, L = L)
+            dqfim_stats_dict = get_dqfim_stats(dqfim_file_path, fixed_param_dict_key=fixed_param_name, trainable_param_dict_key=test_key, num_L = num_L)
 
             qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{trotter_steps}' 
-            print(qfim_file_path)
+            
             print(f"{test_key} params (range: (-{sample_range_label}, {sample_range_label}))")
             print(f"{fixed_param_name}")
 
             eigvals, K_coeffs,params,qfim,entropy = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
-            assert params[0] == dqfim_stats_dict['trainable_params'][0]
+            # print(dqfim_stats_dict['trainable_params'])
+            assert np.isclose(params[0], dqfim_stats_dict['trainable_params'][0], rtol=1e-5, atol=1e-8), \
+                    f'params: {params[0]} should be {dqfim_stats_dict["trainable_params"][0]}'
             trace_qfim = np.sum(eigvals)
             nonzero = eigvals[eigvals > threshold]
             var_qfim = np.var(nonzero)
-            print(f"QFIM trace: {trace_qfim:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
-            print(f"QFIM Var: {var_qfim:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
+            print(f"Tr(Q) (GHZ): {trace_qfim:.2f}, Tr(Q) (basis): {qfim_basis_init_state_stats['raw_trace']:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
+            print(f"Var(evs) (GHZ): {var_qfim:.5f}, Var(evs) (basis): {qfim_basis_init_state_stats['raw_var_nonzero']:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
 
-
-            data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static, dataset_key=dataset_key, gate=gate,gate_name= gate.name,folder= folder,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=None,qfim=qfim)
+            if use_L:
+                input_states = dqfim_stats_dict['L']
+                data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static, dataset_key=dataset_key, gate=gate,gate_name= gate.name,folder= folder,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=input_states,use_L = True,qfim=qfim)
+            else:
+                data = run_experiment(params = params,steps =  steps,n_rsv_qubits= N_r,n_ctrl_qubits= N_ctrl,K_coeffs= K_coeffs,trotter_steps= trotter_steps,static= static, dataset_key=dataset_key, gate=gate,gate_name= gate.name,folder= folder,test_size= test_size,training_size= training_size,opt_lr=opt_lr, L=None,use_L = False,qfim=qfim)
             data['QFIM Results'] = {"qfim_eigvals":eigvals,
                                     "trainable_params": params,
                                     "qfim": qfim,
@@ -916,7 +890,7 @@ if __name__=='__main__':
 
                 }
             data['DQFIM_stats'] = dqfim_stats_dict
-            
+            data['QFIM_basis_state'] = qfim_basis_init_state_stats
             df = pd.DataFrame([data])
             while os.path.exists(filename):
                 name, ext = filename.rsplit('.', 1)
