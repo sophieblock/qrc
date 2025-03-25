@@ -306,9 +306,12 @@ def generate_batch_params(params_key, tests, time_steps, N_ctrl, N_reserv,sample
         test_key = jax.random.fold_in(params_key, test_num)
 
         
-       
+        remaining_params = jax.random.truncated_normal(test_key,
+                                             shape=(3 + (N_ctrl * N_reserv) * time_steps,), 
+                                             lower=-sample_range/2, 
+                                             upper=sample_range/2)
         
-        remaining_params = jax.random.uniform(test_key,shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-sample_range, maxval=sample_range)
+        # remaining_params = jax.random.uniform(test_key,shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-sample_range, maxval=sample_range)
         _, params_subkey1 = jax.random.split(test_key, 2)
         time_step_params = jax.random.uniform(params_subkey1, shape=(time_steps,), minval=0, maxval=1)
         params = jnp.concatenate([time_step_params, remaining_params])
@@ -325,18 +328,19 @@ def main():
     baths = [False]
     num_bath = 0
     number_of_fixed_param_tests = 1
-    number_trainable_params_tests =100 
+    number_trainable_params_tests = 100 
 
     base_state = 'GHZ_state'
+    # base_state = 'basis_state'
     
     threshold=1e-12
     # trots = [1,2,3,4,5,6,7,8,9,10]
     
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
-    # trots = [1,4,6,8,9,10,12,16,20,24]
+    trots = [10]
     # trots = [1,2,3,4,4,5,6,7,8,9,10,12,16,20,24]
-    trots = [1,2,3,4,5,6,7,8,9,10,11,12,14,16]
-    reservoirs = [1,2]
+    # trots = [1,2,3,4,5,6,7,8,9,10,11,12,14,15,16]
+    reservoirs = [1]
    
     
    
@@ -345,17 +349,21 @@ def main():
     kFactor = 1
     K_0 = kFactor
     sample_range = np.pi/2
-    sample_range_label = '.5pi'
+    sample_range_label = 'normal_.5pi'
     batch =True
     #folder = f'./QFIM_traced_trainable_global/analog_model/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
-    folder = f'./QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
+    # folder = f'./QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
+    if base_state == "basis_state":
+        folder = f'./QFIM_results_basis_state/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
+    else:
+        folder = f'./QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
     for time_steps in trots:
 
         for N_reserv in reservoirs:
             if N_reserv == 1:
                 number_of_fixed_param_tests = 1
             else:
-                number_of_fixed_param_tests = 5
+                number_of_fixed_param_tests = 15
             
             print("________________________________________________________________________________")
             print(f"N_ctrl: {N_ctrl}, N_R: {N_reserv}, time_steps: {time_steps}")

@@ -265,9 +265,12 @@ def generate_batch_params(params_key, tests, time_steps, N_ctrl, N_reserv,sample
         test_key = jax.random.fold_in(params_key, test_num)
 
         
-       
+        remaining_params = jax.random.truncated_normal(test_key,
+                                             shape=(3 + (N_ctrl * N_reserv) * time_steps,), 
+                                             lower=-sample_range/2, 
+                                             upper=sample_range/2)
         
-        remaining_params = jax.random.uniform(test_key,shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-sample_range, maxval=sample_range)
+        # remaining_params = jax.random.uniform(test_key,shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-sample_range, maxval=sample_range)
         _, params_subkey1 = jax.random.split(test_key, 2)
         time_step_params = jax.random.uniform(params_subkey1, shape=(time_steps,), minval=0, maxval=1)
         params = jnp.concatenate([time_step_params, remaining_params])
@@ -319,15 +322,15 @@ def main():
     baths = [False]
     num_bath = 0
     number_of_fixed_param_tests = 1
-    number_trainable_params_tests = 50
-    num_input_states = 100
+    number_trainable_params_tests = 100
+    num_input_states = 50
     base_state = f'L_{num_input_states}'
     
     
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
     
     trots = [1,5,8,10,12]
-    trots = [8,9,10,11,12]
+    trots = [10]
     reservoirs = [1]
 
 
@@ -341,8 +344,10 @@ def main():
     #folder = f'./QFIM_traced_trainable_global/analog_model/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
 
     batch = True
+    # sample_range = np.pi/2
+    # sample_range_label = '.5pi'
     sample_range = np.pi/2
-    sample_range_label = '.5pi'
+    sample_range_label = 'normal_.5pi'
 
     folder = f'./QFIM_global_results/analog_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
     for time_steps in trots:
@@ -619,7 +624,7 @@ def main():
                         #e = time.time()
                         #print(f'Time for getting entropy for new param: {e-s}')
                         #print(f"Added {new_tests_count} new tests for {fixed_param_key}")
-
+                            
                             
                         else:
                             # Non-batch processing, run each test one by one
@@ -657,8 +662,11 @@ def main():
                                 }
                                 
                                 new_tests_count += 1
+                            # with open(data_filename, 'wb') as f:
+                            #     pickle.dump(all_tests_data, f)
+                        # print(f"Updated and added {new_tests_count} tests")
                         with open(data_filename, 'wb') as f:
-                            pickle.dump(all_tests_data, f)
+                                pickle.dump(all_tests_data, f)
                         print(f"Updated and added {new_tests_count} tests")
                     else:
                         print(f"{number_trainable_params_tests} completed ({tests_to_run} tests to run) for {fixed_param_key}. Continue..")    
