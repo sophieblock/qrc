@@ -135,10 +135,10 @@ if __name__ == "__main__":
     sample_range_label = "normal_.5pi"
     fixed_param_name = "fixed_params0"
     NUM_L = 20  # used for dqfim stats from file
-    # Specify which test key(s) to process:
-    trainable_test_keys = ['test0','test3', 'test6', 'test8', 'test9']
+    # Specify the test keys to process.
+    trainable_test_keys = ['test0', 'test3', 'test6', 'test8', 'test9']
 
-    # Parameterize the base directory for original results
+    # Parameterize the base directory for original results.
     base_dir = Path(f"./param_initialization_final/analog_results/Nc_{N_ctrl}/epochs_{num_epochs}")
     # Updated files will be saved under this directory:
     updated_base_dir = Path(f"./param_initialization_final/analog_results_updated/Nc_{N_ctrl}/epochs_{num_epochs}")
@@ -147,7 +147,10 @@ if __name__ == "__main__":
         print(f"Base directory {base_dir} does not exist. Please check the path.")
     else:
         for file_path in base_dir.rglob("*.pickle"):
-            # Check if any of the trainable test keys exactly appear in the path parts.
+            # Ensure that the path includes the "trainsize_{N_train}" folder.
+            if f"trainsize_{N_train}" not in file_path.parts:
+                continue
+            # Then, check if any of the test keys exactly appear in the path parts.
             matching_keys = [key for key in trainable_test_keys if key in file_path.parts]
             if matching_keys:
                 test_key = matching_keys[0]  # Use the first matching key.
