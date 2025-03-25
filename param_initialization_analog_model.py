@@ -78,50 +78,6 @@ config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 
 
-# def generate_dataset(
-#     gate, n_qubits, training_size, key, new_set=False
-# ):
-#     """
-#     Generate a deterministic dataset of input and output states for a given gate.
-
-#     Parameters:
-#         gate: The quantum gate to apply.
-#         n_qubits: Number of qubits in the system.
-#         training_size: Number of training states required.
-#         key: JAX random key for reproducibility.
-#         trot_step: (Optional) Trotter step for additional determinism.
-#         reservoir_count: (Optional) Reservoir count for additional determinism.
-#         new_set: If True, generate a new dataset even for the same parameters. Default is False.
-
-#     Returns:
-#         Tuple (input_states, output_states).
-#     """
-#     if new_set:
-#         # Use the raw key to generate a new dataset
-#         seed = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-#     else:
-       
-#         # Derive a deterministic seed that ignores trot_step and reservoir_count
-#         key_int = int(jax.random.randint(key, (1,), 0, 2**32 - 1)[0])
-#         seed = hash((n_qubits, key_int)) 
-
-#     # Generate random state vectors deterministically
-#     X = []
-#     for i in range(training_size):
-#         folded_key = jax.random.fold_in(jax.random.PRNGKey(seed), i)
-#         state_seed = int(jax.random.randint(folded_key, (1,), 0, 2**32 - 1)[0])
-#         state_vec = random_statevector(2**n_qubits, seed=state_seed).data
-#         X.append(np.asarray(state_vec, dtype=jnp.complex128))
-
-#     # Generate output states using the circuit
-#     qubits = Wires(list(range(n_qubits)))
-#     dev_data = qml.device("default.qubit", wires=qubits)
-#     circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
-
-#     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
-
-#     return np.asarray(X), np.asarray(y)
-
 class Sim_QuantumReservoir:
     def __init__(self, params, N_ctrl, N_reserv, num_J, time_steps=1,bath=False,num_bath = 0):
         self.bath = bath
@@ -267,17 +223,10 @@ def array(a,dtype):
 def Array(a,dtype):
     return np.asarray(a, dtype=np.float32)
 
-# @jit
-def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=5e-3, max_lr=0.05):
-    """Estimate a more practical initial learning rate based on the gradient norms."""
-    grad_norm = jnp.linalg.norm(grads)
-    max_grad = max(np.abs(grads))
-    print(f"max_grad: {max_grad:4e}, inv: {1/max_grad:4e}, grad norm: {grad_norm:4e}")
-    initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
-    initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    return initial_lr, grad_norm
 
-def get_initial_learning_rate_DQFIM(params,qrc,X,y,gate,init_grads, scale_factor=0.1, min_lr=9e-4, max_lr = 0.1):
+
+
+def get_initial_learning_rate_DQFIM(params,qrc,X,gate,init_grads, scale_factor=0.1, min_lr=9e-5, max_lr = 0.1):
     """
     Compute an initial learning rate based on the norm of gradients.
     """
@@ -476,16 +425,16 @@ def compute_initial_learning_rate(gradients, scale_factor=0.1, min_lr=1e-3, max_
     initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
     return initial_lr
 
-def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr=0.2):
+def get_initial_learning_rate(grads, scale_factor=0.01, min_lr=1e-4, max_lr=0.2):
     """Estimate a more practical initial learning rate based on the gradient norms."""
     grad_norm = jnp.linalg.norm(grads)
     
     initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
     
-    initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    print(f"initial base lr: {initial_lr:.5f}")
-    return initial_lr, grad_norm
-def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-4, max_lr=0.2):
+    clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    print(f"initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
+    return initial_lr, clipped_lr
+def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-5, max_lr=0.2):
     # print(f"grads: {grads}")
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
     # print(f"grad_magnitudes: {grad_magnitudes}")
@@ -509,6 +458,7 @@ def get_target_state(gate, input_state, qubits):
     qml.StatePrep(input_state, wires=[*qubits])
     gate(wires=qubits)
     return qml.state()
+
 
 
 
@@ -543,50 +493,6 @@ def generate_dataset(gate, n_qubits, size, key, L=None):
     circuit = qml.QNode(quantum_fun, device=dev_data, interface="jax")
     y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(size)])
     return X, y
-# def generate_dataset(gate, n_qubits, training_size,testing_size, key, L=[]):
-#     '''
-#     Generate the dataset of input and output states according to the gate provided.
-#     Uses a seed for reproducibility.
-#     '''
-    
-#     if len(L) == 0:
-#         # Generate random state vectors
-#         X = []
-#         for _ in range(training_size + testing_size):
-#             key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-#             # Extract the scalar seed value explicitly to avoid deprecation warning
-#             seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-#             # Use the extracted scalar seed value
-#             state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-#             X.append(np.asarray(state_vec))
-#     else:
-#         L = np.asarray(L) 
-#         print(f"Using pre-selected states for training")
-#         X = [state for i,state in enumerate(L) if i < training_size]
-#         print(f"len(x): {len(X)}")
-#         for _ in range(testing_size):
-#             key, subkey = jax.random.split(key)  # Split the key to update it for each iteration
-#             # Extract the scalar seed value explicitly to avoid deprecation warning
-#             seed_value = int(jax.random.randint(subkey, (1,), 0, 2**32 - 1)[0])
-#             # Use the extracted scalar seed value
-#             state_vec = random_statevector(2**n_qubits, seed=seed_value).data
-#             X.append(np.asarray(state_vec))
-
-#     # Convert lists to np.ndarrays before concatenating
-#     # X = np.asarray(X)  # Convert list X to an ndarray
-#     #  # Convert list L to an ndarray
-
-#     # # Concatenate the arrays
-#     # X = np.concatenate([L, X], axis=0)
-#     X = np.stack(X)
-#     qubits = Wires(list(range(n_qubits)))
-#     dev_data = qml.device('default.qubit', wires=qubits)
-#     circuit = qml.QNode(quantum_fun, device=dev_data, interface='jax')
-    
-#     # Execute the circuit for each input state
-#     y = np.stack([np.asarray(circuit(gate, X[i], qubits)) for i in range(training_size + testing_size)])
-    
-#     return X, y
 
 def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,folder,gate,gate_name,init_params_dict,filename,dataset_key, L = [], use_L=False):
     opt_lr = None
@@ -597,7 +503,6 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
     # opt_a,opt_b,worst_a,worst_b,opt_lr = optimize_traingset(gate,N_ctrl, N_reserv,time_steps, params, init_params_dict, N_train,10,key)
     #key,subkey = jax.random.split(states_key)
     #add_a,add_b =  np.asarray(worst_a[:N_train]), np.asarray(worst_b[:N_train])
-    # Generate training dataset
     if use_L:
         train_X, train_y = generate_dataset(gate, N_ctrl, N_train, dataset_key, L)
     else:
@@ -608,8 +513,8 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
     test_X, test_y = generate_dataset(gate, N_ctrl, N_test, test_dataset_key)
 
     input_states, target_states = np.asarray(train_X), np.asarray(train_y)
-    print(f"Training dataset shapes: input_states: {input_states.shape}, target_states: {target_states.shape}")
-    print(f"Testing dataset shapes: test_X: {test_X.shape}, test_y: {test_y.shape}")
+    # print(f"Training dataset shapes: input_states: {input_states.shape}, target_states: {target_states.shape}")
+    # print(f"Testing dataset shapes: test_X: {test_X.shape}, test_y: {test_y.shape}")
     
     if use_L and len(L) > 0:
         assert np.array_equal(input_states, np.asarray(L)[:N_train]), (
@@ -682,10 +587,10 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
 
         return loss
    
-    def final_test(params,test_in,test_targ):
+    def final_test(params,test_X,test_y):
         params = jnp.asarray(params, dtype=jnp.float64)
-        X = jnp.asarray(test_in, dtype=jnp.complex128)
-        y = jnp.asarray(test_targ, dtype=jnp.complex128)
+        X = jnp.asarray(test_X, dtype=jnp.complex128)
+        y = jnp.asarray(test_y, dtype=jnp.complex128)
         batched_output_states = vcircuit(params, X)
 
         fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
@@ -701,10 +606,18 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
         dt = e - s
         # print(f"initial fidelity: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
         # opt_lr,grad_norm = get_initial_learning_rate(init_grads)
-        max_lr,_ = get_initial_learning_rate(init_grads)
-        opt_lr = get_initial_lr_per_param(init_grads, max_lr=max_lr)
+        raw_lr,clipped_lr = get_initial_learning_rate(init_grads)
+        opt_lr = get_initial_lr_per_param(init_grads, max_lr=raw_lr)
+
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
         cost = init_loss
+        dqfim_initial_lr, dqfim_dict_target = get_initial_learning_rate_DQFIM(params=params,qrc=sim_qr,X=train_X,gate=gate, init_grads=init_grads)
+        DQFIM = dqfim_dict_target.get('DQFIM', None)
+        tr_dqfim_targ=jnp.trace(DQFIM)
+        evals, evecs = jnp.linalg.eigh(DQFIM)
+        # evs = dqfim_dict.get('qfim_eigvals', None)
+        nonzero = evals[evals > threshold]
+        print(f"DQFIM w/ target y: lr: {dqfim_initial_lr:.5f}\n - Tr(DQFIM)={tr_dqfim_targ:.3f}\n - var(DQFIM eigs)={np.var(nonzero):.3f}")
     else:
         s = time.time()
         init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
@@ -715,12 +628,7 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
         # print(f"initial fidelity: {init_loss:.4f}, init opt: {maybe_lr}. Time: {dt:.2e}")
         
     opt_descr = 'per param'
-    # opt = optax.chain(
-    #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
-    #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
-    #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
-    # )
-    # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
+
     
     learning_rate_schedule = optax.constant_schedule(opt_lr)
     opt = optax.chain(
@@ -761,8 +669,7 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
     opt_state = opt.init(params)
     prev_cost, second_prev_cost = float('inf'), float('inf')  # Initialize with infinity
     threshold_counts = 0
-    acceleration = 0.0
-    rocs = []
+
     consecutive_improvement_count = 0
     cost_threshold = 1e-5
     consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
@@ -772,18 +679,10 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
     freeze_tau = False
     epoch = 0
     s = time.time()
-    full_s =s
-    training_state_metrics = {}
-    add_more = False
-    a_condition_set = False
-    a_threshold =  0.0
-    stored_epoch = None
-    threshold_cond1, threshold_cond2 = [],[]
+
     false_improvement = False
     backup_epoch=0
-    scale_reduction_epochs,learning_rates = [],[]  # Track epochs where scale is reduced
-    scales_per_epoch = []  # Store scale values per epoch
-    new_scale = 1.0  # Initial scale value
+    fullstr = time.time()
     while epoch < num_epochs or improvement:
         #print(params, type(params))
         params, opt_state, cost, grad = update(params, opt_state, input_states, target_states,value=cost)
@@ -857,26 +756,37 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
             if params[i] < 0:
                 params = params.at[i].set(np.abs(params[i]))
        
+        var_condition= np.var(grad,ddof=1) < 1e-14
+        gradient_condition= max(jnp.abs(grad)) < 1e-8
+        epoch_cond = epoch >= 2*num_epochs
         # plateau_state = opt_state[-1]
-        if max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 or epoch >= 2*num_epochs:
-            print(f"max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 and plateau_state.scale <= MIN_SCALE. breaking at epoch {epoch}....")
-            # plateau_state = opt_state[-1]
-            # print(f"ReduceLROnPlateau hyps. avg: {plateau_state.avg_value:.2e}, best: {plateau_state.best_value:.2e}, new_scale: {plateau_state.scale:.5f}!")
-           
+        if gradient_condition or var_condition or epoch_cond:
+            if epoch_cond:
+                print(f"Epoch greater than max. Ending opt at epoch: {epoch}")
+            if var_condition:
+                print(f"Variance of the gradients below threshold [{np.var(grad,ddof=1):.1e}], thresh:  1e-10. Ending opt at epoch: {epoch}")
+            if gradient_condition:
+                print(f"Magnitude of maximum gradient is less than threshold [{max(jnp.abs(grad)):.1e}]. Ending opt at epoch: {epoch}")
+
             break
         epoch += 1  # Increment epoch count
 
 
 
-    if backup_cost < cost and not epoch < num_epochs:
+    if backup_cost < cost and not epoch < num_epochs and backup_epoch < epoch - 100:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
-       
+        # print(f"recomputed cost (i.e. cost_func(backup_params,input_states, target_states)): {cost_func(backup_params,input_states, target_states)}")
+        # print(f"cost_func(params, input_states,target_states): {cost_func(params, input_states,target_states)}")
+        # print(f"final_test(backup_params,test_in, test_targ): {final_test(backup_params,test_in, test_targ)}")
+        # print(f"final_test(params,test_in, test_targ): {final_test(params,test_in, test_targ)}")
         params = backup_params
-    # full_e = time.time()
-    # epoch_time = full_e - full_s
-    # print(f"Time optimizing: {epoch_time}")
+    fullend = time.time()
+    print(f"time optimizing: {fullend-fullstr}")
+    df = pd.DataFrame()
+    
+    # print(f"Testing opt params against {test_size} new random states...")
 
-    testing_results = final_test(params,test_in, test_targ)
+    testing_results = final_test(params,test_X, test_y)
     avg_fidelity = jnp.mean(testing_results)
     infidelities = 1.00000000000000-testing_results
     print("\nAverage Final Fidelity: ", avg_fidelity)
@@ -892,7 +802,8 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
                 'N_train': N_train,
                 'fixed_params': init_params_dict,
                 'init_params': init_params,
-                'testing_results': testing_results,
+                'testing_results': np.array(testing_results).tolist(),
+                'infidelities': np.array(infidelities).tolist(),
                 'avg_fidelity': avg_fidelity,
                 'costs': costs,
                 'params_per_epoch':param_per_epoch,
@@ -900,11 +811,15 @@ def run_test(params,num_epochs, N_reserv, N_ctrl, time_steps,N_train,N_test,fold
                
                 'opt_params': params,
                 'opt_lr': opt_lr,
-                
+                'controls':N_ctrl,
+                'reservoirs':N_reserv,
+                'trotter_step':N_ctrl,
                 'grads_per_epoch':grads_per_epoch,
-                'init_grads':init_grads
+                'init_grads':init_grads,
+                'training_states': train_X,
 
             }
+    data["target DQFIM stats"] = dqfim_dict_target
     return data
     
 
@@ -920,6 +835,27 @@ def convert_to_float(value):
     else:
         # Return the value as-is if it's not a recognized numeric type
         return value
+
+
+def get_qfim_stats_basis_state(file_path,fixed_param_dict_key, trainable_param_dict_key):
+    file_path = Path(file_path) / f'data.pickle'
+    # print(file_path)
+    with open(file_path, 'rb') as f:
+        all_tests_data = pickle.load(f)
+    results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
+
+    assert 'qfim_eigvals' in results
+    # print(results.keys())
+    eigvals = results.get('qfim_eigvals', None)
+    nonzero = eigvals[eigvals > threshold]
+    return {
+        'qfim':results.get('qfim', None),
+        'qfim_eigvals':eigvals,
+        'raw_trace':np.sum(eigvals),
+        'raw_var_nonzero':  np.var(nonzero),
+        'entropy':results.get('entropy', None),
+        'trainable_params':results.get('trainable_params', None),
+    }
 
 def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
     """
@@ -967,17 +903,18 @@ def get_qfim_eigvals(file_path, fixed_param_dict_key, trainable_param_dict_key):
 
 def get_dqfim_stats(file_path,fixed_param_dict_key, trainable_param_dict_key, num_L = 1,threshold=1e-10):
     file_path = Path(file_path) / f'L_{num_L}/data.pickle'
-    print(file_path)
+    # print(file_path)
     with open(file_path, 'rb') as f:
         all_tests_data = pickle.load(f)
     results = all_tests_data[fixed_param_dict_key][trainable_param_dict_key]
 
     assert 'qfim_eigvals' in results
-    print(results.keys())
+    # print(results.keys())
     eigvals = results.get('qfim_eigvals', None)
     nonzero = eigvals[eigvals > threshold]
     return {
         'dqfim_eigvals':results.get('qfim_eigvals', None),
+        'dqfim':results.get('qfim', None),
         'L':results.get('L',None),
         'raw_trace':np.sum(eigvals),
         'raw_var_nonzero':  np.var(nonzero),
@@ -990,19 +927,15 @@ if __name__ == '__main__':
     float32=''
 
   
-    num_epochs = 1000
-    N_train = 20
-    N_test = 2000
-
     gates_random = []
     
     
     N_ctrl = 2
     N_r = 1
     num_J = N_ctrl*N_r
-    time_steps = 5
+    time_steps = 10
     
-    for i in range(10):
+    for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
 
         g = partial(qml.QubitUnitary, U=U)
@@ -1010,22 +943,57 @@ if __name__ == '__main__':
         g.name = f'U{N_ctrl}_'+str(i)
         gates_random.append(g)
 
-    trainable_param_keys = ['test0']
+#     trainable_param_keys =  ['test10',
+#  'test11',
+#  'test12',
+#  'test15',
+#  'test17',
+#  'test18',
+#  'test19',
+#  'test22',
+#  'test24',
+#  'test26',
+#  'test29',
+#  'test33',
+#  'test34',
+#  'test35',
+#  'test36',
+#  'test38',
+#  'test39',
+#  'test4',
+#  'test44',
+#  'test47',
+#  'test5',
+#  'test58',
+#  'test67',
+#  'test7']
+    # selected from above to get more significant data first
+    # trainable_param_keys =['test131', 'test58', 'test12', 'test150', 'test326', 'test64', 'test180', 'test307', 'test286', 'test169', 'test387', 'test346']
+    trainable_param_keys = ['test131', 'test58', 'test12', 'test150', 'test326', 'test64', 'test180', 'test307', 'test286', 'test169', 'test387', 'test346']
+    # trainable_param_keys = ['test164','test56','test35', 'test179', 'test3', 'test7', 'test73', 'test172', 'test194', 'test143', 'test198', 'test107', 'test184', 'test83', 'test80', 'test124', 'test166']
+    # trainable_param_keys = ['test131', 'test43', 'test58', 'test70', 'test150', 'test64', 'test178', 'test56', 'test19']
+    trainable_param_keys =['test131', 'test12', 'test58', 'test150', 'test326', 'test180', 'test64', 'test248', 'test307', 'test290', 'test286', 'test169', 'test179', 'test387', 'test346', 'test172']   
     all_gates = gates_random
+
+
+    num_epochs = 1500
+    N_train = 10
+    N_test = 2000
+
     base_state = 'GHZ_state'
 
     state = 'GHZ'
     Kfactor = '1.0'
     K_0 = '1'
     sample_range_label = '.5pi'
-    num_L = 20
+    num_L = 50
     L = []
     delta_x = 1.49011612e-08
     threshold = 1.e-10
-    use_L = True
+    use_L = False
     fixed_param_name='fixed_params0'
     if use_L:
-        folder = f'./param_initialization_final/analog_results_{use_L}/Nc_{N_ctrl}/epochs_{num_epochs}'
+        folder = f'./param_initialization_final/analog_results_use_L_{use_L}/Nc_{N_ctrl}/epochs_{num_epochs}'
     else:
         folder = f'./param_initialization_final/analog_results/Nc_{N_ctrl}/epochs_{num_epochs}'
     for gate_idx,gate in enumerate(all_gates):
@@ -1067,28 +1035,32 @@ if __name__ == '__main__':
             
                     
             N =N_ctrl+N_r
-            dqfim_file_path =f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_global_results/analog_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{time_steps}/'
+            qfim_base_path2 = f'/Users/so714f/Documents/offline/qrc/QFIM_results_basis_state/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{time_steps}'
+            qfim_basis_init_state_stats = get_qfim_stats_basis_state(qfim_base_path2,fixed_param_name, test_key)
+            dqfim_file_path =f'/Users/so714f/Documents/offline/qrc/QFIM_global_results/analog_model_DQFIM/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK/Nr_{N_r}/trotter_step_{time_steps}/'
             dqfim_stats_dict = get_dqfim_stats(dqfim_file_path, fixed_param_dict_key=fixed_param_name, trainable_param_dict_key=test_key, num_L = num_L)
 
 
-            qfim_base_path = f'/Users/sophieblock/QRCCapstone/parameter_analysis_directory/QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK'
+            qfim_base_path = f'/Users/so714f/Documents/offline/qrc/QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{K_0}xK'
             
             qfim_file_path = Path(qfim_base_path) / f'Nr_{N_r}' / f'trotter_step_{time_steps}/' 
             print(qfim_file_path)
             print(f"{test_key} params (range: (-{sample_range_label}, {sample_range_label}))")
-            print(f"{fixed_param_name}")
+            # print(f"{fixed_param_name}")
             eigvals, fixed_params_dict,params,qfim,entropy = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
 
             # eigvals, fixed_params_dict, params, qfim, entropies = get_qfim_eigvals(qfim_file_path, fixed_param_name, test_key)
             
-            print(f"{test_key}")
+            # print(f"{test_key}")
             # print(f"{fixed_param_name}: {fixed_params_dict}")
             
             
             trace_qfim = np.sum(eigvals)
-            var_qfim = np.var(eigvals)
-            print(f"QFIM trace: {trace_qfim:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
-            print(f"QFIM Var: {var_qfim:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
+            nonzero = eigvals[eigvals > threshold]
+            var_qfim = np.var(nonzero)
+            
+            print(f"Tr(Q) (GHZ): {trace_qfim:.2f}, Tr(Q) (basis): {qfim_basis_init_state_stats['raw_trace']:.2f}, DQFIM Tr: {dqfim_stats_dict['raw_trace']:.2f}")
+            print(f"Var(evs) (GHZ): {var_qfim:.5f}, Var(evs) (basis): {qfim_basis_init_state_stats['raw_var_nonzero']:.5f}, DQFIM Var: {dqfim_stats_dict['raw_var_nonzero']:.5f}")
 
             if use_L:
                 input_states = dqfim_stats_dict['L']
@@ -1104,6 +1076,7 @@ if __name__ == '__main__':
 
                 }
             data['DQFIM_stats'] = dqfim_stats_dict
+            data['QFIM_basis_state'] = qfim_basis_init_state_stats
             
             df = pd.DataFrame([data])
             while os.path.exists(filename):
