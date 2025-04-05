@@ -693,16 +693,16 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
     acceleration = prev_improvement - current_improvement
 
     return acceleration
-def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr=0.2):
+def get_initial_learning_rate(grads, scale_factor=.1, min_lr=1e-5, max_lr=0.2):
     """Estimate a more practical initial learning rate based on the gradient norms."""
     grad_norm = jnp.linalg.norm(grads)
     
     initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
     
-    initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    print(f"initial base lr: {initial_lr:.5f}")
-    return initial_lr, grad_norm
-def get_initial_lr_per_param(grads, base_step=0.001, min_lr=1e-4, max_lr=0.2):
+    clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    print(f"initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
+    return initial_lr, clipped_lr
+def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-5, max_lr=0.2):
     # print(f"grads: {grads}")
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
     # print(f"grad_magnitudes: {grad_magnitudes}")
@@ -720,6 +720,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
     num_J = N_ctrl*N_reserv
     folder_gate = folder + str(num_bath) + '/'+gate_name + '/reservoirs_' + str(N_reserv) + '/trotter_step_' + str(time_steps) +'/' + 'bath_'+str(bath)+'/'
+    # folder_gate = folder + str(num_bath) + '/'+gate_name + '/reservoirs_' + 'sample_.5pi' + '/trotter_step_' + str(time_steps) +'/' + 'bath_'+str(bath)+'/'
     Path(folder_gate).mkdir(parents=True, exist_ok=True)
     temp_list = list(Path(folder_gate).glob('*'))
     files_in_folder = []
@@ -729,7 +730,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 1
+    k = 2
    
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
@@ -838,8 +839,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         dt = e - s
         # print(f"initial fidelity: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
         # opt_lr,grad_norm = get_initial_learning_rate(init_grads)
-        max_lr,_ = get_initial_learning_rate(init_grads)
-        opt_lr = get_initial_lr_per_param(init_grads, max_lr=max_lr)
+        # max_lr,_ = get_initial_learning_rate(init_grads)
+        raw_lr,clipped_lr = get_initial_learning_rate(init_grads)
+        opt_lr = get_initial_lr_per_param(init_grads, max_lr=raw_lr)
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
         cost = init_loss
     else:
@@ -862,6 +864,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     learning_rate_schedule = optax.constant_schedule(opt_lr)
     opt = optax.chain(
         optax.clip_by_global_norm(1.0),
+        # optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr),
         optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
         )
     
@@ -1155,18 +1158,23 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         for i in range(time_steps):
             if params[i] < 0:
                 params = params.at[i].set(np.abs(params[i]))
-       
+        var_condition= np.var(grad,ddof=1) < 1e-14
+        gradient_condition= max(jnp.abs(grad)) < 1e-8
+        epoch_cond = epoch >= 2*num_epochs
         # plateau_state = opt_state[-1]
-        if max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 or epoch >= 2*num_epochs:
-            print(f"max(np.abs(grad)) < 1e-10 or np.var(grad,ddof=1) < 1e-8 and plateau_state.scale <= MIN_SCALE. breaking at epoch {epoch}....")
-            # plateau_state = opt_state[-1]
-            # print(f"ReduceLROnPlateau hyps. avg: {plateau_state.avg_value:.2e}, best: {plateau_state.best_value:.2e}, new_scale: {plateau_state.scale:.5f}!")
-           
+        if gradient_condition or var_condition or epoch_cond:
+            if epoch_cond:
+                print(f"Epoch greater than max. Ending opt at epoch: {epoch}")
+            if var_condition:
+                print(f"Variance of the gradients below threshold [{np.var(grad,ddof=1):.1e}], thresh:  1e-10. Ending opt at epoch: {epoch}")
+            if gradient_condition:
+                print(f"Magnitude of maximum gradient is less than threshold [{max(jnp.abs(grad)):.1e}]. Ending opt at epoch: {epoch}")
+
             break
         epoch += 1  # Increment epoch count
 
 
-    if backup_cost < cost and not epoch < num_epochs:
+    if backup_cost < cost and not epoch < num_epochs and backup_epoch < epoch - 25:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
         # print(f"recomputed cost (i.e. cost_func(backup_params,input_states, target_states)): {cost_func(backup_params,input_states, target_states)}")
         # print(f"cost_func(params, input_states,target_states): {cost_func(params, input_states,target_states)}")
@@ -1267,12 +1275,13 @@ if __name__ == '__main__':
     # trots = [4,6,8,10,12,14,16,18,20]
     # trots = [1,15,20,25,30,35,40]
     # trots =[1,2,3,4,5,6,7,8,9,10]
-    # trots =[42,45]
-    trots = [16,20,22]
+    trots =[1,18,22,24]
+    trots =[22]
+    # trots = [30,35,40,45,50]
 
     # res = [1, 2, 3]
-    res = [1,2,3]
-    # trots = [6,8,10,12,14,16]
+    res = [1]
+    # trots = [6,8,10,12,14,16]/Users/so714f/Documents/offline/qrc/analog_results_trainable_global/trainsize_10_epoch1500_per_param_opt/0/U2_0/reservoirs_2/trotter_step_22/bath_False/data_run_0.pickle
     # trots = [15]
 
     
@@ -1282,7 +1291,7 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 20
+    N_train = 10
     add=0
     # if N_ctrl ==4:
     #     add = 5_optimized_by_cost3
@@ -1296,7 +1305,7 @@ if __name__ == '__main__':
     num_baths = [0]
 
 
-    for i in range(30):
+    for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         #pprint(Matrix(np.array(U)))
         g = partial(qml.QubitUnitary, U=U)
@@ -1307,8 +1316,8 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        if not gate_idx in [8,10,14,28]:
-            continue
+        # if not gate_idx in [20,21]:
+        #     continue
         # if gate_idx < 20:
         #     continue
        
@@ -1331,6 +1340,8 @@ if __name__ == '__main__':
                     dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
                     dataset_key = jax.random.PRNGKey(dataset_seed)
                     main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
+                    
+                    # main_params = jax.random.normal(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi/2, maxval=np.pi/2)
                    
                     params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                     
