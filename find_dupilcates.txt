@@ -2,7 +2,6 @@ import numpy as np
 import numpy.ma as ma
 import math
 
-
 def compute_all_stats(
     eigval_list,
     threshold=1e-12,
@@ -59,7 +58,6 @@ def compute_all_stats(
           * "effective_dimension_avg_over_draws"
           * "effective_dimension_of_mean_qfim"
     """
-    scale = "normal"
     # ---------------------------
     # (A) Convert eigvals to 2D array, zero out small entries
     # ---------------------------
@@ -77,74 +75,87 @@ def compute_all_stats(
     var_all_per_draw = np.var(arr, axis=1, ddof=ddof)
     trace_per_draw = np.sum(arr, axis=1)
 
+    # Debug if rank=0
+    for i, r in enumerate(ranks_per_draw):
+        if r == 0:
+            print(f"[DEBUG] For (n_ctrl={n_ctrl}, n_reserv={n_reserv}, trotter_step={trotter_step}): "
+                  f"draw #{i} ended up with rank=0 => arr[{i}] = {arr[i]}")
+            # Alternatively, raise an error:
+            # raise ValueError(f"QFIM draw {i} is rank=0! arr={arr[i]}")
+
     # variance of nonzero subset => masked arrays
     masked = ma.masked_where(arr <= 0.0, arr)
     var_nonzero_ma = ma.var(masked, axis=1, ddof=ddof)
     var_nonzero_per_draw = var_nonzero_ma.filled(0.0)
-    
 
-    var_norm_rank_per_draw = np.where(ranks_per_draw > 0,
-                                      var_all_per_draw / ranks_per_draw,
-                                      0.0)
-    trace_norm_rank_per_draw = np.where(ranks_per_draw > 0,
-                                        trace_per_draw / ranks_per_draw,
-                                        0.0)
+    var_norm_rank_per_draw = np.where(
+        ranks_per_draw > 0,
+        var_all_per_draw / ranks_per_draw,
+        0.0
+    )
+    trace_norm_rank_per_draw = np.where(
+        ranks_per_draw > 0,
+        trace_per_draw / ranks_per_draw,
+        0.0
+    )
 
     # ---------------------------
     # (C) IPR-based dimensions
     # ---------------------------
     sum_of_squares = np.sum(arr**2, axis=1)
-    ipr_raw_per_draw = np.divide(trace_per_draw**2, sum_of_squares,
-                                 out=np.zeros_like(trace_per_draw),
-                                 where=(sum_of_squares>0))
+    ipr_raw_per_draw = np.divide(
+        trace_per_draw**2, sum_of_squares,
+        out=np.zeros_like(trace_per_draw),
+        where=(sum_of_squares > 0)
+    )
 
     # normalized IPR
-    trace_mask = (trace_per_draw>0)
+    trace_mask = (trace_per_draw > 0)
     arr_norm = np.zeros_like(arr)
     arr_norm[trace_mask] = arr[trace_mask] / trace_per_draw[trace_mask, np.newaxis]
     sum_norm_sq = np.sum(arr_norm**2, axis=1)
-    ipr_norm_per_draw = np.divide(1.0, sum_norm_sq,
-                                  out=np.zeros_like(sum_norm_sq),
-                                  where=(sum_norm_sq>0))
+    ipr_norm_per_draw = np.divide(
+        1.0, sum_norm_sq,
+        out=np.zeros_like(sum_norm_sq),
+        where=(sum_norm_sq > 0)
+    )
 
     # ---------------------------
     # (D) Abbas-based dimensions (raw & normalized)
-    #     Here we set alpha = (gamma * n_draws) / (2 ln(n_draws)), but you can adapt.
     # ---------------------------
     gamma = 1.0
-    if n_draws>1 and math.log(n_draws)!=0:
-        alpha = (gamma * n_draws) / (2.0 * np.log(n_draws))
+    if n_draws > 1 and math.log(n_draws) != 0:
+        alpha = (gamma * n_draws) / (2.0 * math.log(n_draws))
     else:
         alpha = 0.0
 
     val_raw = 1.0 + alpha * arr
-    val_raw[val_raw<=0] = 1e-15
+    val_raw[val_raw <= 0] = 1e-15
     abbas_raw_per_draw = np.sum(np.log(val_raw), axis=1)
 
     val_norm = 1.0 + alpha * arr_norm
-    val_norm[val_norm<=0] = 1e-15
+    val_norm[val_norm <= 0] = 1e-15
     abbas_norm_per_draw = np.sum(np.log(val_norm), axis=1)
 
     # ---------------------------
     # (E) Simple aggregated stats
     # ---------------------------
-    D_C = ranks_per_draw.max() if len(ranks_per_draw)>0 else 0
+    D_C = ranks_per_draw.max() if len(ranks_per_draw) > 0 else 0
 
-    avg_var_all = float(var_all_per_draw.mean()) if var_all_per_draw.size>0 else 0.0
-    avg_trace   = float(trace_per_draw.mean())   if trace_per_draw.size>0   else 0.0
-    # Already Approach A: average the per-draw variance
-    avg_var_nonzero = float(var_nonzero_per_draw.mean()) if var_nonzero_per_draw.size>0 else 0.0
+    avg_var_all = float(var_all_per_draw.mean()) if var_all_per_draw.size > 0 else 0.0
+    avg_trace   = float(trace_per_draw.mean())   if trace_per_draw.size > 0 else 0.0
 
-    # [NEW: Approach B for raw eigenvalues: gather all nonzero & compute one variance]
-    global_nonzero_raw = arr[arr > 0.0]  # flatten across all draws
+    # Approach A: average the per-draw variance of nonzero
+    avg_var_nonzero = float(var_nonzero_per_draw.mean()) if var_nonzero_per_draw.size > 0 else 0.0
+
+    # "Global" approach B (flatten across draws) for raw
+    global_nonzero_raw = arr[arr > 0.0]  # flatten
     if global_nonzero_raw.size > 1:
         global_var_nonzero = float(np.var(global_nonzero_raw, ddof=ddof))
     else:
         global_var_nonzero = 0.0
-    trace_mask = (trace_per_draw>0)
-    arr_norm = np.zeros_like(arr)
-    arr_norm[trace_mask] = arr[trace_mask] / trace_per_draw[trace_mask, np.newaxis]
-    # (A) Approach A: variance per draw of nonzero (normalized) eigenvalues, then average
+
+    # Similarly for normalized
     masked_norm = ma.masked_where(arr_norm <= 0.0, arr_norm)
     var_nonzero_norm_ma = ma.var(masked_norm, axis=1, ddof=ddof)
     var_nonzero_norm_per_draw = var_nonzero_norm_ma.filled(0.0)
@@ -152,80 +163,116 @@ def compute_all_stats(
         avg_var_nonzero_norm = float(var_nonzero_norm_per_draw.mean())
     else:
         avg_var_nonzero_norm = 0.0
-    # (B) Approach B: flatten all nonzero normalized eigenvalues -> single variance
+
     global_nonzero_norm = arr_norm[arr_norm > 0.0]
     if global_nonzero_norm.size > 1:
         global_var_nonzero_norm = float(np.var(global_nonzero_norm, ddof=ddof))
     else:
         global_var_nonzero_norm = 0.0
 
+    avg_var_norm_rank   = float(var_norm_rank_per_draw.mean())   if var_norm_rank_per_draw.size > 0 else 0.0
+    avg_trace_norm_rank = float(trace_norm_rank_per_draw.mean()) if trace_norm_rank_per_draw.size > 0 else 0.0
 
+    var_var_all     = float(np.var(var_all_per_draw)) if var_all_per_draw.size > 1 else 0.0
+    var_var_nonzero = float(np.var(var_nonzero_per_draw)) if var_nonzero_per_draw.size > 1 else 0.0
 
-
-    avg_var_norm_rank   = float(var_norm_rank_per_draw.mean())   if var_norm_rank_per_draw.size>0   else 0.0
-    avg_trace_norm_rank = float(trace_norm_rank_per_draw.mean()) if trace_norm_rank_per_draw.size>0 else 0.0
-
-    var_var_all     = float(np.var(var_all_per_draw)) if var_all_per_draw.size>1 else 0.0
-    var_var_nonzero = float(np.var(var_nonzero_per_draw)) if var_nonzero_per_draw.size>1 else 0.0
-
-    avg_ipr_raw  = float(ipr_raw_per_draw.mean())  if ipr_raw_per_draw.size>0  else 0.0
-    avg_ipr_norm = float(ipr_norm_per_draw.mean()) if ipr_norm_per_draw.size>0 else 0.0
-    avg_abbas_raw  = float(abbas_raw_per_draw.mean())  if abbas_raw_per_draw.size>0  else 0.0
-    avg_abbas_norm = float(abbas_norm_per_draw.mean()) if abbas_norm_per_draw.size>0 else 0.0
+    avg_ipr_raw  = float(ipr_raw_per_draw.mean())  if ipr_raw_per_draw.size  > 0 else 0.0
+    avg_ipr_norm = float(ipr_norm_per_draw.mean()) if ipr_norm_per_draw.size > 0 else 0.0
+    avg_abbas_raw  = float(abbas_raw_per_draw.mean())  if abbas_raw_per_draw.size  > 0 else 0.0
+    avg_abbas_norm = float(abbas_norm_per_draw.mean()) if abbas_norm_per_draw.size > 0 else 0.0
 
     # ---------------------------
-    # (F) Spread-of-log metrics
-    #     (You can vectorize the calls if you wish.)
+    # (F) NEW Approach B: average eigenvalues across draws, then variance
+    # ---------------------------
+    # 1) Raw
+    mean_eigvals_raw = np.mean(arr, axis=0)  # shape [M]
+    mean_eigvals_raw = np.where(mean_eigvals_raw < threshold, 0.0, mean_eigvals_raw)
+    mean_eigvals_variance_raw = float(np.var(mean_eigvals_raw, ddof=ddof)) if mean_eigvals_raw.size > 1 else 0.0
+
+    # -> minimum among the raw mean eigenvals
+    nonzero_raw_means = mean_eigvals_raw[mean_eigvals_raw > 0.0]
+    if nonzero_raw_means.size > 0:
+        min_eigval_from_mean_raw = float(np.min(nonzero_raw_means))
+    else:
+        min_eigval_from_mean_raw = 0.0  # or np.nan, your choice
+
+    # -> log-variance of raw mean eigenvals
+    if mean_eigvals_raw.size > 1:
+        valid_raw = mean_eigvals_raw[mean_eigvals_raw > 0.0]
+        if valid_raw.size < 2:
+            raise ValueError(f"No valid entries for log10 of raw mean eigenvalues in "
+                             f"(n_ctrl={n_ctrl}, n_reserv={n_reserv}, trotter_step={trotter_step})!")
+        mean_log_eigvals_variance_raw = float(np.var(np.log10(valid_raw), ddof=ddof))
+    else:
+        mean_log_eigvals_variance_raw = 0.0
+
+    # 2) Normalized
+    mean_eigvals_norm = np.mean(arr_norm, axis=0)  # shape [M]
+    mean_eigvals_norm = np.where(mean_eigvals_norm < threshold, 0.0, mean_eigvals_norm)
+    mean_eigvals_variance_norm = float(np.var(mean_eigvals_norm, ddof=ddof)) if mean_eigvals_norm.size > 1 else 0.0
+
+    # debug if all zero
+    if np.all(mean_eigvals_norm == 0.0):
+        print(f"[DEBUG] (n_ctrl={n_ctrl}, n_reserv={n_reserv}, trotter_step={trotter_step}): "
+              f"mean_eigvals_norm is ALL ZEROS => {mean_eigvals_norm}")
+
+    # log-variance of normalized mean eigenvals
+    if mean_eigvals_norm.size > 1:
+        nonzero_part_norm = mean_eigvals_norm[mean_eigvals_norm > 0.0]
+        if nonzero_part_norm.size < 2:
+            raise ValueError(f"No valid entries for log10 mean eigenvalues (normalized) in "
+                             f"(n_ctrl={n_ctrl}, n_reserv={n_reserv}, trotter_step={trotter_step})!")
+        mean_log_eigvals_variance_norm = float(np.var(np.log10(nonzero_part_norm), ddof=ddof))
+    else:
+        mean_log_eigvals_variance_norm = 0.0
+    
+    # ---------------------------
+    # (G) Spread-of-log metrics
     # ---------------------------
     arr_2d = arr.copy()  # shape [n_draws, M]
     spread_results = {}
-    for scale in scales:
+    for scale_val in scales:
         for method in spread_methods:
             per_draw = spread_per_sample_vectorized(
                 arr_2d,
                 method=method,
                 threshold=threshold,
                 ddof=ddof,
-                scale=scale,
+                scale=scale_val,
                 n_ctrl=n_ctrl,
                 n_reserv=n_reserv,
                 trotter_step=trotter_step,
             )
-            spread_mean = float(per_draw.mean()) if per_draw.size>0 else 0.0
-            spread_std  = float(per_draw.std())  if per_draw.size>1 else 0.0
+            spread_mean = float(per_draw.mean()) if per_draw.size > 0 else 0.0
+            spread_std  = float(per_draw.std())  if per_draw.size > 1 else 0.0
             pooled_val  = float(spread_pooling_vectorized(
-                arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
+                arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale_val
             ))
             prefix = method.lower()
-            spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
-            spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
-            # spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
-    arr_norm_2d = arr_norm.copy()  # shape [n_draws, M]
-   
-    for scale in scales:
+            spread_results[f"spread_mean_per_sample_{prefix}_{scale_val}"] = spread_mean
+            spread_results[f"spread_std_per_sample_{prefix}_{scale_val}"]  = spread_std
+            # spread_results[f"spread_val_pooled_{prefix}_{scale_val}"]      = pooled_val
+
+    arr_norm_2d = arr_norm.copy()
+    for scale_val in scales:
         for method in spread_methods:
-            per_draw = spread_per_sample_vectorized(
+            per_draw_norm = spread_per_sample_vectorized(
                 arr_norm_2d,
                 method=method,
                 threshold=threshold,
                 ddof=ddof,
-                scale=scale,
+                scale=scale_val,
                 n_ctrl=n_ctrl,
                 n_reserv=n_reserv,
                 trotter_step=trotter_step,
             )
-            spread_mean = float(per_draw.mean()) if per_draw.size>0 else 0.0
-            spread_std  = float(per_draw.std())  if per_draw.size>1 else 0.0
-            # pooled_val  = float(spread_pooling_vectorized(
-            #     arr_norm_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
-            # ))
+            spread_mean_norm = float(per_draw_norm.mean()) if per_draw_norm.size > 0 else 0.0
+            spread_std_norm  = float(per_draw_norm.std())  if per_draw_norm.size > 1 else 0.0
             prefix = method.lower()
-            spread_results[f"spread_normalized_{prefix}_{scale}"] = spread_mean
-            # spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
-            # spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
+            spread_results[f"spread_normalized_{prefix}_{scale_val}"] = spread_mean_norm
+            # If you want std, you can store that similarly.
 
     # If you also need the "no-log" version:
-
     per_draw_nolog = spread_per_sample_vectorized_nolog(
         arr_2d,
         method="mad",
@@ -241,63 +288,55 @@ def compute_all_stats(
     )
 
     # ---------------------------
-    # (G) Effective dimension in two ways
+    # (H) Effective dimension in two ways
     # ---------------------------
     effective_dim_avg_draws = 0.0
     effective_dim_of_mean   = 0.0
-
     if qfim_mats_list is not None and len(qfim_mats_list) > 0:
         qfim_mats_array = np.array(qfim_mats_list, dtype=float)
 
         dim_each_draw = []
         F_hat_list = []
-
         for F_theta in qfim_mats_array:
             trF = np.trace(F_theta)
             if trF <= 0:
-                # Degenerate case: store zero dimension
                 dim_each_draw.append(0.0)
                 F_hat_list.append(np.zeros_like(F_theta))
                 continue
-            
-            # 1) Single-draw dimension
+
             eps = 1e-12
             F_hat = F_theta / trF
             eigs_F = np.linalg.eigvalsh(F_hat)
+            eigs_F = np.where(eigs_F < threshold, 0.0, eigs_F)
 
             if n_draws > 1 and math.log(n_draws) != 0:
-                # "Abbas dimension" for n>1
                 z_i = 0.5 * np.sum(np.log(1.0 + n_draws * eigs_F + eps))
                 d_i = (2.0 / np.log(n_draws)) * z_i
             else:
-                # n_draws == 1 => sum of p_i/(1 + p_i)
                 d_i = np.sum(eigs_F / (1.0 + eigs_F))
 
             dim_each_draw.append(d_i)
             F_hat_list.append(F_hat)
 
-        # (A) average of single-draw dimensions
         effective_dim_avg_draws = float(np.mean(dim_each_draw))
-
-        # (B) dimension from average of the normalized QFIMs
-        F_hat_mean = np.mean(F_hat_list, axis=0)  # shape: [M, M]
-        # same formula
+        F_hat_mean = np.mean(F_hat_list, axis=0)
         eigs_mean = np.linalg.eigvalsh(F_hat_mean)
+        eigs_mean = np.where(eigs_mean < threshold, 0.0, eigs_mean)
         eps = 1e-12
         if n_draws > 1 and math.log(n_draws) != 0:
             z_mean = 0.5 * np.sum(np.log(1.0 + n_draws * eigs_mean + eps))
             effective_dim_of_mean = (2.0 / np.log(n_draws)) * z_mean
         else:
-            # n_draws == 1
             effective_dim_of_mean = np.sum(eigs_mean / (1.0 + eigs_mean))
-    # We'll define this as the mean over draws of each draw's (nonzero) min eigenvalue
+
+    # Compute average min nonzero eigenvalue across draws
     with np.errstate(invalid='ignore'):
-        arr_for_min = np.where(arr>0.0, arr, np.nan)  # turn zeros into NaN
-        min_eigs_per_draw = np.nanmin(arr_for_min, axis=1)  # shape [n_draws]
-    avg_min_nonzero_eig = float(np.nanmean(min_eigs_per_draw)) if min_eigs_per_draw.size>0 else 0.0
+        arr_for_min = np.where(arr > 0.0, arr, np.nan)  # turn zeros into NaN
+        min_eigs_per_draw = np.nanmin(arr_for_min, axis=1)
+    avg_min_nonzero_eig = float(np.nanmean(min_eigs_per_draw)) if min_eigs_per_draw.size > 0 else 0.0
 
     # ---------------------------
-    # (H) Build final dictionary
+    # (I) Build final dictionary
     # ---------------------------
     metrics = {
         # Per-draw lists
@@ -309,42 +348,238 @@ def compute_all_stats(
         # Aggregates
         "D_C": D_C,
         "absolute_scale_avg_var_all": avg_var_all,
-        # Aggregated variance of nonzero RAW (Approach A & B)
-        "absolute_scale_avg_var_nonzero": avg_var_nonzero,          # Approach A
-        "absolute_scale_global_var_nonzero": global_var_nonzero,    # Approach B
+        "absolute_scale_avg_var_nonzero": avg_var_nonzero,
+        "normalized_avg_var_nonzero": avg_var_nonzero_norm,
 
-        # Aggregated variance of nonzero NORMALIZED (Approach A & B)
-        "normalized_avg_var_nonzero":  avg_var_nonzero_norm,        # Approach A
-        "normalized_global_var_nonzero": global_var_nonzero_norm,   # Approach B
-
+        "absolute_scale_global_var_nonzero": global_var_nonzero,
+        "normalized_global_var_nonzero":     global_var_nonzero_norm,
         "absolute_scale_avg_trace": avg_trace,
         "absolute_scale_var_of_var_all": var_var_all,
         "absolute_scale_var_of_var_nonzero": var_var_nonzero,
 
         "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
         "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
-        "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
-        "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
+        "avg_per_active_mode_avg_var_norm_rank": float(avg_var_norm_rank),
+        "avg_per_active_mode_avg_trace_norm_rank": float(avg_trace_norm_rank),
 
         # IPR draws & means
         "ipr_deffs_raw_per_draw": ipr_raw_per_draw,
-        "spectrum_shape_avg_ipr_deffs_raw": avg_ipr_raw,
+        "spectrum_shape_avg_ipr_deffs_raw": float(avg_ipr_raw),
         "ipr_deffs_norm_per_draw": ipr_norm_per_draw,
-        "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
+        "spectrum_shape_avg_ipr_deffs_norm": float(avg_ipr_norm),
 
         # Abbas draws & means
         "abbas_deffs_raw_per_draw": abbas_raw_per_draw,
-        "avg_abbas_deffs_raw":      avg_abbas_raw,
+        "avg_abbas_deffs_raw": float(avg_abbas_raw),
         "abbas_deffs_norm_per_draw": abbas_norm_per_draw,
-        "avg_abbas_deffs_norm":      avg_abbas_norm,
+        "avg_abbas_deffs_norm": float(avg_abbas_norm),
 
-        # Effective dimension (two ways):
+        # Approach B: mean eigenvalues
+        "mean_eigvals_raw": mean_eigvals_raw,
+        "mean_eigvals_variance_raw": mean_eigvals_variance_raw,
+        "mean_log_eigvals_variance_raw": mean_log_eigvals_variance_raw,
+        "min_eigval_from_mean_raw": min_eigval_from_mean_raw,
+
+        "mean_eigvals_norm": mean_eigvals_norm,
+        "mean_eigvals_variance_norm": mean_eigvals_variance_norm,
+        "mean_log_eigvals_variance_norm": mean_log_eigvals_variance_norm,
+
+        # Effective dimension (two ways)
         "effective_dimension_avg_over_draws": effective_dim_avg_draws,
         "effective_dimension_of_mean_qfim":   effective_dim_of_mean,
-# NEW: average minimum NONZERO eigenvalue
         "avg_min_nonzero_eigenvalue": avg_min_nonzero_eig,
     }
-    # Merge spread-of-log metrics
     metrics.update(spread_results)
-
     return metrics
+
+
+def plot_min_eigenvalue_vs_t(df, chosen_n_ctrl, chosen_n_reserv, y_metric='min_eigval_from_mean_raw',ax=None,
+                             xlabel="Trotter Step", ylabel="Min. Nonzero Eigenvalue",
+                             title=None, use_log_y=True, num_ticks=8, marker='o', color='r'):
+    """
+    Plot the 'avg_min_nonzero_eigenvalue' vs. Trotter step for a given (N_ctrl,N_reserv).
+    This matches figure (c) style in the referenced paper.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain columns 'N_ctrl','N_reserv','Trotter_Step','avg_min_nonzero_eigenvalue'.
+    chosen_n_ctrl : int
+        The N_ctrl to filter on.
+    chosen_n_reserv : int
+        The N_reserv to filter on.
+    ax : matplotlib.axes.Axes (optional)
+        Axis to draw on. If None, creates a new figure+axis.
+    xlabel, ylabel : str
+        Axis labels.
+    title : str
+        Plot title.
+    use_log_y : bool
+        Whether to use a log scale for the y-axis (often useful for small eigenvals).
+    num_ticks : int
+        Number of x-ticks to show.
+    marker, color : styling
+        Marker style, color for the line.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # 1) Filter
+    subset = df[(df["N_ctrl"] == chosen_n_ctrl) & (df["N_reserv"] == chosen_n_reserv)].copy()
+    if "avg_min_nonzero_eigenvalue" not in subset.columns:
+        raise ValueError(f"DataFrame must have '{y_metric}' from compute_all_stats().")
+
+    # 2) Sort by trotter step
+    subset.sort_values("Trotter_Step", inplace=True)
+    x_vals = subset["Trotter_Step"].values
+    y_vals = subset[y_metric].values
+
+    # 3) Create axis if needed
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 5))
+
+    # 4) Plot
+    ax.plot(x_vals, y_vals, marker=marker, color=color, linestyle='--',
+            label="min(eig(Q)) across draws")
+
+    # 5) Set axis scale, ticks
+    if use_log_y:
+        ax.set_yscale('log')
+
+    # X ticks
+    x_min, x_max = min(x_vals), max(x_vals)
+    x_ticks = np.linspace(x_min, x_max, num=num_ticks, dtype=int)
+    x_ticks = np.unique(np.append(x_ticks, [x_min, x_max]))
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([str(x) for x in x_ticks], fontsize=12)
+
+    # 6) Labeling
+    ax.set_xlabel(xlabel, fontsize=14)
+    ax.set_ylabel(ylabel, fontsize=14)
+    if not title:
+        title = f"Minimal Eigenvalue vs. T (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})"
+    ax.set_title(title, fontsize=15)
+    ax.grid(True, alpha=0.5)
+    ax.legend()
+    return ax
+
+def plot_redundancy_vs_t(df, chosen_n_ctrl, chosen_n_reserv, model_type='digital',
+                         ax=None, xlabel="T", ylabel=r"$(M(T)-D_C) / M(T)$",
+                         title=None, num_ticks=8, marker='o', color='g'):
+    """
+    Plot 'redundancy' = D_C / M(T) vs. Trotter step, 
+    where D_C is from df['D_C'], and M(T) is get_num_params(N_reserv, N_ctrl, T).
+
+    This loosely replicates a dimension-likeness ratio you might see in the paper.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have columns 'N_ctrl','N_reserv','Trotter_Step','D_C'.
+    chosen_n_ctrl : int
+        The control qubit count to filter on.
+    chosen_n_reserv : int
+        The reservoir qubit count to filter on.
+    model_type : str
+        "digital" or "analog" for get_num_params.
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on; if None, make a new figure.
+    xlabel, ylabel : str
+        Axis labels.
+    title : str
+        Plot title.
+    num_ticks : int
+        # of x ticks to draw.
+    marker, color : styling
+        Plot style.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Reuse your function for M(T)
+    def get_num_params(N_r, N_c, T, model_type='digital'):
+        if model_type == 'analog':
+            # example formula
+            return N_r * N_c * T + 3 + T
+        elif model_type == 'digital':
+            return N_r * N_c * T + 3
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+
+    # 1) Filter
+    subset = df[(df["N_ctrl"] == chosen_n_ctrl) & (df["N_reserv"] == chosen_n_reserv)].copy()
+    if "D_C" not in subset.columns:
+        raise ValueError("DataFrame must have 'D_C' from compute_all_stats().")
+
+    # 2) Sort by T
+    subset.sort_values("Trotter_Step", inplace=True)
+    T_vals = subset["Trotter_Step"].values
+    DC_vals = subset["D_C"].values  # dimension across draws
+
+    # 3) Compute redundancy = D_C / M(T)
+    redundancies = []
+    for T, DC in zip(T_vals, DC_vals):
+        M_T = get_num_params(chosen_n_reserv, chosen_n_ctrl, T, model_type=model_type)
+        if M_T == 0:
+            redundancies.append(np.nan)
+        else:
+            redundancies.append((M_T-DC) / M_T)
+
+    redundancies = np.array(redundancies, dtype=float)
+
+    # 4) Create axis if needed
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7,5))
+
+    # 5) Plot
+    ax.plot(T_vals, redundancies, marker=marker, color=color,
+            label=f'$N_R={chosen_n_reserv}$', linestyle='--')
+
+    # 6) Ticks & labeling
+    x_min, x_max = min(T_vals), max(T_vals)
+    x_ticks = np.linspace(x_min, x_max, num=num_ticks, dtype=int)
+    x_ticks = np.unique(np.append(x_ticks, [x_min, x_max]))
+    ax.set_xticks(x_ticks)
+    ax.set_xticklabels([str(x) for x in x_ticks], fontsize=12)
+
+    ax.set_xlabel(xlabel, fontsize=14)
+    ax.set_ylabel(ylabel, fontsize=14)
+    if not title:
+        title = f"Redundancy vs. T (N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv})"
+    ax.set_title(title, fontsize=15)
+    ax.grid(True, alpha=0.5)
+    ax.legend()
+    return ax
+
+
+fig, axes = plt.subplots(3, 1, figsize=(8, 12))  # 3 rows: (a), (b), now (c)
+# 1) top subplot: your plot_max_rank_vs_params => axes[0]
+plot_max_rank_vs_params(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=2, ax=axes[0])
+
+# 2) middle subplot: spread analysis => axes[1]
+plot_spread_analysis(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=2, 
+                     spread_type="mad", combination="sampled", scale='1.0', ax=axes[1])
+# plot_spread_analysis(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=2, 
+#                      spread_type="variance", combination="sampled", scale='normal', ax=axes[1])
+
+# 3) bottom subplot: min eigenvalue => axes[2]
+plot_min_eigenvalue_vs_t(df_with_stats, chosen_n_ctrl=2,y_metric='avg_min_nonzero_eigenvalue', chosen_n_reserv=2, ax=axes[2],
+                         use_log_y=True, color='r')
+plot_min_eigenvalue_vs_t(df_with_stats, chosen_n_ctrl=2,y_metric='min_eigval_from_mean_raw', chosen_n_reserv=2, ax=axes[2],
+                         use_log_y=True, color='r')
+
+plt.tight_layout()
+plt.show()
+
+fig2, ax2 = plt.subplots(figsize=(7,5))
+plot_redundancy_vs_t(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=1, ax=ax2)
+plot_redundancy_vs_t(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=2, ax=ax2)
+plt.show()
