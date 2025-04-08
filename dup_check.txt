@@ -1,281 +1,191 @@
-import numpy as np
-import numpy.ma as ma
-import math
-
-def compute_all_stats(
-    eigval_list,
-    threshold=1e-12,
-    spread_methods=("variance", "mad"),  # e.g. ["variance", "mad"]
-    ddof=1,
-    scale="normal",
-    qfim_mats_list=None,   
-    dataset_sizes=None,    
-    n=1,                   # overshadowed in the old code, kept for signature
-    n_ctrl=None,
-    n_reserv=None,
-    trotter_step=None,
-):
+def process_new_files(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
     """
-    Vectorized version of stats computations over 'eigval_list' (shape [n_draws, M]).
-    We remove the explicit Python for-loop for IPR, raw Abbas dimension, etc.
-    and rely on NumPy's built-in array operations.
-
-    Additionally, we compute the effective dimension in two ways:
-      1) Average of single-draw dimensions across all QFIMs in qfim_mats_list.
-      2) Dimension of the average normalized QFIM (i.e., average of F / trace(F)).
+    Process new files (pickles) that haven't been processed before, 
+    or if the folder's file count differs from the cached 'num_data_runs',
+    re-check all runs to find the best fidelity. Then update the cache 
+    with the best result for that (N_ctrl, gate, reservoir_count, trotter_step).
 
     Parameters
     ----------
-    eigval_list : list of lists (or 2D array)
-        Each row is the set of eigenvalues for one QFIM draw. shape [n_draws, M].
-    threshold : float
-        Zero out or mask any eigenvalues below this threshold.
-    spread_methods : tuple
-        e.g. ("variance", "mad"). Passed to your 'spread_per_sample_vectorized' function.
-    ddof : int
-        Degrees of freedom for variance computations.
-    scale : str
-        Scale for median_abs_deviation if "mad" is used.
-    qfim_mats_list : list of 2D arrays (or None)
-        If provided, we compute the 'effective_dimension' in two ways:
-          (1) average of single-draw dims;
-          (2) dim of average QFIM (after normalizing by trace).
-    dataset_sizes : int or list of int, optional
-        For Qiskit’s global ED or advanced dimension approaches. Not used here.
-    n : int
-        Overridden in the code below, but kept for signature consistency.
-    n_ctrl, n_reserv, trotter_step : optional
-        Additional metadata.
+    base_path : str
+        Root directory where the gate folders are located.
+    gate_prefixes : list of str
+        List of gate prefixes (e.g. ['U2'] for 2-qubit gates).
+    reservoir_counts : list of int
+        Which reservoir counts to consider.
+    trots : list of int
+        Which Trotter steps to consider.
+    cached_data : dict
+        Dictionary storing previously processed results in the structure:
+        {
+          N_ctrl: {
+            gate: {
+              reservoir_count: {
+                trotter_step: [ { 'fidelity': ..., 'test_results': ..., ... }, ]
+              }
+            }
+          }
+        }
+    processed_files : set
+        A set of file paths that have already been processed.
+    N_ctrl : int
+        Number of control qubits for this run.
 
     Returns
     -------
-    metrics : dict
-        A dictionary with the computed statistics, including:
-          * Basic per-draw stats (rank, var, trace)
-          * IPR-based measures
-          * Abbas-based measures
-          * Spread-of-log measures
-          * "effective_dimension_avg_over_draws"
-          * "effective_dimension_of_mean_qfim"
+    cached_data, processed_files : (dict, set)
+        Updated cache dictionary and processed_files set.
     """
+    for gate_prefix in gate_prefixes:
+        # Find folder names that match the gate prefix
+        for folder_name in sorted(os.listdir(base_path)):
+            if folder_name.startswith(gate_prefix + "_"):
+                gate = folder_name
 
-    # ---------------------------
-    # (A) Convert eigvals to 2D array, zero out small entries
-    # ---------------------------
-    arr = np.array(eigval_list, dtype=float)
-    if arr.ndim == 1:
-        arr = arr[np.newaxis, :]
-    arr = np.where(arr < threshold, 0.0, arr)
+                # Ensure N_ctrl is in cached_data
+                if N_ctrl not in cached_data:
+                    cached_data[N_ctrl] = {}
 
-    n_draws, M = arr.shape
+                # For each "bath_True" or "bath_False" subfolder
+                for bath_status in ['bath_True', 'bath_False']:
 
-    # ---------------------------
-    # (B) Basic stats, vectorized
-    # ---------------------------
-    ranks_per_draw = np.count_nonzero(arr, axis=1)  # rank = # of nonzero
-    var_all_per_draw = np.var(arr, axis=1, ddof=ddof)
-    trace_per_draw = np.sum(arr, axis=1)
+                    # For each "reservoirs_*" subfolder
+                    subfolder_path = os.path.join(base_path, gate)
+                    if not os.path.exists(subfolder_path):
+                        continue
+                    for subfolder in sorted(os.listdir(subfolder_path), key=extract_last_number):
+                        if 'reservoirs_' in subfolder:
+                            reservoir_count = extract_last_number(subfolder)
+                            if int(reservoir_count) not in reservoir_counts:
+                                continue
 
-    # variance of nonzero subset => masked arrays
-    masked = ma.masked_where(arr <= 0.0, arr)
-    var_nonzero_ma = ma.var(masked, axis=1, ddof=ddof)
-    var_nonzero_per_draw = var_nonzero_ma.filled(0.0)
+                            # For each "trotter_step_*" subfolder
+                            trotter_parent = os.path.join(subfolder_path, subfolder)
+                            if not os.path.exists(trotter_parent):
+                                continue
+                            for trotter_folder in sorted(os.listdir(trotter_parent), key=extract_last_number):
+                                if 'trotter_step_' in trotter_folder:
+                                    trotter_step = extract_last_number(trotter_folder)
+                                    if trotter_step not in trots:
+                                        continue
 
-    var_norm_rank_per_draw = np.where(ranks_per_draw > 0,
-                                      var_all_per_draw / ranks_per_draw,
-                                      0.0)
-    trace_norm_rank_per_draw = np.where(ranks_per_draw > 0,
-                                        trace_per_draw / ranks_per_draw,
-                                        0.0)
+                                    trotter_path = os.path.join(trotter_parent, trotter_folder, bath_status)
+                                    if not os.path.exists(trotter_path):
+                                        continue
 
-    # ---------------------------
-    # (C) IPR-based dimensions
-    # ---------------------------
-    sum_of_squares = np.sum(arr**2, axis=1)
-    ipr_raw_per_draw = np.divide(trace_per_draw**2, sum_of_squares,
-                                 out=np.zeros_like(trace_per_draw),
-                                 where=(sum_of_squares>0))
+                                    files_in_folder = [f for f in os.listdir(trotter_path) if not f.startswith('.')]
+                                    print(f"{gate}-- N_c={N_ctrl}, N_R={reservoir_count}, T={trotter_step}, num files(runs)= {len(files_in_folder)}")
 
-    # normalized IPR
-    trace_mask = (trace_per_draw>0)
-    arr_norm = np.zeros_like(arr)
-    arr_norm[trace_mask] = arr[trace_mask] / trace_per_draw[trace_mask, np.newaxis]
-    sum_norm_sq = np.sum(arr_norm**2, axis=1)
-    ipr_norm_per_draw = np.divide(1.0, sum_norm_sq,
-                                  out=np.zeros_like(sum_norm_sq),
-                                  where=(sum_norm_sq>0))
+                                    # Make sure the nested dict structure exists in the cache
+                                    if gate not in cached_data[N_ctrl]:
+                                        cached_data[N_ctrl][gate] = {}
+                                    if reservoir_count not in cached_data[N_ctrl][gate]:
+                                        cached_data[N_ctrl][gate][reservoir_count] = {}
+                                    if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
+                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
 
-    # ---------------------------
-    # (D) Abbas-based dimensions (raw & normalized)
-    #     Here we set alpha = (gamma * n_draws) / (2 ln(n_draws)), but you can adapt.
-    # ---------------------------
-    gamma = 1.0
-    if n_draws>1 and math.log(n_draws)!=0:
-        alpha = (gamma * n_draws) / (2.0 * np.log(n_draws))
-    else:
-        alpha = 0.0
+                                    cached_trotter_data = cached_data[N_ctrl][gate][reservoir_count][trotter_step]
 
-    val_raw = 1.0 + alpha * arr
-    val_raw[val_raw<=0] = 1e-15
-    abbas_raw_per_draw = np.sum(np.log(val_raw), axis=1)
+                                    # Get the previously cached best fidelity if available
+                                    previous_best_data_point = None
+                                    previous_best_fidelity = float('-inf')
+                                    if len(cached_trotter_data) > 0:
+                                        previous_best_data_point = cached_trotter_data[0]
+                                        previous_best_fidelity = previous_best_data_point.get('fidelity', float('-inf'))
 
-    val_norm = 1.0 + alpha * arr_norm
-    val_norm[val_norm<=0] = 1e-15
-    abbas_norm_per_draw = np.sum(np.log(val_norm), axis=1)
+                                    # Decide if we must re-check everything:
+                                    #  - if we see new files not in processed_files
+                                    #  - or if the # of folder files != the cached 'num_data_runs'
+                                    recheck_all = False
+                                    if previous_best_data_point is not None:
+                                        cached_num_runs = previous_best_data_point.get('num_data_runs', 0)
+                                        if cached_num_runs != len(files_in_folder):
+                                            recheck_all = True
+                                    else:
+                                        # If there's no cached data at all, we must check everything
+                                        recheck_all = True
 
-    # ---------------------------
-    # (E) Simple aggregated stats
-    # ---------------------------
-    D_C = ranks_per_draw.max() if len(ranks_per_draw)>0 else 0
+                                    # We'll store the absolute best result from scanning all valid files
+                                    best_fidelity_overall = previous_best_fidelity
+                                    best_data_point_overall = previous_best_data_point
+                                    runs_found = 0
 
-    avg_var_all = float(var_all_per_draw.mean()) if var_all_per_draw.size>0 else 0.0
-    avg_trace   = float(trace_per_draw.mean())   if trace_per_draw.size>0   else 0.0
-    avg_var_nonzero = float(var_nonzero_per_draw.mean()) if var_nonzero_per_draw.size>0 else 0.0
-    avg_var_norm_rank   = float(var_norm_rank_per_draw.mean())   if var_norm_rank_per_draw.size>0   else 0.0
-    avg_trace_norm_rank = float(trace_norm_rank_per_draw.mean()) if trace_norm_rank_per_draw.size>0 else 0.0
+                                    if recheck_all:
+                                        # We re-check all the files
+                                        for file in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, file))
+                                            if not pickle_file.endswith('.pickle'):
+                                                continue
+                                            if is_valid_pickle_file(Path(pickle_file)):
+                                                run_name = os.path.splitext(os.path.basename(file))[0]
+                                                runs_found += 1
+                                                costs, fidelity, num_params, test_results, grads_per_epoch, selected_indices = read_jax_file(pickle_file, gate)
 
-    var_var_all     = float(np.var(var_all_per_draw)) if var_all_per_draw.size>1 else 0.0
-    var_var_nonzero = float(np.var(var_nonzero_per_draw)) if var_nonzero_per_draw.size>1 else 0.0
+                                                # If it's better than what we have so far, update
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_found,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'selected_indices': selected_indices,
+                                                        'file_path': pickle_file
+                                                    }
 
-    avg_ipr_raw  = float(ipr_raw_per_draw.mean())  if ipr_raw_per_draw.size>0  else 0.0
-    avg_ipr_norm = float(ipr_norm_per_draw.mean()) if ipr_norm_per_draw.size>0 else 0.0
-    avg_abbas_raw  = float(abbas_raw_per_draw.mean())  if abbas_raw_per_draw.size>0  else 0.0
-    avg_abbas_norm = float(abbas_norm_per_draw.mean()) if abbas_norm_per_draw.size>0 else 0.0
+                                                # Mark file as processed
+                                                processed_files.add(pickle_file)
 
-    # ---------------------------
-    # (F) Spread-of-log metrics
-    #     (You can vectorize the calls if you wish.)
-    # ---------------------------
-    arr_2d = arr.copy()  # shape [n_draws, M]
-    spread_results = {}
-    for method in spread_methods:
-        per_draw = spread_per_sample_vectorized(
-            arr_2d,
-            method=method,
-            threshold=threshold,
-            ddof=ddof,
-            scale=scale,
-            n_ctrl=n_ctrl,
-            n_reserv=n_reserv,
-            trotter_step=trotter_step,
-        )
-        spread_mean = float(per_draw.mean()) if per_draw.size>0 else 0.0
-        spread_std  = float(per_draw.std())  if per_draw.size>1 else 0.0
-        pooled_val  = float(spread_pooling_vectorized(
-            arr_2d, method=method, threshold=threshold, ddof=ddof, scale=scale
-        ))
-        prefix = method.lower()
-        spread_results[f"spread_mean_per_sample_{prefix}_{scale}"] = spread_mean
-        spread_results[f"spread_std_per_sample_{prefix}_{scale}"]  = spread_std
-        spread_results[f"spread_val_pooled_{prefix}_{scale}"]      = pooled_val
+                                        # If we found at least something
+                                        if best_data_point_overall:
+                                            # Make sure we store the actual total runs found in the best_data_point
+                                            # so that next time we see if the folder changed
+                                            best_data_point_overall['num_data_runs'] = runs_found
 
-    # If you also need the "no-log" version:
-    for method in spread_methods:
-        per_draw_nolog = spread_per_sample_vectorized_nolog(
-            arr_2d,
-            method=method,
-            threshold=threshold,
-            ddof=ddof,
-            scale=scale,
-            n_ctrl=n_ctrl,
-            n_reserv=n_reserv,
-            trotter_step=trotter_step,
-        )
-        spread_results[f"spread_metric_{method}_nolog"] = (
-            per_draw_nolog[0] if per_draw_nolog.size > 0 else 0.0
-        )
+                                            # Replace the single cached entry
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
 
-    # ---------------------------
-    # (G) Effective dimension in two ways
-    # ---------------------------
-    effective_dim_avg_draws = 0.0
-    effective_dim_of_mean   = 0.0
+                                    else:
+                                        # We do NOT recheck everything, but we still check any new files
+                                        # to see if there's a better run
+                                        runs_found = previous_best_data_point.get('num_data_runs', 0)
+                                        new_files_found = False
+                                        for file in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, file))
+                                            if not pickle_file.endswith('.pickle'):
+                                                continue
 
-    if qfim_mats_list is not None and len(qfim_mats_list) > 0:
-        qfim_mats_array = np.array(qfim_mats_list, dtype=float)
+                                            # If not processed yet, read it
+                                            if pickle_file not in processed_files and is_valid_pickle_file(Path(pickle_file)):
+                                                run_name = os.path.splitext(os.path.basename(file))[0]
+                                                runs_found += 1
+                                                new_files_found = True
 
-        dim_each_draw = []
-        F_hat_list = []
+                                                costs, fidelity, num_params, test_results, grads_per_epoch, selected_indices = read_jax_file(pickle_file, gate)
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_found,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'selected_indices': selected_indices,
+                                                        'file_path': pickle_file
+                                                    }
 
-        for F_theta in qfim_mats_array:
-            trF = np.trace(F_theta)
-            if trF <= 0:
-                # Degenerate case: store zero dimension
-                dim_each_draw.append(0.0)
-                F_hat_list.append(np.zeros_like(F_theta))
-                continue
-            
-            # 1) Single-draw dimension
-            eps = 1e-12
-            F_hat = F_theta / trF
-            eigs_F = np.linalg.eigvalsh(F_hat)
+                                                processed_files.add(pickle_file)
 
-            if n_draws > 1 and math.log(n_draws) != 0:
-                # "Abbas dimension" for n>1
-                z_i = 0.5 * np.sum(np.log(1.0 + n_draws * eigs_F + eps))
-                d_i = (2.0 / np.log(n_draws)) * z_i
-            else:
-                # n_draws == 1 => sum of p_i/(1 + p_i)
-                d_i = np.sum(eigs_F / (1.0 + eigs_F))
+                                        # If we found any new files that improved results, update the cache
+                                        if new_files_found and best_data_point_overall:
+                                            best_data_point_overall['num_data_runs'] = runs_found
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
 
-            dim_each_draw.append(d_i)
-            F_hat_list.append(F_hat)
-
-        # (A) average of single-draw dimensions
-        effective_dim_avg_draws = float(np.mean(dim_each_draw))
-
-        # (B) dimension from average of the normalized QFIMs
-        F_hat_mean = np.mean(F_hat_list, axis=0)  # shape: [M, M]
-        # same formula
-        eigs_mean = np.linalg.eigvalsh(F_hat_mean)
-        eps = 1e-12
-        if n_draws > 1 and math.log(n_draws) != 0:
-            z_mean = 0.5 * np.sum(np.log(1.0 + n_draws * eigs_mean + eps))
-            effective_dim_of_mean = (2.0 / np.log(n_draws)) * z_mean
-        else:
-            # n_draws == 1
-            effective_dim_of_mean = np.sum(eigs_mean / (1.0 + eigs_mean))
-
-    # ---------------------------
-    # (H) Build final dictionary
-    # ---------------------------
-    metrics = {
-        # Per-draw lists
-        "QFIM_ranks": ranks_per_draw,
-        "var_all_eigenvals_per_draw": var_all_per_draw,
-        "var_nonzero_eigenvals_per_draw": var_nonzero_per_draw,
-        "trace_eigenvals_per_draw": trace_per_draw,
-
-        # Aggregates
-        "D_C": D_C,
-        "absolute_scale_avg_var_all": avg_var_all,
-        "absolute_scale_avg_var_nonzero": avg_var_nonzero,
-        "absolute_scale_avg_trace": avg_trace,
-        "absolute_scale_var_of_var_all": var_var_all,
-        "absolute_scale_var_of_var_nonzero": var_var_nonzero,
-
-        "avg_per_active_mode_var_norm_rank_per_draw": var_norm_rank_per_draw,
-        "avg_per_active_mode_trace_norm_rank_per_draw": trace_norm_rank_per_draw,
-        "avg_per_active_mode_avg_var_norm_rank": avg_var_norm_rank,
-        "avg_per_active_mode_avg_trace_norm_rank": avg_trace_norm_rank,
-
-        # IPR draws & means
-        "ipr_deffs_raw_per_draw": ipr_raw_per_draw,
-        "spectrum_shape_avg_ipr_deffs_raw": avg_ipr_raw,
-        "ipr_deffs_norm_per_draw": ipr_norm_per_draw,
-        "spectrum_shape_avg_ipr_deffs_norm": avg_ipr_norm,
-
-        # Abbas draws & means
-        "abbas_deffs_raw_per_draw": abbas_raw_per_draw,
-        "avg_abbas_deffs_raw":      avg_abbas_raw,
-        "abbas_deffs_norm_per_draw": abbas_norm_per_draw,
-        "avg_abbas_deffs_norm":      avg_abbas_norm,
-
-        # Effective dimension (two ways):
-        "effective_dimension_avg_over_draws": effective_dim_avg_draws,
-        "effective_dimension_of_mean_qfim":   effective_dim_of_mean,
-    }
-    # Merge spread-of-log metrics
-    metrics.update(spread_results)
-
-    return metrics
+    return cached_data, processed_files
