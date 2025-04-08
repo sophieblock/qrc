@@ -565,6 +565,124 @@ def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr = 0.3
 #     # print(f"lr_tree: {lr_tree}")
 #     lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
 #     return lr_tree
+
+def get_initial_lr_per_param(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
+                             outlier_clip=0.95, fudge_scale=1.0, debug=False):
+    """
+    Compute initial per-parameter learning rates using robust statistics.
+
+    Each parameter's learning rate is computed as:
+        lr = (scale_factor * scale_stat) / (|grad| + fudge)
+    where:
+      - |grad| is the absolute value of the gradient for each parameter.
+      - scale_stat is the median of all |grad| values, which serves as a robust measure
+        of the typical gradient magnitude.
+      - fudge is a stabilization constant computed as:
+            fudge = fudge_scale * (scale_factor / max_lr) * scale_stat
+        Its role is to avoid division by zero and to moderate the sensitivity of lr to small gradients.
+        When |grad| is zero, lr ≈ max_lr.
+    
+    Tuning the Learning Rate Spread:
+      - The fudge term in the denominator smooths the differences between parameters.
+      - A larger fudge (i.e. setting fudge_scale > 1) reduces the effect of differences in |grad|,
+        leading to a narrower (more compressed) distribution of learning rates.
+      - A smaller fudge (i.e. setting fudge_scale < 1) makes the function more sensitive to differences
+        in |grad|, hence widening the distribution of learning rates.
+
+    Arguments:
+      grad_tree    : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
+      scale_factor : Baseline multiplier such that if |grad| ≈ scale_stat, then lr ≈ scale_factor.
+      min_lr       : Minimum allowed learning rate after clamping.
+      max_lr       : Maximum allowed learning rate after clamping.
+      outlier_clip : Quantile (0, 1] to clip extreme |grad| values when computing robust statistics,
+                     reducing the impact of outliers.
+      fudge_scale  : A multiplier to adjust the fudge constant.
+                     - fudge_scale > 1 narrows the lr distribution.
+                     - fudge_scale < 1 widens the lr distribution.
+      debug        : If True, prints detailed diagnostic information.
+
+    Returns:
+      A PyTree matching the structure of grad_tree, where each leaf contains the computed learning rate.
+    """
+
+    # --- Step 1: Flatten the gradient PyTree ---
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grad_tree)
+    if not grad_leaves:
+        raise ValueError("grad_tree is empty; no gradients provided.")
+
+    # --- Step 2: Concatenate gradients and compute absolute values ---
+    all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
+    all_abs = jnp.abs(all_grads)
+
+    # --- Step 3: Compute robust statistics ---
+    # Optionally, clip extreme gradient values at the outlier_clip quantile
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        high_threshold = jnp.quantile(all_abs, outlier_clip)
+        abs_for_stats = jnp.clip(all_abs, a_min=0, a_max=high_threshold)
+    else:
+        abs_for_stats = all_abs
+
+    # Compute the median (scale_stat) which is our robust measure for typical gradient size.
+    median_abs = jnp.quantile(abs_for_stats, 0.5)
+    # Additionally compute the 25th and 75th percentiles and IQR for diagnostics.
+    q1 = jnp.quantile(abs_for_stats, 0.25)
+    q3 = jnp.quantile(abs_for_stats, 0.75)
+    iqr = q3 - q1
+
+    scale_stat = median_abs  # This is our typical gradient magnitude.
+
+    # In case scale_stat is zero (e.g., if many gradients are zero), choose the smallest nonzero gradient.
+    if scale_stat == 0:
+        nonzero_abs = all_abs[all_abs > 0]
+        scale_stat = jnp.min(nonzero_abs) if nonzero_abs.size > 0 else 0.0
+
+    # --- Step 4: Compute the fudge factor ---
+    # Base fudge: (scale_factor / max_lr) * scale_stat
+    # Multiply by fudge_scale to give direct control over the spread.
+    # A larger fudge reduces sensitivity (narrowing the lr spread), while a smaller fudge enhances differences.
+    fudge = fudge_scale * (scale_factor / max_lr) * scale_stat
+
+    # --- Step 5: Compute raw learning rates ---
+    # The formula is:
+    #    lr = (scale_factor * scale_stat) / (|grad| + fudge)
+    # If |grad| is around scale_stat, then lr ≈ scale_factor.
+    # Smaller |grad| leads to larger lr (up to max_lr), and larger |grad| leads to smaller lr.
+    lr_all = scale_factor * scale_stat / (all_abs + fudge)
+    
+
+    # --- Step 6: Clamp learning rates ---
+    lr_clipped = jnp.clip(lr_all, a_min=min_lr, a_max=max_lr)
+
+    # --- Step 7: Restore original PyTree structure ---
+    lr_leaves = []
+    idx = 0
+    for g in grad_leaves:
+        size = g.size
+        segment = lr_clipped[idx: idx + size].reshape(g.shape)
+        lr_leaves.append(segment)
+        idx += size
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+
+    # --- Optional Debug Information ---
+    if debug:
+        med_val = float(median_abs)
+        iqr_val = float(iqr)
+        max_grad = float(jnp.max(all_abs))
+        min_grad = float(jnp.min(all_abs))
+        mean_grad = float(jnp.mean(all_abs))
+        max_lr_val = float(jnp.max(lr_clipped))
+        min_lr_val = float(jnp.min(lr_clipped))
+        mean_lr_val = float(jnp.mean(lr_clipped))
+        print("[get_initial_lr_per_param] Gradient stats: min |g| = {:.2e}, median |g| = {:.2e}, mean |g| = {:.2e}, max |g| = {:.2e}, IQR = {:.2e}"
+              .format(min_grad, med_val, mean_grad, max_grad, iqr_val))
+        print("[get_initial_lr_per_param] Using scale_stat (median) = {:.2e}, fudge = {:.2e}"
+              .format(float(scale_stat), float(fudge)))
+        print("[get_initial_lr_per_param] LR (raw): min = {:.2e}, max = {:.2e}".format(float(jnp.min(lr_all)), float(jnp.max(lr_all))))
+        print("[get_initial_lr_per_param] LR (clipped to [{}, {}]): min = {:.2e}, mean = {:.2e}, max = {:.2e}"
+              .format(min_lr, max_lr, min_lr_val, mean_lr_val, max_lr_val))
+        # print("Final per-parameter learning rates:", lr_tree)
+
+    return lr_tree"
 def get_initial_lr_per_param(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
                              outlier_clip=0.95, fudge_scale=1.0, debug=False):
     """
