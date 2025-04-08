@@ -583,3 +583,178 @@ fig2, ax2 = plt.subplots(figsize=(7,5))
 plot_redundancy_vs_t(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=1, ax=ax2)
 plot_redundancy_vs_t(df_with_stats, chosen_n_ctrl=2, chosen_n_reserv=2, ax=ax2)
 plt.show()
+
+
+
+def plot_spread_analysis(df, chosen_n_ctrl, chosen_n_reserv, ax=None,
+                         spread_type="variance", combination="sampled",
+                         show_yerr=False, title=None, xlabel="Trotter Step",
+                         ylabel=None, num_ticks=6, scale='normal'):
+    """
+    Plots "spread" metrics or the log-variance metrics you added, with an
+    annotated T_C vertical line (T_C^{(N_R)}).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must contain the relevant columns, e.g. for spread-based metrics:
+         'spread_mean_per_sample_variance_normal', 'spread_std_per_sample_variance_normal', etc.
+        or for the new log-variance keys: 'mean_log_eigvals_variance_norm', 'mean_log_eigvals_variance_raw'.
+    chosen_n_ctrl : int
+    chosen_n_reserv : int
+    ax : matplotlib.axes.Axes
+        If None, create a new figure/axes.
+    spread_type : str
+        One of {"variance","mad"} [older approach], or 
+        one of {"mean_log_eigvals_variance_norm","mean_log_eigvals_variance_raw"} [new approach].
+    combination : str
+        For older approach, "sampled" or "pooled". (Ignored for log-variance.)
+    show_yerr : bool
+        Whether to plot error bars for the older approach (sample-based only).
+    title : str
+        Plot title; if None, a default is constructed.
+    xlabel, ylabel : str
+        Axis labels.
+    num_ticks : int
+        Number of x-ticks to generate (currently not used in code).
+    scale : str
+        'normal', or any other scale needed for older approach columns.
+
+    Returns
+    -------
+    ax : matplotlib.axes.Axes
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # 1) Filter data for the chosen N_ctrl, N_reserv
+    df_plot = df.query("N_ctrl==@chosen_n_ctrl & N_reserv==@chosen_n_reserv").copy()
+    df_plot.sort_values("Trotter_Step", inplace=True)
+
+    # 2) Extract x values
+    x_vals = df_plot["Trotter_Step"].values
+
+    # Check if user is requesting the NEW log-variance approach or the older approach
+    special_keys = {"mean_log_eigvals_variance_norm", "mean_log_eigvals_variance_raw", "mean_eigvals_variance_norm", "mean_eigvals_variance_raw"}
+
+    if spread_type in special_keys:
+        # === NEW: Directly plot the single column, e.g. 'mean_log_eigvals_variance_norm' ===
+        if spread_type not in df_plot.columns:
+            raise ValueError(f"DataFrame has no column '{spread_type}' to plot.")
+
+        # Grab that column
+        y_vals = df_plot[spread_type].values
+        data_for_peak = y_vals
+        data_label = spread_type
+
+        # Identify T_C (peak) from y_vals
+        peak_idx = int(np.argmax(data_for_peak))
+        peak_T   = x_vals[peak_idx]
+        peak_val = data_for_peak[peak_idx]
+        print(f"[INFO] For N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv}, "
+              f"peak T_C is {peak_T}\n")
+
+        # Create plot if no axis is provided
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Actually plot
+        ax.plot(x_vals, y_vals, "s--", label=data_label)
+
+        # Annotate T_C
+        ax.axvline(x=peak_T, color='b', linestyle=':', alpha=0.6)
+        ax.text(
+            peak_T, peak_val + 0.1,
+            fr"$T_C^{{({chosen_n_reserv})}}={peak_T}$",
+            fontsize=10, color='b',
+            ha='center', va='bottom'
+        )
+
+        ax.set_xlabel(xlabel, fontsize=14)
+        if not ylabel:
+            ylabel = spread_type
+        ax.set_ylabel(ylabel, fontsize=14)
+        if not title:
+            
+            title = f'Variance of QFIM eigenvals $N_C = {chosen_n_ctrl}$, $N_R = {chosen_n_reserv}$'
+        ax.set_title(title, fontsize=16)
+        ax.grid(True)
+        ax.legend()
+
+        return ax
+
+    else:
+        # === OLD approach: spread_type in {"variance","mad"} ===
+        if spread_type not in ["variance", "mad"]:
+            raise ValueError("spread_type must be 'variance', 'mad', "
+                             "'mean_log_eigvals_variance_norm', or 'mean_log_eigvals_variance_raw'")
+
+        if combination not in ["pooled", "sampled"]:
+            raise ValueError("combination must be 'pooled' or 'sampled'")
+
+        # Column names for y-values
+        y_mean_key = f"spread_mean_per_sample_{spread_type}_{scale}"
+        y_std_key  = f"spread_std_per_sample_{spread_type}_{scale}"
+        # y_pool_key = f"spread_val_pooled_{spread_type}_{scale}"  # not used if you never store it
+
+        if y_mean_key not in df_plot.columns:
+            raise ValueError(f"DataFrame has no column '{y_mean_key}' (check scale?)")
+
+        y_mean = df_plot[y_mean_key].values
+        # If the user wants error bars
+        if y_std_key in df_plot.columns:
+            y_std  = df_plot[y_std_key].values
+        else:
+            y_std  = np.zeros_like(y_mean)
+
+        if combination == "sampled":
+            data_for_peak = y_mean
+            data_label = f"Per-sample {spread_type.capitalize()}(log(eig(Q)))"
+        else:  # "pooled"
+            raise NotImplementedError("Pooled array logic is not implemented. "
+                                      "If you have a 'spread_val_pooled_{spread_type}_{scale}' column, handle here.")
+
+        # Identify peak (T_C)
+        peak_idx = int(np.argmax(data_for_peak))
+        peak_T   = x_vals[peak_idx]
+        peak_val = data_for_peak[peak_idx]
+        print(f"[INFO] For N_ctrl={chosen_n_ctrl}, N_reserv={chosen_n_reserv}, "
+              f"peak T_C is {peak_T}\n")
+
+        # Create plot if no axis is provided
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(8, 6))
+
+        # Actually plot
+        if combination == "sampled":
+            if show_yerr:
+                ax.errorbar(
+                    x_vals, y_mean, yerr=y_std, fmt="o--",
+                    capsize=4, label=f"{data_label} ± std"
+                )
+            else:
+                ax.plot(
+                    x_vals, y_mean, "s--", label=data_label
+                )
+        # else: handle "pooled" if you store that in df
+
+        # Annotate T_C
+        ax.axvline(x=peak_T, color='b', linestyle=':', alpha=0.6)
+        ax.text(
+            peak_T, peak_val + 0.1,
+            fr"$T_C^{{({chosen_n_reserv})}}={peak_T}$",
+            fontsize=10, color='b',
+            ha='center', va='bottom'
+        )
+
+        ax.set_xlabel(xlabel, fontsize=14)
+        if not ylabel:
+            ylabel = f"{spread_type.upper()}(log(eig(F)))"
+        ax.set_ylabel(ylabel, fontsize=14)
+        if not title:
+            title = f'Variance of QFIM eigenvals $N_C = {chosen_n_ctrl}$, $N_R = {chosen_n_reserv}$'
+        ax.set_title(title or f"{spread_type.capitalize()}-based Spread Analysis", fontsize=16)
+        ax.grid(True)
+        ax.legend()
+
+        return ax
