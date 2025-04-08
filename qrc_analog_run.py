@@ -700,8 +700,8 @@ def get_initial_learning_rate(grads, scale_factor=.1, min_lr=1e-5, max_lr=0.2):
     initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
     
     clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
-    print(f"initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
-    return initial_lr, clipped_lr
+    print(f"grad_norm: {grad_norm}, initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
+    return initial_lr, clipped_lr,grad_norm
 def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-5, max_lr=0.2):
     # print(f"grads: {grads}")
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
@@ -710,6 +710,28 @@ def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-5, max_lr=0.2):
     # print(f"lr_tree: {lr_tree}")
     lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
     return lr_tree
+
+# def get_initial_learning_rate(grads, scale_factor=.1, min_lr=1e-4, max_lr=0.25):
+#     """Estimate a more practical initial learning rate based on the gradient norms."""
+#     grad_norm = jnp.linalg.norm(grads)
+#     print(f"grad_norm: {grad_norm}")
+#     if grad_norm < 1.:
+#         initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
+#     else:
+#         initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
+    
+#     clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
+#     print(f"initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
+#     return initial_lr, clipped_lr,grad_norm
+# def get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-5, max_lr=0.2):
+#     # print(f"grads: {grads}")
+#     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+#     # print(f"grad_magnitudes: {grad_magnitudes}")
+#     lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+#     # print(f"lr_tree: {lr_tree}")
+#     lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+#     return lr_tree
+
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key):
     float32=''
     opt_lr = None
@@ -816,7 +838,11 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         loss = jnp.maximum(loss, 0.0)  # Apply the cutoff to avoid negative costs
 
         return loss
-   
+    
+    def collect_gradients(params, input_states, target_states):
+        grad_fn = jax.grad(cost_func, argnums=0)
+        gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
+        return gradients
     def final_test(params,test_in,test_targ):
         params = jnp.asarray(params, dtype=jnp.float64)
         X = jnp.asarray(test_in, dtype=jnp.complex128)
@@ -830,18 +856,32 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
  
     
 
-
+    min_raw_lr = 0.
     # Initial training to determine appropriate learning rate
     if opt_lr == None:
         s = time.time()
+        
         init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
         e = time.time()
         dt = e - s
-        # print(f"initial fidelity: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
-        # opt_lr,grad_norm = get_initial_learning_rate(init_grads)
-        # max_lr,_ = get_initial_learning_rate(init_grads)
-        raw_lr,clipped_lr = get_initial_learning_rate(init_grads)
-        opt_lr = get_initial_lr_per_param(init_grads, max_lr=raw_lr)
+        grad_norm = jnp.linalg.norm(init_grads)
+        mean_grad,var_grad,grad_norm2 = calculate_unbiased_stats(init_grads)
+        assert grad_norm == grad_norm2, f"diff: {grad_norm-grad_norm2}"
+        print(f"grad_norm: {grad_norm:.4f}, var_grad: {var_grad:.4f}, mean_grad: {mean_grad:.4f}\ninit_grads: {init_grads}")
+        normalized_grads = normalize_gradients(init_grads)
+        norm_grad_norm = jnp.linalg.norm(normalized_grads)
+        mean_norm_grad,var_norm_grad,_ = calculate_unbiased_stats(normalized_grads)
+        print(f"normalized grads: {norm_grad_norm}, var_grad: {var_norm_grad:.4f}, mean_grad: {mean_norm_grad:.4f}\nnormalized_grads: {normalized_grads}")
+        raw_lr,clipped_lr,grad_norm = get_initial_learning_rate(init_grads,max_lr=0.25)
+        
+        if raw_lr > clipped_lr:
+            assert grad_norm<1.
+            if grad_norm < clipped_lr:
+                opt_lr = get_initial_lr_per_param(init_grads,min_lr=grad_norm*0.5, max_lr=clipped_lr*2)
+            else:
+                opt_lr = get_initial_lr_per_param(init_grads,min_lr=grad_norm*0.5, max_lr=clipped_lr)
+        else:
+            opt_lr = get_initial_lr_per_param(init_grads, max_lr=raw_lr)
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
         cost = init_loss
     else:
@@ -977,7 +1017,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         loss = jnp.asarray(loss, dtype=jnp.float64)
         grads = jnp.asarray(grads, dtype=jnp.float64)
         return new_params, opt_state, loss, grads
-    print(f"per param lrs: \n{opt_lr}\n")
+    print(f"variance per param: {np.var(opt_lr)} \nlrs: \n{opt_lr}\n")
 
     print("________________________________________________________________________________")
     print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) with optimal lr {np.mean(opt_lr)}, time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
@@ -1244,8 +1284,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         name, ext = filename.rsplit('.', 1)
         filename = f"{name}_.{ext}"
 
-    with open(filename, 'wb') as f:
-        pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # with open(filename, 'wb') as f:
+    #     pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
  
@@ -1273,16 +1313,13 @@ if __name__ == '__main__':
     # trots = [17,20,22,25,27,32,35,37,40]
     # trots = [15,20,25,30,35,40,45]
     # trots = [4,6,8,10,12,14,16,18,20]
-    # trots = [1,15,20,25,30,35,40]
-    # trots =[1,2,3,4,5,6,7,8,9,10]
-    trots =[1,18,22,24]
-    trots =[22]
-    # trots = [30,35,40,45,50]
+    trots = [1,15,20,25,30,35,40]
+    trots = [2,10,30,35,40]
 
     # res = [1, 2, 3]
     res = [1]
     # trots = [6,8,10,12,14,16]/Users/so714f/Documents/offline/qrc/analog_results_trainable_global/trainsize_10_epoch1500_per_param_opt/0/U2_0/reservoirs_2/trotter_step_22/bath_False/data_run_0.pickle
-    # trots = [15]
+    # trots = [22]
 
     
     
@@ -1316,7 +1353,9 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        # if not gate_idx in [20,21]:
+        if not gate_idx in [11]:
+            continue
+        # if not gate_idx in [11,12,13,14,15,16,17,18,19]:
         #     continue
         # if gate_idx < 20:
         #     continue
@@ -1339,16 +1378,16 @@ if __name__ == '__main__':
                     params_key = jax.random.PRNGKey(params_key_seed)
                     dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
                     dataset_key = jax.random.PRNGKey(dataset_seed)
-                    main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
+                    main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi/2, maxval=np.pi/2)
                     
                     # main_params = jax.random.normal(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi/2, maxval=np.pi/2)
                    
                     params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                     
                     
-                    time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
+                    time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=1.)
                     init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
-                    print(f"init_params_dict: {init_params_dict}")
+                    # print(f"init_params_dict: {init_params_dict}")
 
 
                     # Combine the two parts
