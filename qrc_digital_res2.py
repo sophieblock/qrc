@@ -1,4 +1,120 @@
-import pennylane as qml
+
+def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
+                                      outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, debug=False, eps=1e-8):
+    """
+    Compute per-parameter learning rates using a weighted combination (median and mean)
+    of the normalized absolute gradients.
+    
+    Steps:
+      1. Compute the global L2 norm of all gradients and norm_factor = global_norm / sqrt(N).
+      2. Normalize all absolute gradients: normalized_abs = |grad| / (norm_factor + eps).
+      3. Compute robust statistics on normalized_abs:
+             median_norm = median(normalized_abs)
+             mean_norm   = mean(normalized_abs)
+         Then combine them:
+             combined_stat = alpha * median_norm + (1 - alpha) * mean_norm
+         (Here, alpha=1.0 recovers the pure median; a value less than 1 blends in the global average.)
+      4. Compute the fudge factor:
+             fudge = fudge_scale * (scale_factor / max_lr) * combined_stat
+      5. Compute raw learning rates:
+             lr_raw = (scale_factor * combined_stat) / (normalized_abs + fudge)
+      6. Apply dynamic clamping:
+             dynamic_min_lr = min_lr * norm_factor
+             dynamic_max_lr = max_lr * norm_factor
+         and clamp lr_raw to these bounds.
+      7. Restore the original PyTree structure.
+    
+    Arguments:
+      grad_tree    : A PyTree of gradients (nested dicts/lists of jax.numpy arrays).
+      scale_factor : Baseline multiplier; for normalized gradient values near combined_stat,
+                     lr will be about scale_factor.
+      min_lr       : Base minimum learning rate.
+      max_lr       : Base maximum learning rate.
+      outlier_clip : Quantile (in (0,1]) to clip extreme normalized gradients.
+      fudge_scale  : Multiplier for the fudge constant.
+      alpha        : Weight for the median in the combination (alpha=1.0 recovers pure median).
+      debug        : If True, prints detailed diagnostic information.
+      eps          : Small constant to avoid division by zero.
+    
+    Returns:
+      A PyTree matching grad_tree with computed learning rates.
+    """
+    # Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grad_tree)
+    if not grad_leaves:
+        raise ValueError("grad_tree is empty; no gradients provided.")
+    
+    # Concatenate and compute absolute gradients.
+    all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
+    all_abs = jnp.abs(all_grads)
+    
+    # Compute global norm and norm_factor.
+    global_norm = jnp.linalg.norm(all_abs)
+    N = all_abs.shape[0]
+    norm_factor = global_norm / jnp.sqrt(N)
+    
+    # Normalize absolute gradients.
+    normalized_abs = all_abs / (norm_factor + eps)
+    
+    # Optionally clip extreme values for robust statistics.
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        high_threshold = jnp.quantile(normalized_abs, outlier_clip)
+        abs_for_stats = jnp.clip(normalized_abs, a_min=0, a_max=high_threshold)
+    else:
+        abs_for_stats = normalized_abs
+    
+    # Compute median and mean on normalized values.
+    median_norm = jnp.quantile(abs_for_stats, 0.5)
+    mean_norm = jnp.mean(abs_for_stats)
+    combined_stat = alpha * median_norm + (1.0 - alpha) * mean_norm
+    if combined_stat == 0:
+        nonzero = normalized_abs[normalized_abs > 0]
+        combined_stat = jnp.min(nonzero) if nonzero.size > 0 else 0.0
+    if max_lr > norm_factor: 
+        # Compute fudge factor.
+        fudge = fudge_scale * (scale_factor / norm_factor) * combined_stat
+    else:
+        # Compute fudge factor.
+        fudge = fudge_scale * (scale_factor / max_lr) * combined_stat
+    # unsure what to do here...
+    if max_lr < norm_factor:
+        dynamic_min_lr = min_lr
+        dynamic_max_lr = max_lr * norm_factor
+    else:
+        dynamic_min_lr = min_lr
+        dynamic_max_lr = max_lr
+    
+    
+    # Compute raw learning rates.
+    lr_raw = scale_factor * combined_stat / (normalized_abs + fudge)
+    
+    # Dynamic clamping using norm_factor.
+    
+
+    lr_clipped = jnp.clip(lr_raw, a_min=dynamic_min_lr, a_max=dynamic_max_lr)
+    
+    # Restore the original PyTree structure.
+    lr_leaves = []
+    idx = 0
+    for g in grad_leaves:
+        size = g.size
+        segment = lr_clipped[idx: idx + size].reshape(g.shape)
+        lr_leaves.append(segment)
+        idx += size
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    
+    if debug:
+        med_val = float(median_norm)
+        mean_val = float(mean_norm)
+        comb_val = float(combined_stat)
+        iqr_val = float(jnp.quantile(abs_for_stats, 0.75) - jnp.quantile(abs_for_stats, 0.25))
+        print("[Weighted] Grad norm = {:.3e}, Norm factor = {:.2e}".format(float(global_norm),float(norm_factor)))
+        print("[Weighted] Normalized |grad| stats: median = {:.2e}, mean = {:.2e}, IQR = {:.2e}".format(med_val, mean_val, iqr_val))
+        print("[Weighted] Using combined_stat = {:.2e}, fudge = {:.2e}".format(comb_val, float(fudge)))
+        print("[Weighted] LR (raw): min = {:.2e}, max = {:.2e}".format(float(jnp.min(lr_raw)), float(jnp.max(lr_raw))))
+        print("[Weighted] Dynamic LR bounds: min = {:.2e}, max = {:.2e}".format(min_lr * norm_factor, max_lr * norm_factor))
+    
+    return lr_treeimport pennylane as qml
 
 from qiskit.circuit.library import *
 from qiskit import *
