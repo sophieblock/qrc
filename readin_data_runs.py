@@ -64,6 +64,7 @@ def is_valid_pickle_file(file_path):
 def extract_last_number(text):
     numbers = re.findall(r'\d+', text)
     return int(numbers[-1]) if numbers else 0
+
 def read_jax_file_digital(file_path, gate_name):
     with open(file_path, 'rb') as f:
         df = pickle.load(f)
@@ -80,6 +81,9 @@ def read_jax_file_digital(file_path, gate_name):
             test_results =  np.asarray(df['testing_results'][0], dtype=np.float64)
         num_epochs = df['epochs'][0]
         return costs, fidelity, num_params, test_results,grads_per_epoch
+
+
+
 def read_jax_file_analog(file_path, gate_name):
     with open(file_path, 'rb') as f:
         df = pickle.load(f)
@@ -111,7 +115,7 @@ def clean_array(data):
     else:
         return data
     
-def get_cached_data_once_digital(base_path):
+def get_cached_data_once_digital(base_path, N_ctrl = None):
     """Load cached data only once and keep it in memory for future runs for the digital model."""
     global global_cache_data_digital, global_processed_files_digital
 
@@ -148,31 +152,41 @@ def get_cached_data_once_digital(base_path):
         global_cache_data_digital = {}
         global_processed_files_digital = set()
         return global_cache_data_digital, global_processed_files_digital
-def get_cached_data_once_analog(base_path, N_ctrl = None):
-    """Load cached data only once and keep it in memory for future runs, with different cache paths based on N_ctrl."""
-    global global_cache_data_analog, global_processed_files_analog
-    start_time = time.time()
 
-    # Define cache file based on N_ctrl
-   
-    cache_file = os.path.join(base_path, 'cached_results.pkl')
+def get_cached_data_once_analog(base_path, N_ctrl=None):
+    """Load cached data only once and keep it in memory for future runs for the analog model."""
+    global global_cache_data_analog, global_processed_files_analog
 
     # If the cache has already been loaded, skip re-loading
     if global_cache_data_analog is not None and global_processed_files_analog is not None:
-        print("Using cached data from memory, not reloading from disk.")
         return global_cache_data_analog, global_processed_files_analog
 
     # Load the cache from disk (only happens once)
+    cache_file = os.path.join(base_path, 'cached_results.pkl')
     if os.path.exists(cache_file):
-        with open(cache_file, 'rb') as f:
-            global_cache_data_analog, global_processed_files_analog = pickle.load(f)
-        print(f"Cache file loaded from disk: {cache_file}")
-        global_cache_data_analog = clean_array(global_cache_data_analog)
-        load_time = time.time() - start_time
-        print(f"Loaded {len(global_processed_files_analog)} processed files from cache. Took {load_time:.2f}s.")
-        return global_cache_data_analog, global_processed_files_analog
+        if os.stat(cache_file).st_size == 0:
+            print(f"[ERROR] Cache file {cache_file} is empty. Returning empty cache.")
+            global_cache_data_analog = {}
+            global_processed_files_analog = set()
+            return global_cache_data_analog, global_processed_files_analog
+
+        try:
+            with open(cache_file, 'rb') as f:
+                global_cache_data_analog, global_processed_files_analog = pickle.load(f)
+            global_cache_data_analog = clean_array(global_cache_data_analog)
+
+            # Filter the cache to only include files from the correct base path
+            global_processed_files_analog = set(
+                file for file in global_processed_files_analog if file.startswith(base_path)
+            )
+            return global_cache_data_analog, global_processed_files_analog
+        except (EOFError, pickle.UnpicklingError) as e:
+            print(f"[ERROR] Failed to load cache file {cache_file}: {e}")
+            global_cache_data_analog = {}
+            global_processed_files_analog = set()
+            return global_cache_data_analog, global_processed_files_analog
     else:
-        print(f"Cache file not found: {cache_file}")
+        print(f"[INFO] Cache file {cache_file} does not exist. Creating empty cache.")
         global_cache_data_analog = {}
         global_processed_files_analog = set()
         return global_cache_data_analog, global_processed_files_analog
@@ -223,323 +237,498 @@ def save_cached_data(base_path, cached_data, processed_files):
     cache_file = os.path.join(base_path, f'cached_results.pkl')
     with open(cache_file, 'wb') as f:
         pickle.dump((cached_data, processed_files), f)
-def update_cache_with_new_data_digital(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
-    """Update cache with new key/values without reprocessing already processed files."""
-    print(f"Processing for N_ctrl = {N_ctrl}")
+
+def process_new_files_digital(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
+    """
+    Process or re-check .pickle files in directories matching:
+      base_path/gate_prefix_xxx/reservoirs_YYY/trotter_step_ZZZ/{bath_True,bath_False}/
+    for the specified N_ctrl, and update the cache with the best fidelity found.
+
+    If the folder's actual file count differs from the cached 'num_data_runs',
+    we re-check all files to find the best run again. Otherwise, we only check 
+    new (unprocessed) files.
+
+    Structure of `cached_data`:
+      cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [
+         {
+           'costs': ...,
+           'gate': gate,
+           'fidelity': ...,
+           'test_results': ...,
+           'param_count': ...,
+           'run': 'data_run_<i>',
+           'num_data_runs': ...,
+           'grads_per_epoch': ...,
+           'path': 'full_file_path.pickle'
+         }
+      ]
+
+    Parameters
+    ----------
+    base_path : str
+        Base folder path for the runs.
+    gate_prefixes : list[str]
+        E.g., ['U2', 'U3'] for 2- or 3-qubit digital gates.
+    reservoir_counts : list[int]
+        Reservoir sizes to include.
+    trots : list[int]
+        Trotter steps to include.
+    cached_data : dict
+        Existing cache dictionary.
+    processed_files : set
+        Paths of files already processed.
+    N_ctrl : int
+        Control qubit dimension.
+
+    Returns
+    -------
+    (cached_data, processed_files)
+      The updated cache and set of processed files.
+    """
+    print(f"[process_new_files_digital] Processing for N_ctrl = {N_ctrl}")
     for gate_prefix in gate_prefixes:
         for folder_name in sorted(os.listdir(base_path)):
             if folder_name.startswith(gate_prefix + "_"):
                 gate = folder_name
 
+                # Ensure the top-level structure
+                if N_ctrl not in cached_data:
+                    cached_data[N_ctrl] = {}
+                if gate not in cached_data[N_ctrl]:
+                    cached_data[N_ctrl][gate] = {}
+
+                # We'll check bath_True and bath_False/ subfolders
                 for bath_status in ['bath_True', 'bath_False/']:
-                    for subfolder in sorted(os.listdir(os.path.join(base_path, gate)), key=extract_last_number):
+                    subfolder_path = os.path.join(base_path, gate)
+                    if not os.path.isdir(subfolder_path):
+                        continue
+
+                    # For each "reservoirs_*"
+                    for subfolder in sorted(os.listdir(subfolder_path), key=extract_last_number):
                         if 'reservoirs_' in subfolder:
                             reservoir_count = extract_last_number(subfolder)
                             if reservoir_count not in reservoir_counts:
                                 continue
 
-                            for trotter_folder in sorted(os.listdir(os.path.join(base_path, gate, subfolder)), key=extract_last_number):
+                            full_res_path = os.path.join(subfolder_path, subfolder)
+                            if not os.path.isdir(full_res_path):
+                                continue
+
+                            # For each "trotter_step_*"
+                            for trotter_folder in sorted(os.listdir(full_res_path), key=extract_last_number):
                                 if 'trotter_step_' in trotter_folder:
                                     trotter_step = extract_last_number(trotter_folder)
                                     if trotter_step not in trots:
                                         continue
 
-                                    trotter_path = os.path.join(base_path, gate, subfolder, trotter_folder, bath_status)
-                                    if not os.path.exists(trotter_path):
+                                    trotter_path = os.path.join(full_res_path, trotter_folder, bath_status)
+                                    if not os.path.exists(trotter_path) or not os.path.isdir(trotter_path):
                                         continue
 
-                                    files_in_folder = os.listdir(trotter_path)
+                                    files_in_folder = [
+                                        f for f in os.listdir(trotter_path)
+                                        if not f.startswith('.') and f.endswith('.pickle')
+                                    ]
+                                    num_files_found = len(files_in_folder)
+                                    print(f"[process_new_files_digital] {gate}, N_c={N_ctrl}, N_R={reservoir_count}, "
+                                          f"T={trotter_step}, num files(runs)= {num_files_found}")
 
-                                    # Count data runs already in cache
-                                    cached_trotter_data = cached_data.get(N_ctrl, {}).get(gate, {}).get(reservoir_count, {}).get(trotter_step, [])
-                                    num_data_runs = len(cached_trotter_data)
+                                    # Ensure we have the nested dict
+                                    if reservoir_count not in cached_data[N_ctrl][gate]:
+                                        cached_data[N_ctrl][gate][reservoir_count] = {}
+                                    if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
+                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
 
-                                    for file in files_in_folder:
-                                        if not file.startswith('.'):
-                                            pickle_file = os.path.join(trotter_path, file)
-                                            
-                                            # Normalize the file path to ensure consistency in checking
-                                            pickle_file = os.path.normpath(pickle_file)
+                                    cached_list = cached_data[N_ctrl][gate][reservoir_count][trotter_step]
+                                    previous_best = cached_list[0] if cached_list else None
 
-                                            # Extract just the data_run_<i> part from the file name
-                                            run = os.path.basename(pickle_file).replace('.pickle', '')
+                                    previous_best_fidelity = float('-inf')
+                                    cached_num_runs = 0
+                                    if previous_best:
+                                        previous_best_fidelity = previous_best.get('fidelity', float('-inf'))
+                                        cached_num_runs = previous_best.get('num_data_runs', 0)
 
-                                            # Check if the file has already been processed
-                                            if pickle_file in processed_files:
-                                                # Update the run field in cached data if missing
-                                                for cached_result in cached_trotter_data:
-                                                    if 'run' not in cached_result or 'gate' not in cached_result or cached_result['path'] != pickle_file:
-                                                        cached_result['run'] = run
-                                                        cached_result['gate'] = gate
-                                                # print(f"Data missing from")
-                                                continue
+                                    # Decide if we re-check all or just new
+                                    recheck_all = (previous_best is None) or (cached_num_runs != num_files_found)
 
-                                            # Process new file
+                                    best_fidelity_overall = previous_best_fidelity
+                                    best_data_point_overall = previous_best
+                                    runs_counted = 0
+
+                                    if recheck_all:
+                                        # Re-check all files in the folder
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
                                             if is_valid_pickle_file(Path(pickle_file)):
-                                                costs, fidelity, num_params, test_results, grads_per_epoch = read_jax_file_digital(pickle_file, gate)
-                                                
-                                                
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file_digital(pickle_file, gate)
+                                                runs_counted += 1
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
 
-                                                # Store the new data point
-                                                if gate not in cached_data[N_ctrl]:
-                                                    cached_data[N_ctrl][gate] = {}
-                                                if reservoir_count not in cached_data[N_ctrl][gate]:
-                                                    cached_data[N_ctrl][gate][reservoir_count] = {}
-                                                if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
-                                                    cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
-
-                                     
-                                                
-                                                num_data_runs += 1  # Increment the number of data runs
-                                                # Extract just the data_run_<i> part from the file name
-                                                run = os.path.basename(pickle_file).replace('.pickle', '')
-
-                                                # Prepare the new data point
-                                                data_point = {
-                                                    'costs': costs,
-                                                    'gate': gate,
-                                                    'fidelity': fidelity,
-                                                    'test_results': test_results,
-                                                    'param_count': num_params,
-                                                    'run': run,  # Store the data_run_<i> value
-                                                    'num_data_runs': num_data_runs,
-                                                    'grads_per_epoch':grads_per_epoch,
-                                                    # 'selected_indices':selected_indices
-                                                }
-
-                                                # Append the new data point to the cache
-                                                cached_data[N_ctrl][gate][reservoir_count][trotter_step].append(data_point)
-
-
-                                                
-                                                processed_files.add(pickle_file)  # Mark file as processed
-
-    print(f"Cache updated for N_ctrl={N_ctrl}")
-    return cached_data, processed_files
-def process_new_files_digital(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
-    """Process new files that haven't been processed before, and update cache with the best fidelity."""
-    print(f"Processing for N_ctrl = {N_ctrl}")
-    for gate_prefix in gate_prefixes:
-        for folder_name in sorted(os.listdir(base_path)):
-            if folder_name.startswith(gate_prefix + "_"):
-                gate = folder_name
-
-                # Ensure that N_ctrl is a top-level key in the cache
-                if N_ctrl not in cached_data:
-                    cached_data[N_ctrl] = {}
-
-                for bath_status in ['bath_True', 'bath_False/']:
-                    for subfolder in sorted(os.listdir(os.path.join(base_path, gate)), key=extract_last_number):
-                        if 'reservoirs_' in subfolder:
-                            reservoir_count = extract_last_number(subfolder)
-                        
-
-                            for trotter_folder in sorted(os.listdir(os.path.join(base_path, gate, subfolder)), key=extract_last_number):
-                                if 'trotter_step_' in trotter_folder:
-                                    trotter_step = extract_last_number(trotter_folder)
-                                    
-
-                                    trotter_path = os.path.join(base_path, gate, subfolder, trotter_folder, bath_status)
-                                    if not os.path.exists(trotter_path):
-                                        continue
-
-                                    files_in_folder = os.listdir(trotter_path)
-                                    current_best_fidelity = float('-inf')  # Set initial best fidelity as lowest possible value
-                                    current_best_data_point = None
-                                    num_data_runs = 0
-
-                                    # Check if there's already cached data for this trotter step
-                                    cached_trotter_data = cached_data.get(N_ctrl, {}).get(gate, {}).get(reservoir_count, {}).get(trotter_step, [])
-                                    missing_paths = 0  # Counter for entries with missing paths
-
-                                    # Retrofit 'path' for cached data if missing
-                                    for data_point in cached_trotter_data:
-                                        if 'path' not in data_point or data_point['path'] is None:
-                                            run = data_point.get('run', None)
-                                            if run:
-                                                potential_file_path = os.path.join(trotter_path, f"{run}.pickle")
-                                                if not potential_file_path.startswith('/Users/sophieblock/QRCCapstone/digital_results_trainable_global/trainsize_20_optimized_by_cost3/'):
-                                                    print(f"Incorrect filepath: {potential_file_path}")
-                                                
-                                                if os.path.exists(potential_file_path):
-                                                    data_point['path'] = potential_file_path
-                                                else:
-                                                    missing_paths += 1
-                                        # else:
-                                        #     files_to_check = [
-                                        #             file for file in processed_files 
-                                        #             if not file.startswith('/Users/sophieblock/QRCCapstone/digital_results_trainable_global/trainsize_20_optimized_by_cost3/')
-                                        #         ]
-
-                                        #     if files_to_check:
-                                        #         print("Files found matching the criteria:")
-                                        #         for file in files_to_check:
-                                        #             print(file)
-                                        #     else:
-                                        #         print("No files found matching the criteria.")
-
-                                        #     print(f"Path apparently found")
-                                    # if cached_trotter_data:
-                                    #     current_best_data_point = cached_trotter_data[0]  # Assuming one best result per trotter step
-                                    #     current_best_fidelity = np.mean(current_best_data_point['fidelity'])
-                                    #     num_data_runs = current_best_data_point.get('num_data_runs', 0)
-                                    if missing_paths > 0:
-                                        print(
-                                            f"[WARNING] {missing_paths} data points missing files for "
-                                            f"N_C={N_ctrl}, N_R={reservoir_count}, T={trotter_step}"
-                                        )
-                                    for file in files_in_folder:
-                                        if not file.startswith('.'):
-                                            pickle_file = os.path.join(trotter_path, file)
-                                            
-                                            # Normalize the file path to ensure consistency in checking
-                                            pickle_file = os.path.normpath(pickle_file)
-
-                                            # Ensure the file belongs to the correct base path
-                                            # if not pickle_file.startswith(base_path):
-                                            #     continue
-
-                                            # Check if the file has been processed before
-                                            if pickle_file not in processed_files and is_valid_pickle_file(Path(pickle_file)):
-                                                # Process the file and find the fidelity
-                                                costs, fidelity, num_params, test_results, grads_per_epoch = read_jax_file_digital(pickle_file, gate)
-                                                
-                                                num_data_runs += 1  # Increment the number of data runs
-                                                run = os.path.basename(pickle_file).replace('.pickle', '')
-
-                                                # Check if this new file has a better fidelity
-                                                if fidelity > current_best_fidelity:
-                                                    current_best_fidelity = fidelity
-                                                    current_best_data_point = {
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
                                                         'costs': costs,
                                                         'gate': gate,
                                                         'fidelity': fidelity,
                                                         'test_results': test_results,
                                                         'param_count': num_params,
-                                                        'run': run,
-                                                        'num_data_runs': num_data_runs,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
                                                         'grads_per_epoch': grads_per_epoch,
-                                                        'path': pickle_file,  # Add path here
+                                                        'path': pickle_file
                                                     }
                                                 processed_files.add(pickle_file)
 
+                                        # After scanning all files, update cache if we found a best
+                                        if best_data_point_overall:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
 
-                                    # If we found a valid data point with better fidelity, cache it
-                                    if current_best_data_point:
-                                        if gate not in cached_data[N_ctrl]:
-                                            cached_data[N_ctrl][gate] = {}
-                                        if reservoir_count not in cached_data[N_ctrl][gate]:
-                                            cached_data[N_ctrl][gate][reservoir_count] = {}
-                                        if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
-                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
+                                    else:
+                                        # Only check new/unprocessed files
+                                        runs_counted = cached_num_runs
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
+                                            if pickle_file not in processed_files and is_valid_pickle_file(Path(pickle_file)):
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file_digital(pickle_file, gate)
+                                                runs_counted += 1
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
 
-                                        # Replace the cached data with the new best data point
-                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [current_best_data_point]
-                                        # processed_files.add(pickle_file)  # Mark file as processed
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'path': pickle_file
+                                                    }
+                                                processed_files.add(pickle_file)
+
+                                        # If we found a better run among new files, update the cache
+                                        if best_data_point_overall and best_data_point_overall is not previous_best:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
 
     return cached_data, processed_files
-def process_new_files_analog(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
-    """Process new files that haven't been processed before, and update cache with the best fidelity."""
-    
+
+
+def update_cache_with_new_data_digital(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
+    """
+    Similar to process_new_files_digital, but focuses on partial or incremental updates.
+    If the # of actual files in a folder != 'num_data_runs', it re-checks everything.
+    Otherwise, it just checks new files. This way we always keep the best run in cache.
+
+    Structure of `cached_data` is the same as in process_new_files_digital.
+    """
+    print(f"[update_cache_with_new_data_digital] Updating cache for N_ctrl = {N_ctrl}")
     for gate_prefix in gate_prefixes:
         for folder_name in sorted(os.listdir(base_path)):
             if folder_name.startswith(gate_prefix + "_"):
                 gate = folder_name
-                # Ensure N_ctrl is in cached_data
+
                 if N_ctrl not in cached_data:
                     cached_data[N_ctrl] = {}
-                for bath_status in ['bath_True', 'bath_False']:
-                    for subfolder in sorted(os.listdir(os.path.join(base_path, gate)), key=extract_last_number):
+                if gate not in cached_data[N_ctrl]:
+                    cached_data[N_ctrl][gate] = {}
+
+                for bath_status in ['bath_True', 'bath_False/']:
+                    gate_path = os.path.join(base_path, gate)
+                    if not os.path.isdir(gate_path):
+                        continue
+
+                    for subfolder in sorted(os.listdir(gate_path), key=extract_last_number):
                         if 'reservoirs_' in subfolder:
                             reservoir_count = extract_last_number(subfolder)
-                            
+                            if reservoir_count not in reservoir_counts:
+                                continue
 
-                            for trotter_folder in sorted(os.listdir(os.path.join(base_path, gate, subfolder)), key=extract_last_number):
+                            reservoir_path = os.path.join(gate_path, subfolder)
+                            if not os.path.isdir(reservoir_path):
+                                continue
+
+                            for trotter_folder in sorted(os.listdir(reservoir_path), key=extract_last_number):
                                 if 'trotter_step_' in trotter_folder:
                                     trotter_step = extract_last_number(trotter_folder)
-                                    
-
-                                    trotter_path = os.path.join(base_path, gate, subfolder, trotter_folder, bath_status)
-                                    if not os.path.exists(trotter_path):
+                                    if trotter_step not in trots:
                                         continue
 
-                                    files_in_folder = os.listdir(trotter_path)
-                                    current_best_fidelity = float('-inf')
-                                    current_best_data_point = None
-                                    num_data_runs = 0
+                                    trotter_path = os.path.join(reservoir_path, trotter_folder, bath_status)
+                                    if not os.path.isdir(trotter_path):
+                                        continue
 
-                                    # Check if there's already cached data for this trotter step
-                                    cached_trotter_data = cached_data.get(N_ctrl, {}).get(gate, {}).get(reservoir_count, {}).get(trotter_step, [])
-                                    missing_paths = 0  # Counter for entries with missing paths
+                                    files_in_folder = [
+                                        f for f in os.listdir(trotter_path)
+                                        if not f.startswith('.') and f.endswith('.pickle')
+                                    ]
+                                    num_files_found = len(files_in_folder)
+                                    print(f"[update_cache_with_new_data_digital] {gate}, N_c={N_ctrl}, "
+                                          f"N_R={reservoir_count}, T={trotter_step}, num files= {num_files_found}")
 
-                                    for data_point in cached_trotter_data:
-                                        if 'file_path' not in data_point or data_point['file_path'] is None:
-                                            run = data_point.get('run', None)
-                                            if run:
-                                                potential_file_path = os.path.join(trotter_path, f"{run}.pickle")
-                                                if not potential_file_path.startswith(base_path):
-                                                    print(f"Incorrect filepath: {potential_file_path}")
-                                                
-                                                if os.path.exists(potential_file_path):
-                                                    data_point['file_path'] = potential_file_path
-                                                else:
-                                                    missing_paths += 1
-                                    
-                                    if missing_paths > 0:
-                                        print(
-                                            f"[WARNING] {missing_paths} data points missing files for "
-                                            f"N_C={N_ctrl}, N_R={reservoir_count}, T={trotter_step}"
-                                        )
-                                    for file in files_in_folder:
-                                        if not file.startswith('.'):
-                                            pickle_file = os.path.normpath(os.path.join(trotter_path, file))
+                                    if reservoir_count not in cached_data[N_ctrl][gate]:
+                                        cached_data[N_ctrl][gate][reservoir_count] = {}
+                                    if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
+                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
 
-                                            # # Ensure the file belongs to the correct base path
-                                            # if not pickle_file.startswith(base_path):
-                                            #     continue
+                                    cached_list = cached_data[N_ctrl][gate][reservoir_count][trotter_step]
+                                    previous_best = cached_list[0] if cached_list else None
 
-                                            # Check if the file has already been processed
+                                    previous_best_fidelity = float('-inf')
+                                    cached_num_runs = 0
+                                    if previous_best:
+                                        previous_best_fidelity = previous_best.get('fidelity', float('-inf'))
+                                        cached_num_runs = previous_best.get('num_data_runs', 0)
+
+                                    # Decide if we must re-check all
+                                    recheck_all = (previous_best is None) or (cached_num_runs != num_files_found)
+
+                                    best_fidelity_overall = previous_best_fidelity
+                                    best_data_point_overall = previous_best
+                                    runs_counted = 0
+
+                                    if recheck_all:
+                                        # Re-check all files in the folder
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
+                                            if is_valid_pickle_file(Path(pickle_file)):
+                                                runs_counted += 1
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file_digital(pickle_file, gate)
+
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'path': pickle_file
+                                                    }
+                                                processed_files.add(pickle_file)
+
+                                        if best_data_point_overall:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
+
+                                    else:
+                                        # Only check new/unprocessed files
+                                        runs_counted = cached_num_runs
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
+                                            if (pickle_file not in processed_files) and is_valid_pickle_file(Path(pickle_file)):
+                                                runs_counted += 1
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file_digital(pickle_file, gate)
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
+
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'path': pickle_file
+                                                    }
+                                                processed_files.add(pickle_file)
+
+                                        if best_data_point_overall and best_data_point_overall is not previous_best:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
+
+    print(f"[update_cache_with_new_data_digital] Cache updated for N_ctrl={N_ctrl}")
+    return cached_data, processed_files
+def process_new_files_analog(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
+    """
+    Process or re-check .pickle files in directories matching:
+      base_path/gate_prefix_xxx/reservoirs_YYY/trotter_step_ZZZ/{bath_True,bath_False/}
+    for the specified N_ctrl, and update the cache with the best fidelity found.
+
+    Structure of `cached_data`:
+      cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [
+         {
+           'costs': ...,
+           'gate': gate,
+           'fidelity': ...,
+           'test_results': ...,
+           'param_count': ...,
+           'run': 'data_run_<i>',
+           'num_data_runs': ...,
+           'grads_per_epoch': ...,
+           'path': 'full_file_path.pickle'
+         }
+      ]
+
+    Parameters
+    ----------
+    base_path : str
+        Base folder path for the runs.
+    gate_prefixes : list[str]
+        E.g., ['U2', 'U3'] for 2- or 3-qubit analog gates.
+    reservoir_counts : list[int]
+        Reservoir sizes to include.
+    trots : list[int]
+        Trotter steps to include.
+    cached_data : dict
+        Existing cache dictionary.
+    processed_files : set
+        Paths of files already processed.
+    N_ctrl : int
+        Control qubit dimension.
+
+    Returns
+    -------
+    (cached_data, processed_files)
+      The updated cache and set of processed files.
+    """
+    print(f"[process_new_files_analog] Processing for N_ctrl = {N_ctrl}")
+    for gate_prefix in gate_prefixes:
+        for folder_name in sorted(os.listdir(base_path)):
+            if folder_name.startswith(gate_prefix + "_"):
+                gate = folder_name
+
+                # Ensure the top-level structure
+                if N_ctrl not in cached_data:
+                    cached_data[N_ctrl] = {}
+                if gate not in cached_data[N_ctrl]:
+                    cached_data[N_ctrl][gate] = {}
+
+                # We'll check bath_True and bath_False/ subfolders
+                for bath_status in ['bath_True', 'bath_False/']:
+                    subfolder_path = os.path.join(base_path, gate)
+                    if not os.path.isdir(subfolder_path):
+                        continue
+
+                    # For each "reservoirs_*"
+                    for subfolder in sorted(os.listdir(subfolder_path), key=extract_last_number):
+                        if 'reservoirs_' in subfolder:
+                            reservoir_count = extract_last_number(subfolder)
+                            if reservoir_count not in reservoir_counts:
+                                continue
+
+                            full_res_path = os.path.join(subfolder_path, subfolder)
+                            if not os.path.isdir(full_res_path):
+                                continue
+
+                            # For each "trotter_step_*"
+                            for trotter_folder in sorted(os.listdir(full_res_path), key=extract_last_number):
+                                if 'trotter_step_' in trotter_folder:
+                                    trotter_step = extract_last_number(trotter_folder)
+                                    if trotter_step not in trots:
+                                        continue
+
+                                    trotter_path = os.path.join(full_res_path, trotter_folder, bath_status)
+                                    if not os.path.exists(trotter_path) or not os.path.isdir(trotter_path):
+                                        continue
+
+                                    files_in_folder = [
+                                        f for f in os.listdir(trotter_path)
+                                        if not f.startswith('.') and f.endswith('.pickle')
+                                    ]
+                                    num_files_found = len(files_in_folder)
+                                    print(f"[process_new_files_analog] {gate}, N_c={N_ctrl}, N_R={reservoir_count}, "
+                                          f"T={trotter_step}, num files(runs)= {num_files_found}")
+
+                                    # Ensure we have the nested dict
+                                    if reservoir_count not in cached_data[N_ctrl][gate]:
+                                        cached_data[N_ctrl][gate][reservoir_count] = {}
+                                    if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
+                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
+
+                                    cached_list = cached_data[N_ctrl][gate][reservoir_count][trotter_step]
+                                    previous_best = cached_list[0] if cached_list else None
+
+                                    previous_best_fidelity = float('-inf')
+                                    cached_num_runs = 0
+                                    if previous_best:
+                                        previous_best_fidelity = previous_best.get('fidelity', float('-inf'))
+                                        cached_num_runs = previous_best.get('num_data_runs', 0)
+
+                                    # Decide if we re-check all or just new
+                                    recheck_all = (previous_best is None) or (cached_num_runs != num_files_found)
+
+                                    best_fidelity_overall = previous_best_fidelity
+                                    best_data_point_overall = previous_best
+                                    runs_counted = 0
+
+                                    if recheck_all:
+                                        # Re-check all files in the folder
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
+                                            if is_valid_pickle_file(Path(pickle_file)):
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file_analog(pickle_file, gate)
+                                                runs_counted += 1
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
+
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'path': pickle_file
+                                                    }
+                                                processed_files.add(pickle_file)
+
+                                        # After scanning all files, update cache if we found a best
+                                        if best_data_point_overall:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
+
+                                    else:
+                                        # Only check new/unprocessed files
+                                        runs_counted = cached_num_runs
+                                        for f in files_in_folder:
+                                            pickle_file = os.path.normpath(os.path.join(trotter_path, f))
                                             if pickle_file not in processed_files and is_valid_pickle_file(Path(pickle_file)):
-                                                costs, fidelity, num_params, test_results, grads_per_epoch, selected_indices = read_jax_file(pickle_file, gate)
-                                                run = os.path.basename(pickle_file).replace('.pickle', '')
-                                                num_data_runs += 1  # Increment the number of data runs
+                                                costs, fidelity, num_params, test_results, grads_per_epoch = \
+                                                    read_jax_file(pickle_file, gate)
+                                                runs_counted += 1
+                                                run_name = os.path.splitext(os.path.basename(f))[0]
 
-                                                # Process the file if it's valid
-                                                if is_valid_pickle_file(Path(pickle_file)):
-                                                    # if N_ctrl == 2 and trotter_step >20:
-                                                    #     print(pickle_file)
-                                                    costs, fidelity, num_params, test_results, grads_per_epoch, selected_indices = read_jax_file(pickle_file, gate)
+                                                if fidelity > best_fidelity_overall:
+                                                    best_fidelity_overall = fidelity
+                                                    best_data_point_overall = {
+                                                        'costs': costs,
+                                                        'gate': gate,
+                                                        'fidelity': fidelity,
+                                                        'test_results': test_results,
+                                                        'param_count': num_params,
+                                                        'run': run_name,
+                                                        'num_data_runs': runs_counted,
+                                                        'grads_per_epoch': grads_per_epoch,
+                                                        'path': pickle_file
+                                                    }
+                                                processed_files.add(pickle_file)
 
-                                                    # Update the best fidelity
-                                                    if fidelity > current_best_fidelity:
-                                                        current_best_fidelity = fidelity
-                                                        current_best_data_point = {
-                                                            'costs': costs,
-                                                            'gate': gate,
-                                                            'fidelity': fidelity,
-                                                            'test_results': test_results,
-                                                            'param_count': num_params,
-                                                            'run': run,  # Store the data_run_<i> value
-                                                            'grads_per_epoch': grads_per_epoch,
-                                                            'selected_indices': selected_indices,
-                                                            'file_path': pickle_file  # Add the file path
-                                                        }
-
-                                                    # Add processed file to the global set
-                                                    processed_files.add(pickle_file)
-
-                                    if current_best_data_point:
-                                        if gate not in cached_data[N_ctrl]:
-                                            cached_data[N_ctrl][gate] = {}
-                                        if reservoir_count not in cached_data[N_ctrl][gate]:
-                                            cached_data[N_ctrl][gate][reservoir_count] = {}
-                                        if trotter_step not in cached_data[N_ctrl][gate][reservoir_count]:
-                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = []
-
-                                        # Replace the cached data with the new best data point
-                                        cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [current_best_data_point]
+                                        # If we found a better run among new files, update the cache
+                                        if best_data_point_overall and best_data_point_overall is not previous_best:
+                                            best_data_point_overall['num_data_runs'] = runs_counted
+                                            cached_data[N_ctrl][gate][reservoir_count][trotter_step] = [best_data_point_overall]
 
     return cached_data, processed_files
+
 
 
 def update_cache_with_new_data_analog(base_path, gate_prefixes, reservoir_counts, trots, cached_data, processed_files, N_ctrl):
