@@ -3,6 +3,122 @@
 import jax
 import jax.numpy as jnp
 
+def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
+                                                 outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, 
+                                                 debug=False, eps=1e-8):
+    """
+    Compute per-parameter learning rates using a weighted combination (median and mean)
+    of the normalized absolute gradients. The global norm of the gradients is used to
+    derive a normalization factor that scales the gradients. The fudge factor is derived
+    from the median absolute deviation (MAD) of the normalized gradients, ensuring a robust
+    smoothing term that does not depend on max_lr.
+    
+    Steps:
+      1. Flatten grad_tree and compute all_abs = |grad| of all elements.
+      2. Compute global_norm = ||all_abs|| and norm_factor = global_norm / sqrt(N), 
+         where N is the total number of gradient elements.
+      3. Normalize all_abs:  normalized_abs = all_abs / (norm_factor + eps).
+      4. (Optional) Clip normalized_abs at the outlier_clip quantile to produce abs_for_stats.
+      5. Compute robust statistics on abs_for_stats:
+             median_norm = median(normalized_abs)
+             mean_norm   = mean(normalized_abs)
+         Then combine them to get a representative value:
+             combined_stat = alpha * median_norm + (1 - alpha) * mean_norm
+         (With alpha = 1.0, the function recovers pure median behavior.)
+      6. Compute the median absolute deviation (MAD) of normalized_abs:
+             MAD_norm = median(|normalized_abs - median_norm|)
+         Then derive the fudge factor as:
+             fudge = fudge_scale * MAD_norm
+      7. Compute raw learning rates:
+             lr_raw = (scale_factor * combined_stat) / (normalized_abs + fudge)
+      8. Clamp lr_raw to the fixed bounds [min_lr, max_lr] (these bounds are left unchanged).
+      9. Restore the original PyTree structure.
+    
+    Arguments:
+      grad_tree    : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
+      scale_factor : Baseline multiplier; for normalized gradients near combined_stat, lr ≈ scale_factor.
+      min_lr       : Base minimum learning rate.
+      max_lr       : Base maximum learning rate.
+      outlier_clip : Quantile (in (0,1]) to clip extreme normalized gradient values.
+      fudge_scale  : Multiplier for the fudge constant based on MAD.
+      alpha        : Weight for the median in the combination (alpha = 1.0 yields pure median).
+      debug        : If True, prints detailed diagnostic information.
+      eps          : Small constant to avoid division-by-zero.
+    
+    Returns:
+      A PyTree matching grad_tree with computed learning rates.
+    """
+    # Step 1: Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grad_tree)
+    if not grad_leaves:
+        raise ValueError("grad_tree is empty; no gradients provided.")
+    
+    # Step 2: Concatenate all gradients and compute their absolute values.
+    all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
+    all_abs = jnp.abs(all_grads)
+    median_abs_orig = jnp.quantile(all_abs, 0.5)  # For debugging
+    
+    # Step 3: Compute global norm and norm_factor.
+    global_norm = jnp.linalg.norm(all_abs)
+    raw_max_lr = jnp.where(global_norm > 0, scale_factor / global_norm, 0.1)
+    N = all_abs.shape[0]
+    norm_factor = global_norm / jnp.sqrt(N)
+
+
+    
+    # Step 4: Normalize the absolute gradients.
+    normalized_abs = all_abs / (norm_factor + eps)
+    lr_tree_old = jax.tree_util.tree_map(lambda g: 0.005 / g, all_abs)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree_old = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, raw_max_lr), lr_tree_old)
+    
+    # Step 5: Optionally clip extreme values (for robust statistics).
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        high_threshold = jnp.quantile(normalized_abs, outlier_clip)
+        abs_for_stats = jnp.clip(normalized_abs, a_min=0, a_max=high_threshold)
+    else:
+        abs_for_stats = normalized_abs
+    
+    # Compute robust statistics on abs_for_stats.
+    median_norm = jnp.quantile(abs_for_stats, 0.5)
+    mean_norm = jnp.mean(abs_for_stats)
+    combined_stat = alpha * median_norm + (1.0 - alpha) * mean_norm
+    if combined_stat == 0:
+        nonzero = normalized_abs[normalized_abs > 0]
+        combined_stat = jnp.min(nonzero) if nonzero.size > 0 else 0.0
+    
+    # Step 6: Compute the MAD (median absolute deviation) of normalized_abs.
+    MAD_norm = jnp.quantile(jnp.abs(normalized_abs - median_norm), 0.5)
+    fudge = fudge_scale * MAD_norm
+    
+    # Step 7: Compute raw learning rates.
+    # For a parameter p with normalized_abs[p] = X, we define:
+    # lr_raw[p] = (scale_factor * combined_stat) / (X + fudge)
+    lr_raw = scale_factor * combined_stat / (normalized_abs + fudge)
+    
+    # Step 8: Clamp the raw learning rates to [min_lr, max_lr].
+    lr_clipped = jnp.clip(lr_raw, a_min=min_lr, a_max=max_lr)
+    
+    # Step 9: Restore the original PyTree structure.
+    lr_leaves = []
+    idx = 0
+    for g in grad_leaves:
+        size = g.size
+        segment = lr_clipped[idx: idx + size].reshape(g.shape)
+        lr_leaves.append(segment)
+        idx += size
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    
+    if debug:
+        iqr_norm = float(jnp.quantile(abs_for_stats, 0.75) - jnp.quantile(abs_for_stats, 0.25))
+        print(f"Initial |grad| stats: min = {float(jnp.min(all_abs)):.3e}, max = {float(jnp.max(all_abs)):.3e}, median = {float(median_abs_orig):.3e}")
+        print(f"Global norm = {float(global_norm):.3e}, Norm factor = {float(norm_factor):.2e}")
+        print(f"Normalized |grad| stats: median = {float(median_norm):.2e}, mean = {float(mean_norm):.2e}")
+        # print(f"Combined stat = {float(combined_stat):.2e}, MAD = {float(MAD_norm):.2e}, fudge = {float(fudge):.2e}")
+        print(f"lr_tree_old: min = {float(jnp.min(lr_tree_old)):.2e}, max = {float(jnp.max(lr_tree_old)):.2e}, median = {float(jnp.quantile(lr_tree_old, 0.5) ):.3e}, Var = {float(jnp.var(lr_tree_old)):.3e}")
+        print(f"Final lr bounds: [{min_lr:.2e}, {max_lr:.2e}], lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, Var = {float(jnp.var(lr_tree)):.3e}")
+    
+    return lr_tree
 def get_initial_lr_per_param(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
                              outlier_clip=0.95, fudge_scale=1.0, debug=False):
     """
