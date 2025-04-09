@@ -2,7 +2,83 @@
 
 import jax
 import jax.numpy as jnp
+import jax
+import jax.numpy as jnp
 
+def improved_get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2,
+                                      outlier_clip=0.95, fudge_factor=None):
+    """
+    Compute per-parameter learning rates robustly based on the gradient magnitudes.
+    
+    Method:
+      1. Compute |grad| for each parameter across the PyTree.
+      2. Concatenate all absolute values into one vector (all_abs).
+      3. Optionally clip extreme values in all_abs (using outlier_clip) to obtain clipped_abs.
+      4. Compute the robust scale “r”:
+             median_val = median(clipped_abs)
+             MAD = median(|clipped_abs - median_val|)
+             r = median_val + MAD
+         (If r is zero, fallback to median_val.)
+      5. Define a fudge factor:
+             fudge = (if fudge_factor is provided, use it; otherwise, set fudge = 0.1 * r)
+      6. For each parameter (with absolute value |g|), compute raw learning rate:
+             lr_raw = base_step * (r / (|g| + fudge))
+      7. Clamp lr_raw to [min_lr, max_lr] for numerical safety.
+      8. Restore the original PyTree structure.
+    
+    This procedure ensures that:
+      - Parameters whose gradient magnitude is much below the typical scale r receive a higher lr.
+      - Parameters with high gradients get a lower lr.
+      - The fudge term is derived from the data (r) rather than using max_lr.
+    
+    Arguments:
+      grads        : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
+      base_step    : Baseline multiplier for the learning rate (if |grad| ≈ r, then lr ≈ base_step).
+      min_lr       : Minimum allowed learning rate.
+      max_lr       : Maximum allowed learning rate.
+      outlier_clip : Quantile (between 0 and 1) used to clip extreme absolute gradient values
+                     before computing robust statistics.
+      fudge_factor : If provided, use this as the fudge term; otherwise, it is set to 0.1*r.
+    
+    Returns:
+      A PyTree of learning rates having the same structure as grads.
+    """
+    # Step 1: Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grads)
+    if not grad_leaves:
+        raise ValueError("grads is empty; no gradients provided.")
+    
+    # Step 2: Compute the absolute gradients for each leaf.
+    abs_leaves = [jnp.abs(g) + 1e-12 for g in grad_leaves]  # add a tiny epsilon to avoid zero
+    # Concatenate all absolute values.
+    all_abs = jnp.concatenate([jnp.ravel(g) for g in abs_leaves])
+    
+    # Step 3: Optionally clip extreme values for robust statistics.
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        clip_val = jnp.quantile(all_abs, outlier_clip)
+        clipped_abs = jnp.clip(all_abs, 0, clip_val)
+    else:
+        clipped_abs = all_abs
+    
+    # Step 4: Compute robust statistics.
+    median_val = jnp.quantile(clipped_abs, 0.5)
+    MAD = jnp.quantile(jnp.abs(clipped_abs - median_val), 0.5)
+    r = median_val + MAD
+    r = jnp.where(r == 0, median_val, r)
+    
+    # Step 5: Define the fudge factor.
+    fudge = fudge_factor if fudge_factor is not None else 0.1 * r
+    
+    # Step 6: Compute raw learning rates for each parameter.
+    # For each parameter with gradient g, lr_raw = base_step * (r / (|g| + fudge))
+    lr_leaves = [base_step * (r / (jnp.abs(g) + fudge)) for g in grads]
+    
+    # Step 7: Clamp each learning rate to [min_lr, max_lr].
+    lr_leaves = [jnp.clip(lr, a_min=min_lr, a_max=max_lr) for lr in lr_leaves]
+    
+    # Step 8: Reassemble the learning rate tree.
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    return lr_tree
 def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
                                                  outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, 
                                                  debug=False, eps=1e-8):
