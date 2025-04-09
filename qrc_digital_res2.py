@@ -1,124 +1,9 @@
-
-def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
-                                      outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, debug=False, eps=1e-8):
-    """
-    Compute per-parameter learning rates using a weighted combination (median and mean)
-    of the normalized absolute gradients.
-    
-    Steps:
-      1. Compute the global L2 norm of all gradients and norm_factor = global_norm / sqrt(N).
-      2. Normalize all absolute gradients: normalized_abs = |grad| / (norm_factor + eps).
-      3. Compute robust statistics on normalized_abs:
-             median_norm = median(normalized_abs)
-             mean_norm   = mean(normalized_abs)
-         Then combine them:
-             combined_stat = alpha * median_norm + (1 - alpha) * mean_norm
-         (Here, alpha=1.0 recovers the pure median; a value less than 1 blends in the global average.)
-      4. Compute the fudge factor:
-             fudge = fudge_scale * (scale_factor / max_lr) * combined_stat
-      5. Compute raw learning rates:
-             lr_raw = (scale_factor * combined_stat) / (normalized_abs + fudge)
-      6. Apply dynamic clamping:
-             dynamic_min_lr = min_lr * norm_factor
-             dynamic_max_lr = max_lr * norm_factor
-         and clamp lr_raw to these bounds.
-      7. Restore the original PyTree structure.
-    
-    Arguments:
-      grad_tree    : A PyTree of gradients (nested dicts/lists of jax.numpy arrays).
-      scale_factor : Baseline multiplier; for normalized gradient values near combined_stat,
-                     lr will be about scale_factor.
-      min_lr       : Base minimum learning rate.
-      max_lr       : Base maximum learning rate.
-      outlier_clip : Quantile (in (0,1]) to clip extreme normalized gradients.
-      fudge_scale  : Multiplier for the fudge constant.
-      alpha        : Weight for the median in the combination (alpha=1.0 recovers pure median).
-      debug        : If True, prints detailed diagnostic information.
-      eps          : Small constant to avoid division by zero.
-    
-    Returns:
-      A PyTree matching grad_tree with computed learning rates.
-    """
-    # Flatten the gradient tree.
-    grad_leaves, tree_def = jax.tree_util.tree_flatten(grad_tree)
-    if not grad_leaves:
-        raise ValueError("grad_tree is empty; no gradients provided.")
-    
-    # Concatenate and compute absolute gradients.
-    all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
-    all_abs = jnp.abs(all_grads)
-    
-    # Compute global norm and norm_factor.
-    global_norm = jnp.linalg.norm(all_abs)
-    N = all_abs.shape[0]
-    norm_factor = global_norm / jnp.sqrt(N)
-    
-    # Normalize absolute gradients.
-    normalized_abs = all_abs / (norm_factor + eps)
-    
-    # Optionally clip extreme values for robust statistics.
-    if outlier_clip is not None and 0 < outlier_clip < 1:
-        high_threshold = jnp.quantile(normalized_abs, outlier_clip)
-        abs_for_stats = jnp.clip(normalized_abs, a_min=0, a_max=high_threshold)
-    else:
-        abs_for_stats = normalized_abs
-    
-    # Compute median and mean on normalized values.
-    median_norm = jnp.quantile(abs_for_stats, 0.5)
-    mean_norm = jnp.mean(abs_for_stats)
-    combined_stat = alpha * median_norm + (1.0 - alpha) * mean_norm
-    if combined_stat == 0:
-        nonzero = normalized_abs[normalized_abs > 0]
-        combined_stat = jnp.min(nonzero) if nonzero.size > 0 else 0.0
-    if max_lr > norm_factor: 
-        # Compute fudge factor.
-        fudge = fudge_scale * (scale_factor / norm_factor) * combined_stat
-    else:
-        # Compute fudge factor.
-        fudge = fudge_scale * (scale_factor / max_lr) * combined_stat
-    # unsure what to do here...
-    if max_lr < norm_factor:
-        dynamic_min_lr = min_lr
-        dynamic_max_lr = max_lr * norm_factor
-    else:
-        dynamic_min_lr = min_lr
-        dynamic_max_lr = max_lr
-    
-    
-    # Compute raw learning rates.
-    lr_raw = scale_factor * combined_stat / (normalized_abs + fudge)
-    
-    # Dynamic clamping using norm_factor.
-    
-
-    lr_clipped = jnp.clip(lr_raw, a_min=dynamic_min_lr, a_max=dynamic_max_lr)
-    
-    # Restore the original PyTree structure.
-    lr_leaves = []
-    idx = 0
-    for g in grad_leaves:
-        size = g.size
-        segment = lr_clipped[idx: idx + size].reshape(g.shape)
-        lr_leaves.append(segment)
-        idx += size
-    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
-    
-    if debug:
-        med_val = float(median_norm)
-        mean_val = float(mean_norm)
-        comb_val = float(combined_stat)
-        iqr_val = float(jnp.quantile(abs_for_stats, 0.75) - jnp.quantile(abs_for_stats, 0.25))
-        print("[Weighted] Grad norm = {:.3e}, Norm factor = {:.2e}".format(float(global_norm),float(norm_factor)))
-        print("[Weighted] Normalized |grad| stats: median = {:.2e}, mean = {:.2e}, IQR = {:.2e}".format(med_val, mean_val, iqr_val))
-        print("[Weighted] Using combined_stat = {:.2e}, fudge = {:.2e}".format(comb_val, float(fudge)))
-        print("[Weighted] LR (raw): min = {:.2e}, max = {:.2e}".format(float(jnp.min(lr_raw)), float(jnp.max(lr_raw))))
-        print("[Weighted] Dynamic LR bounds: min = {:.2e}, max = {:.2e}".format(min_lr * norm_factor, max_lr * norm_factor))
-    
-    return lr_treeimport pennylane as qml
+import pennylane as qml
 
 from qiskit.circuit.library import *
 from qiskit import *
 from qiskit.quantum_info import *
+from numpy import float32
 import matplotlib.pyplot as plt
 import numpy
 from pennylane.wires import Wires
@@ -164,7 +49,10 @@ def grover_iteration(wires, omega):
     """Perform one iteration of Grover's algorithm (oracle + diffusion)."""
     oracle(wires, omega)
     grover_diffusion(wires)
-
+def array(a,dtype):
+    return np.asarray(a, dtype=np.float32)
+def Array(a,dtype):
+    return np.asarray(a, dtype=np.float32)
 def grover_fun(input_state, wires, iterations, omega):
     """Apply Grover's algorithm to the input state."""
     qml.StatePrep(input_state, wires=wires)
@@ -673,14 +561,15 @@ def get_initial_learning_rate(grads, scale_factor=0.1, min_lr=1e-4, max_lr = 0.3
     clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
     print(f"grad_norm: {grad_norm:.5f}, init_lr: {initial_lr:.5f}")
     return initial_lr,clipped_lr,grad_norm
-# def get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2):
-#     # print(f"grads: {grads}")
-#     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
-#     # print(f"grad_magnitudes: {grad_magnitudes}")
-#     lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
-#     # print(f"lr_tree: {lr_tree}")
-#     lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
-#     return lr_tree
+def get_initial_lr_per_param_old(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2):
+    # print(f"grads: {grads}")
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    
+    return lr_tree
 def get_initial_lr_per_param(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
                              outlier_clip=0.95, fudge_scale=1.0, debug=False):
     """
@@ -985,7 +874,9 @@ def get_initial_lr_per_param_weighted(grad_tree, scale_factor=0.1, min_lr=1e-5, 
         # Uncomment to see full lr output: print("Final per-parameter learning rates:", lr_tree)
     
     return lr_tree
-def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
+
+
+def get_initial_lr_per_param_weighted_normalized2(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
                                       outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, debug=False, eps=1e-8):
     """
     Compute per-parameter learning rates using a weighted combination (median and mean)
@@ -1033,7 +924,7 @@ def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, mi
     # Concatenate and compute absolute gradients.
     all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
     all_abs = jnp.abs(all_grads)
-    
+    median_abs = jnp.quantile(all_abs, 0.5)
     # Compute global norm and norm_factor.
     global_norm = jnp.linalg.norm(all_abs)
     N = all_abs.shape[0]
@@ -1088,13 +979,183 @@ def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, mi
         mean_val = float(mean_norm)
         comb_val = float(combined_stat)
         iqr_val = float(jnp.quantile(abs_for_stats, 0.75) - jnp.quantile(abs_for_stats, 0.25))
+        print(f"Median abs: {median_abs:.3e}")
         print("[Weighted] Grad norm = {:.3e}, Norm factor = {:.2e}".format(float(global_norm),float(norm_factor)))
         print("[Weighted] Normalized |grad| stats: median = {:.2e}, mean = {:.2e}, IQR = {:.2e}".format(med_val, mean_val, iqr_val))
         print("[Weighted] Using combined_stat = {:.2e}, fudge = {:.2e}".format(comb_val, float(fudge)))
-        print("[Weighted] LR (raw): min = {:.2e}, max = {:.2e}".format(float(jnp.min(lr_raw)), float(jnp.max(lr_raw))))
-        print("[Weighted] Dynamic LR bounds: min = {:.2e}, max = {:.2e}".format(dynamic_min_lr, dynamic_max_lr))
+        # print("[Weighted] LR (raw): min = {:.2e}, max = {:.2e}".format(float(jnp.min(lr_raw)), float(jnp.max(lr_raw))))
+        # print("[Weighted] Dynamic LR bounds: min = {:.2e}, max = {:.2e}".format(dynamic_min_lr, dynamic_max_lr))
     
     return lr_tree
+
+# import jax
+# import jax.numpy as jnp
+# import numpy as np  # For debug printing (if needed)
+
+def get_initial_lr_per_param_weighted_normalized(grad_tree, scale_factor=0.1, min_lr=1e-5, max_lr=0.25,
+                                                 outlier_clip=0.95, fudge_scale=1.0, alpha=0.8, 
+                                                 debug=False, eps=1e-8):
+    """
+    Compute per-parameter learning rates using a weighted combination (median and mean)
+    of the normalized absolute gradients. The global norm of the gradients is used to
+    derive a normalization factor that scales the gradients. The fudge factor is derived
+    from the median absolute deviation (MAD) of the normalized gradients, ensuring a robust
+    smoothing term that does not depend on max_lr.
+    
+    Steps:
+      1. Flatten grad_tree and compute all_abs = |grad| of all elements.
+      2. Compute global_norm = ||all_abs|| and norm_factor = global_norm / sqrt(N), 
+         where N is the total number of gradient elements.
+      3. Normalize all_abs:  normalized_abs = all_abs / (norm_factor + eps).
+      4. (Optional) Clip normalized_abs at the outlier_clip quantile to produce abs_for_stats.
+      5. Compute robust statistics on abs_for_stats:
+             median_norm = median(normalized_abs)
+             mean_norm   = mean(normalized_abs)
+         Then combine them to get a representative value:
+             combined_stat = alpha * median_norm + (1 - alpha) * mean_norm
+         (With alpha = 1.0, the function recovers pure median behavior.)
+      6. Compute the median absolute deviation (MAD) of normalized_abs:
+             MAD_norm = median(|normalized_abs - median_norm|)
+         Then derive the fudge factor as:
+             fudge = fudge_scale * MAD_norm
+      7. Compute raw learning rates:
+             lr_raw = (scale_factor * combined_stat) / (normalized_abs + fudge)
+      8. Clamp lr_raw to the fixed bounds [min_lr, max_lr] (these bounds are left unchanged).
+      9. Restore the original PyTree structure.
+    
+    Arguments:
+      grad_tree    : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
+      scale_factor : Baseline multiplier; for normalized gradients near combined_stat, lr ≈ scale_factor.
+      min_lr       : Base minimum learning rate.
+      max_lr       : Base maximum learning rate.
+      outlier_clip : Quantile (in (0,1]) to clip extreme normalized gradient values.
+      fudge_scale  : Multiplier for the fudge constant based on MAD.
+      alpha        : Weight for the median in the combination (alpha = 1.0 yields pure median).
+      debug        : If True, prints detailed diagnostic information.
+      eps          : Small constant to avoid division-by-zero.
+    
+    Returns:
+      A PyTree matching grad_tree with computed learning rates.
+    """
+    # Step 1: Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grad_tree)
+    if not grad_leaves:
+        raise ValueError("grad_tree is empty; no gradients provided.")
+    
+    # Step 2: Concatenate all gradients and compute their absolute values.
+    all_grads = jnp.concatenate([jnp.ravel(g) for g in grad_leaves])
+    all_abs = jnp.abs(all_grads)
+    median_abs_orig = jnp.quantile(all_abs, 0.5)  # For debugging
+    
+    # Step 3: Compute global norm and norm_factor.
+    global_norm = jnp.linalg.norm(all_abs)
+    raw_max_lr = jnp.where(global_norm > 0, scale_factor / global_norm, 0.1)
+    N = all_abs.shape[0]
+    norm_factor = global_norm / jnp.sqrt(N)
+
+
+    
+    # Step 4: Normalize the absolute gradients.
+    normalized_abs = all_abs / (norm_factor + eps)
+    lr_tree_old = jax.tree_util.tree_map(lambda g: 0.005 / g, all_abs)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree_old = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, raw_max_lr), lr_tree_old)
+    
+    # Step 5: Optionally clip extreme values (for robust statistics).
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        high_threshold = jnp.quantile(normalized_abs, outlier_clip)
+        abs_for_stats = jnp.clip(normalized_abs, a_min=0, a_max=high_threshold)
+    else:
+        abs_for_stats = normalized_abs
+    
+    # Compute robust statistics on abs_for_stats.
+    median_norm = jnp.quantile(abs_for_stats, 0.5)
+    mean_norm = jnp.mean(abs_for_stats)
+    combined_stat = alpha * median_norm + (1.0 - alpha) * mean_norm
+    if combined_stat == 0:
+        nonzero = normalized_abs[normalized_abs > 0]
+        combined_stat = jnp.min(nonzero) if nonzero.size > 0 else 0.0
+    
+    # Step 6: Compute the MAD (median absolute deviation) of normalized_abs.
+    MAD_norm = jnp.quantile(jnp.abs(normalized_abs - median_norm), 0.5)
+    fudge = fudge_scale * MAD_norm
+    
+    # Step 7: Compute raw learning rates.
+    # For a parameter p with normalized_abs[p] = X, we define:
+    # lr_raw[p] = (scale_factor * combined_stat) / (X + fudge)
+    lr_raw = scale_factor * combined_stat / (normalized_abs + fudge)
+    
+    # Step 8: Clamp the raw learning rates to [min_lr, max_lr].
+    lr_clipped = jnp.clip(lr_raw, a_min=min_lr, a_max=max_lr)
+    
+    # Step 9: Restore the original PyTree structure.
+    lr_leaves = []
+    idx = 0
+    for g in grad_leaves:
+        size = g.size
+        segment = lr_clipped[idx: idx + size].reshape(g.shape)
+        lr_leaves.append(segment)
+        idx += size
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    
+    if debug:
+        iqr_norm = float(jnp.quantile(abs_for_stats, 0.75) - jnp.quantile(abs_for_stats, 0.25))
+        print(f"Initial |grad| stats: min = {float(jnp.min(all_abs)):.3e}, max = {float(jnp.max(all_abs)):.3e}, median = {float(median_abs_orig):.3e}")
+        print(f"Global norm = {float(global_norm):.3e}, Norm factor = {float(norm_factor):.2e}")
+        print(f"Normalized |grad| stats: median = {float(median_norm):.2e}, mean = {float(mean_norm):.2e}")
+        # print(f"Combined stat = {float(combined_stat):.2e}, MAD = {float(MAD_norm):.2e}, fudge = {float(fudge):.2e}")
+        print(f"lr_tree_old: min = {float(jnp.min(lr_tree_old)):.2e}, max = {float(jnp.max(lr_tree_old)):.2e}, median = {float(jnp.quantile(lr_tree_old, 0.5) ):.3e}, Var = {float(jnp.var(lr_tree_old)):.3e}")
+        print(f"Final lr bounds: [{min_lr:.2e}, {max_lr:.2e}], lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, Var = {float(jnp.var(lr_tree)):.3e}")
+    
+    return lr_tree
+
+def improved_get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2,
+                                      outlier_clip=0.95,fudge_scale=1.0, fudge_factor=None,debug=True):
+   
+    # Step 1: Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grads)
+    if not grad_leaves:
+        raise ValueError("grads is empty; no gradients provided.")
+    
+    # Step 2: Compute the absolute gradients for each leaf.
+    abs_leaves = [jnp.abs(g) + 1e-12 for g in grad_leaves]  # add a tiny epsilon to avoid division by zero
+    all_abs = jnp.concatenate([jnp.ravel(g) for g in abs_leaves])
+    
+    # Step 3: Optionally clip extreme values in all_abs.
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        clip_val = jnp.quantile(all_abs, outlier_clip)
+        clipped_abs = jnp.clip(all_abs, 0, clip_val)
+    else:
+        clipped_abs = all_abs
+    
+    # Step 4: Compute robust statistics.
+    median_val = jnp.quantile(clipped_abs, 0.5)
+    MAD = jnp.quantile(jnp.abs(clipped_abs - median_val), 0.5)
+    r = median_val + MAD
+    r = jnp.where(r == 0, median_val, r)
+    
+    # Step 5: Define the fudge factor.
+    fudge = fudge_factor if fudge_factor is not None else r
+   
+    # Step 6: Compute raw learning rates for each parameter.
+    # NOTE: Iterate over grad_leaves (not grads) to preserve the PyTree structure.
+    lr_leaves = [(base_step / (jnp.abs(g) + fudge)) for g in grad_leaves]
+    
+    # Step 7: Clamp each learning rate to [min_lr, max_lr].
+    lr_leaves = [jnp.clip(lr, a_min=min_lr, a_max=max_lr) for lr in lr_leaves]
+    
+    # Step 8: Reassemble the learning rate tree.
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    if debug:
+        print(f"fudge: {fudge:.3e}")
+        # print(f"0.1*r: {0.1*r:.3e}")
+        print(f"MAD: {MAD}")
+        print(f"r: {r}")
+        print(f"Final lr_tree: min = {float(jnp.min(jnp.abs(lr_tree))):.2e}, max = {float(jnp.max(jnp.abs(lr_tree))):.2e}, Mean={float(jnp.mean(jnp.abs(lr_tree)))} Var = {float(jnp.var(lr_tree)):.3e}")
+    
+    # print(lr_tree)
+    return lr_tree
+
 def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_coeffs, trotter_steps, static, gate, gate_name, folder, test_size, training_size, opt_lr,dataset_key):
     N_ctrl = n_ctrl_qubits
 
@@ -1219,12 +1280,20 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
         #     fudge_scale=1.0,
         #     debug=True
         # )
-        print("\nPer param weighted & normalized....")
-        opt_lr = get_initial_lr_per_param_weighted_normalized(init_grads,
-            max_lr=0.25,
+        # print("\nPer param weighted & normalized....")
+        # opt_lr = get_initial_lr_per_param_weighted_normalized(init_grads,
+        #     max_lr=0.2,
+        #     scale_factor=0.3,
+        #     outlier_clip=1.0,
+        #     fudge_scale=0.95,
+        #     debug=True
+        # )
+        opt_lr = improved_get_initial_lr_per_param(init_grads,
+            max_lr=0.2,
+            base_step=0.005,
             outlier_clip=1.0,
-            fudge_scale=1.2,
-            debug=True
+           
+       
         )
         
        
@@ -1237,10 +1306,12 @@ def run_experiment(params, bath_params, steps, n_rsv_qubits, n_ctrl_qubits, K_co
     #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
     # )
     # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
+    # opt_lr = Array([Array(0.00594354, dtype=float32), Array(0.00599311, dtype=float32), Array(0.00872557, dtype=float32), Array(0.02669463, dtype=float32), Array(0.09682034, dtype=float32), Array(0.0513286, dtype=float32), Array(0.03441432, dtype=float32), Array(0.03260674, dtype=float32), Array(0.04586855, dtype=float32), Array(0.2, dtype=float32), Array(0.0258646, dtype=float32), Array(0.02581966, dtype=float32), Array(0.08825562, dtype=float32), Array(0.03184232, dtype=float32), Array(0.01947264, dtype=float32), Array(0.05685372, dtype=float32), Array(0.09980206, dtype=float32), Array(0.04595096, dtype=float32), Array(0.05250014, dtype=float32), Array(0.06393814, dtype=float32), Array(0.08601964, dtype=float32), Array(0.2, dtype=float32), Array(0.12709789, dtype=float32), Array(0.03827668, dtype=float32), Array(0.11851651, dtype=float32), Array(0.0657366, dtype=float32), Array(0.02213938, dtype=float32), Array(0.0596554, dtype=float32), Array(0.2, dtype=float32), Array(0.03277675, dtype=float32), Array(0.03459018, dtype=float32)],dtype=float32)
     learning_rate_schedule = optax.constant_schedule(opt_lr)
     opt = optax.chain(
         optax.clip_by_global_norm(1.0),
-        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
+        # optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.9, b2=0.99, eps=1e-7),
+        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-8),
         )
     # print(f"per param lrs: \n{opt_lr}\n")
     print("________________________________________________________________________________")
@@ -1562,13 +1633,13 @@ if __name__=='__main__':
 
     trotter_step_list = [1,10,15,17,20,22,25,27,30,32,35,37,40]
     trotter_step_list = [1,15,20,25,30,35,40]
-    trotter_step_list = [35,40]
-    trotter_step_list = [14,16]
+    trotter_step_list = [20,30,35,40,45]
+    # trotter_step_list = [40]
     
     # rsv_qubits_list = [1,2,3]
     rsv_qubits_list = [1]
 
-    N_ctrl = 2
+    N_ctrl = 3
     # omegas = generate_omegas(N_ctrl)
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_same_epoch{steps}/'
     # folder = f'./digital_results_trainable_global/trainsize_{training_size_list[0]}_optimized_by_cost3/'
@@ -1598,10 +1669,10 @@ if __name__=='__main__':
     noise_range = 0.002
     test_size = 2000
     bath = False
-    folder = f'./digital_res2/trainsize_{training_size}_epoch{steps}_per_param2_costcut_1e-8/'
+    folder = f'./digital_res2/trainsize_{training_size}_epoch{steps}_per_param3_costcut_1e-8/'
     for gate_idx,gate in enumerate(gates):
         # if gate_idx not in [6]:
-        # if gate_idx not in [18,19]:
+        # if gate_idx not in [17]:
         #     continue
 
         for trotter_steps in trotter_step_list:
