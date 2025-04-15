@@ -308,12 +308,13 @@ def generate_batch_params(params_key, tests, time_steps, N_ctrl, N_reserv,sample
         
         remaining_params = jax.random.truncated_normal(test_key,
                                              shape=(3 + (N_ctrl * N_reserv) * time_steps,), 
-                                             lower=-sample_range/2, 
-                                             upper=sample_range/2)
+                                             lower=-sample_range, 
+                                             upper=sample_range)
         
         # remaining_params = jax.random.uniform(test_key,shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-sample_range, maxval=sample_range)
         _, params_subkey1 = jax.random.split(test_key, 2)
-        time_step_params = jax.random.uniform(params_subkey1, shape=(time_steps,), minval=0, maxval=1)
+        # time_step_params = np.array([1.]*time_steps)
+        time_step_params = jax.random.uniform(params_subkey1, shape=(time_steps,), minval=0, maxval=0.1)
         params = jnp.concatenate([time_step_params, remaining_params])
         param_batch.append(params)
     return jax.numpy.stack(param_batch)
@@ -327,8 +328,8 @@ def main():
     N_ctrl = 2
     baths = [False]
     num_bath = 0
-    number_of_fixed_param_tests = 1
-    number_trainable_params_tests = 100 
+    number_of_fixed_param_tests_base = 5
+    number_trainable_params_tests = 100
 
     base_state = 'GHZ_state'
     # base_state = 'basis_state'
@@ -337,10 +338,12 @@ def main():
     # trots = [1,2,3,4,5,6,7,8,9,10]
     
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
-    trots = [10]
-    # trots = [1,2,3,4,4,5,6,7,8,9,10,12,16,20,24]
+    trots = [1,2,3,4,5,6,8,10,12,14,16,18,20]
+    trots = [1,2,3,4]
+    # trots = [1,4,8,12,13,14,15,16,20,24,28,32,36,40]
+    # trots = trots[::-1]
     # trots = [1,2,3,4,5,6,7,8,9,10,11,12,14,15,16]
-    reservoirs = [1]
+    reservoirs = [1,2,3]
    
     
    
@@ -348,8 +351,10 @@ def main():
 
     kFactor = 1
     K_0 = kFactor
+    # sample_range = np.pi
+    # sample_range_label = '2pi_1tau'
     sample_range = np.pi/2
-    sample_range_label = 'normal_.5pi'
+    sample_range_label = 'normal_.5pi_.1t'
     batch =True
     #folder = f'./QFIM_traced_trainable_global/analog_model/Nc_{N_ctrl}/{base_state}/{Kfactor}xK/'
     # folder = f'./QFIM_results/analog/Nc_{N_ctrl}/sample_{sample_range_label}/{kFactor}xK/'
@@ -363,7 +368,7 @@ def main():
             if N_reserv == 1:
                 number_of_fixed_param_tests = 1
             else:
-                number_of_fixed_param_tests = 15
+                number_of_fixed_param_tests = number_of_fixed_param_tests_base
             
             print("________________________________________________________________________________")
             print(f"N_ctrl: {N_ctrl}, N_R: {N_reserv}, time_steps: {time_steps}")
@@ -526,6 +531,7 @@ def main():
                         
                         
                         # s = time.time()
+                        # print(time.time())
                         for test_num, (eigvals, eigvecs, qfim) in enumerate(restructured_results):
                             test_key = f'test{test_num + number_trainable_tests_completed}'
                             params = param_batch[test_num]

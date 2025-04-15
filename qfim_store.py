@@ -93,7 +93,281 @@ config.update("jax_enable_x64", True)
 os.environ['JAX_TRACEBACK_FILTERING'] = 'off'
 # global_cache_data = None
 # global_processed_files = None
+metrics_info = {
+    # --- Per-draw Metrics ---
+    "QFIM_ranks": {
+        "title": "QFIM Ranks per Draw",
+        "label": r"$\mathrm{Rank}(Q)$",
+        "description": (
+            "The number of nonzero eigenvalues (above the threshold) for each draw. "
+            "This represents the effective number of independent directions captured by the QFIM."
+        )
+    },
+    "var_all_eigenvals_per_draw": {
+        "title": "Variance of All Eigenvalues per Draw",
+        "label": r"$\mathrm{Var}(\lambda)$",
+        "description": (
+            "The variance computed over all eigenvalues for each QFIM draw. "
+            "This measures the overall dispersion of the eigenvalue distribution on an absolute scale."
+        )
+    },
+    "var_nonzero_eigenvals_per_draw": {
+        "title": "Variance of Nonzero Eigenvalues per Draw",
+        "label": r"$\mathrm{Var}_{nz}(\lambda)$",
+        "description": (
+            "The variance computed only over the eigenvalues that exceed the threshold for each draw. "
+            "This metric reflects the dispersion of the significant eigenvalues."
+        )
+    },
+    "trace_eigenvals_per_draw": {
+        "title": "Trace of Eigenvalues per Draw",
+        "label": r"$\mathrm{Tr}(Q)$",
+        "description": (
+            "The sum of the eigenvalues for each draw, quantifying the total magnitude of the QFIM."
+        )
+    },
+    "var_norm_rank_per_draw": {
+        "title": "Variance Normalized by Rank per Draw",
+        "label": r"$\frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "The variance (over all eigenvalues) divided by the number of nonzero eigenvalues (i.e. the rank) for each draw. "
+            "It provides an estimate of the average dispersion per active mode."
+        )
+    },
+    "trace_norm_rank_per_draw": {
+        "title": "Trace Normalized by Rank per Draw",
+        "label": r"$\frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "The trace (sum of eigenvalues) divided by the rank for each draw. "
+            "It represents the average contribution per active eigenmode."
+        )
+    },
 
+    # --- Aggregated (Absolute Scale) Metrics ---
+    "D_C": {
+        "title": "Maximum QFIM Rank (D_C)",
+        "label": r"$D_C$",
+        "description": (
+            "The maximum rank observed across all draws. This serves as a simple estimate of the model's "
+            "maximum effective capacity."
+        )
+    },
+    "absolute_scale_avg_var_all": {
+        "title": "Average Variance (All Eigenvalues)",
+        "label": r"$\langle \mathrm{Var}(\lambda) \rangle$",
+        "description": (
+            "The mean variance computed over all eigenvalues across draws, reflecting the typical spread "
+            "of the eigenvalue distributions on an absolute scale."
+        )
+    },
+    "absolute_scale_avg_var_nonzero": {
+        "title": "Average Variance (Nonzero Eigenvalues)",
+        "label": r"$\langle \mathrm{Var}_{nz}(\lambda) \rangle$",
+        "description": (
+            "The mean variance computed over only the nonzero eigenvalues across draws, measuring the typical "
+            "dispersion among the significant eigenvalues."
+        )
+    },
+    "absolute_scale_avg_trace": {
+        "title": "Average Trace of Eigenvalues",
+        "label": r"$\langle \mathrm{Tr}(Q) \rangle$",
+        "description": (
+            "The average sum of the eigenvalues across all draws, indicating the typical total information content "
+            "in the QFIM."
+        )
+    },
+    "absolute_scale_var_of_var_all": {
+        "title": "Variance of Variance (All Eigenvalues)",
+        "label": r"$\mathrm{Var}(\mathrm{Var}(\lambda))$",
+        "description": (
+            "The variance of the per-draw variances (over all eigenvalues), which quantifies the consistency "
+            "of the eigenvalue spread across different draws."
+        )
+    },
+    "absolute_scale_var_of_var_nonzero": {
+        "title": "Variance of Variance (Nonzero Eigenvalues)",
+        "label": r"$\mathrm{Var}(\mathrm{Var}_{nz}(\lambda))$",
+        "description": (
+            "The variance of the per-draw variances computed over nonzero eigenvalues, indicating the consistency "
+            "of the spread among significant eigenvalues."
+        )
+    },
+
+    # --- Local Dimension Metrics (Spectrum Shape) ---
+    # IPR-based:
+    "spectrum_shape_ipr_deffs_norm_per_draw": {
+        "title": "Normalized IPR Dimension per Draw",
+        "label": r"$\mathrm{IPR}_{\mathrm{norm}}$",
+        "description": (
+            "The normalized inverse participation ratio for each draw, calculated as 1/sum(norm(eigenvalues)^2) "
+            "after dividing by the trace. It captures the effective number of active modes based solely on the shape "
+            "of the eigenvalue spectrum."
+        )
+    },
+    "spectrum_shape_avg_ipr_deffs_norm": {
+        "title": "Average Normalized IPR Dimension",
+        "label": r"$\langle \mathrm{IPR}_{\mathrm{norm}} \rangle$",
+        "description": (
+            "The average normalized IPR over all draws, representing an overall measure of the effective number of modes "
+            "(ignoring total magnitude) in the QFIM."
+        )
+    },
+    "ipr_deffs_raw_per_draw": {
+        "title": "Raw IPR Dimension per Draw",
+        "label": r"$\mathrm{IPR}_{\mathrm{raw}}$",
+        "description": (
+            "The raw inverse participation ratio, computed as $(\mathrm{Tr}(Q))^2 / \sum \lambda_i^2$, for each draw. "
+            "This gives an absolute-scale estimate of the effective number of modes."
+        )
+    },
+    "avg_ipr_deffs_raw": {
+        "title": "Average Raw IPR Dimension",
+        "label": r"$\langle \mathrm{IPR}_{\mathrm{raw}} \rangle$",
+        "description": (
+            "The mean of the raw IPR values over all draws, summarizing the absolute effective dimensionality of the QFIM."
+        )
+    },
+    # Abbas-based:
+    "spectrum_shape_abbas_deffs_norm_per_draw": {
+        "title": "Normalized Abbas Dimension per Draw",
+        "label": r"$d_{\mathrm{eff}}^{abbas}$",
+        "description": (
+            "The normalized Abbas effective dimension for each draw, computed by summing the logarithms of (1 + α·λ) "
+            "after normalizing by the trace. It quantifies the effective dimension based on the eigenvalue spectrum's shape."
+        )
+    },
+    "spectrum_shape_avg_abbas_deffs_norm": {
+        "title": "Average Normalized Abbas Dimension",
+        "label": r"$\langle d_{\mathrm{eff}}^{abbas} \rangle$",
+        "description": (
+            "The average of the normalized Abbas dimensions across draws, providing an overall measure of the model's "
+            "effective dimensionality according to the Abbas method."
+        )
+    },
+    "abbas_deffs_raw_per_draw": {
+        "title": "Raw Abbas Dimension per Draw",
+        "label": r"$d_{\mathrm{eff}}^{abbas, raw}$",
+        "description": (
+            "The raw Abbas dimension for each draw, computed as the sum of log(1 + α·λ) over all eigenvalues. "
+            "This metric measures the effective dimension in absolute terms."
+        )
+    },
+    "avg_abbas_deffs_raw": {
+        "title": "Average Raw Abbas Dimension",
+        "label": r"$\langle d_{\mathrm{eff}}^{abbas, raw} \rangle$",
+        "description": (
+            "The mean raw Abbas dimension across draws, summarizing the overall effective dimension in absolute scale."
+        )
+    },
+    "abbas_deffs_simple": {
+        "title": "Simple Abbas Dimension",
+        "label": r"$d_{\mathrm{eff}}^{abbas, simple}$",
+        "description": (
+            "A simplified effective dimension computed by an alternative approach (e.g. using an IPR-based method) "
+            "on the eigenvalues. This serves as an alternative estimate of the model's effective capacity."
+        )
+    },
+
+    # --- Average Per Active Mode Metrics ---
+    "avg_per_active_mode_var_norm_rank_per_draw": {
+        "title": "Variance per Active Mode per Draw",
+        "label": r"$\frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "For each draw, the variance of all eigenvalues divided by the rank (i.e. number of nonzero eigenvalues), "
+            "indicating the average dispersion per active mode."
+        )
+    },
+    "avg_per_active_mode_trace_norm_rank_per_draw": {
+        "title": "Trace per Active Mode per Draw",
+        "label": r"$\frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "For each draw, the trace of the eigenvalues divided by the rank. This gives the average contribution per "
+            "active eigenmode."
+        )
+    },
+    "avg_per_active_mode_avg_var_norm_rank": {
+        "title": "Average Variance per Active Mode",
+        "label": r"$\langle \frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)} \rangle$",
+        "description": (
+            "The average of the variance-per-rank values over all draws, reflecting the typical dispersion per active mode."
+        )
+    },
+    "avg_per_active_mode_avg_trace_norm_rank": {
+        "title": "Average Trace per Active Mode",
+        "label": r"$\langle \frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)} \rangle$",
+        "description": (
+            "The average of the trace-per-rank values over all draws, representing the typical signal per active mode."
+        )
+    },
+
+    # --- Spread-of-Log Metrics ---
+    "spread_mean_per_sample_variance_normal": {
+        "title": "Mean Spread-of-Log (Variance Method)",
+        "label": r"$\mu_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "The mean of the spread-of-log values computed using the variance method. This metric quantifies "
+            "the average dispersion of the logarithms of the normalized eigenvalues."
+        )
+    },
+    "spread_std_per_sample_variance_normal": {
+        "title": "Standard Deviation of Spread-of-Log (Variance Method)",
+        "label": r"$\sigma_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "The standard deviation of the spread-of-log values (via the variance method) across each draw, "
+            "indicating the variability in the eigenvalue dispersion."
+        )
+    },
+    "spread_val_pooled_variance_normal": {
+        "title": "Pooled Spread-of-Log (Variance Method)",
+        "label": r"$S_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "A single pooled value computed from the spread-of-log (variance method) over all draws, summarizing "
+            "the overall dispersion of the normalized eigenvalue distribution."
+        )
+    },
+    "spread_mean_per_sample_mad_normal": {
+        "title": "Mean Spread-of-Log (MAD Method)",
+        "label": r"$\mu_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The mean of the spread-of-log values computed using the median absolute deviation (MAD) method. "
+            "It provides an alternative measure of the dispersion of the normalized eigenvalue spectrum."
+        )
+    },
+    "spread_std_per_sample_mad_normal": {
+        "title": "Standard Deviation of Spread-of-Log (MAD Method)",
+        "label": r"$\sigma_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The standard deviation of the spread-of-log values computed via the MAD method, reflecting the variability "
+            "of the eigenvalue dispersion."
+        )
+    },
+    "spread_val_pooled_mad_normal": {
+        "title": "Pooled Spread-of-Log (MAD Method)",
+        "label": r"$S_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The pooled spread-of-log metric computed using the MAD method, representing the overall dispersion of the "
+            "normalized eigenvalue distribution."
+        )
+    },
+
+    # --- Global Dimension Metrics ---
+    "global_effective_dimension": {
+        "title": "Global Effective Dimension",
+        "label": r"$d_{\mathrm{eff}}^{global}$",
+        "description": (
+            "The effective dimension computed using a global method (e.g. from the averaged full QFIM matrix via the "
+            "log-determinant approach). It quantifies the overall capacity of the model when considering all draws collectively."
+        )
+    },
+    "fisher_trace": {
+        "title": "Fisher Trace of the Averaged QFIM",
+        "label": r"$\mathrm{Tr}(\bar{F})$",
+        "description": (
+            "The trace of the average (empirical) full QFIM matrix. This value is used as the normalization factor in "
+            "the global effective dimension calculation and reflects the overall magnitude of the QFIM."
+        )
+    },
+}
 def is_valid_pickle_file(file_path):
     """Check if a pickle file is valid and re-save it after cleaning."""
     try:
@@ -370,7 +644,7 @@ def update_cache_with_new_data(
             # T = extract_trotter_step(trotter_step_dir)
 
             if file_id in cached_data:
-                print(f"[INFO] Checking cached file: {file_id}")
+                # print(f"[INFO] Checking cached file: {file_id}")
                 updated = update_cached_data(data_file, cached_data, processed_files, N_ctrl, threshold)
                 # Only append if it was actually updated
                 if updated:
@@ -389,7 +663,7 @@ def update_cache_with_new_data(
                 )
                 cached_data[file_id] = {
                     "processed_data": processed_data,
-                    "raw_keys": get_keys(raw_df)
+                    # "raw_keys": get_keys(raw_df)
                 }
                 processed_files.add(file_id)
                 all_new_data.append(processed_data)
@@ -1042,14 +1316,288 @@ def compute_all_stats_old(
     metrics.update(spread_results)
 
     return metrics
+metrics_info = {
+    # --- Per-draw Metrics ---
+    "QFIM_ranks": {
+        "title": "QFIM Ranks per Draw",
+        "label": r"$\mathrm{Rank}(Q)$",
+        "description": (
+            "The number of nonzero eigenvalues (above the threshold) for each draw. "
+            "This represents the effective number of independent directions captured by the QFIM."
+        )
+    },
+    "var_all_eigenvals_per_draw": {
+        "title": "Variance of All Eigenvalues per Draw",
+        "label": r"$\mathrm{Var}(\lambda)$",
+        "description": (
+            "The variance computed over all eigenvalues for each QFIM draw. "
+            "This measures the overall dispersion of the eigenvalue distribution on an absolute scale."
+        )
+    },
+    "var_nonzero_eigenvals_per_draw": {
+        "title": "Variance of Nonzero Eigenvalues per Draw",
+        "label": r"$\mathrm{Var}_{nz}(\lambda)$",
+        "description": (
+            "The variance computed only over the eigenvalues that exceed the threshold for each draw. "
+            "This metric reflects the dispersion of the significant eigenvalues."
+        )
+    },
+    "trace_eigenvals_per_draw": {
+        "title": "Trace of Eigenvalues per Draw",
+        "label": r"$\mathrm{Tr}(Q)$",
+        "description": (
+            "The sum of the eigenvalues for each draw, quantifying the total magnitude of the QFIM."
+        )
+    },
+    "var_norm_rank_per_draw": {
+        "title": "Variance Normalized by Rank per Draw",
+        "label": r"$\frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "The variance (over all eigenvalues) divided by the number of nonzero eigenvalues (i.e. the rank) for each draw. "
+            "It provides an estimate of the average dispersion per active mode."
+        )
+    },
+    "trace_norm_rank_per_draw": {
+        "title": "Trace Normalized by Rank per Draw",
+        "label": r"$\frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "The trace (sum of eigenvalues) divided by the rank for each draw. "
+            "It represents the average contribution per active eigenmode."
+        )
+    },
 
+    # --- Aggregated (Absolute Scale) Metrics ---
+    "D_C": {
+        "title": "Maximum QFIM Rank (D_C)",
+        "label": r"$D_C$",
+        "description": (
+            "The maximum rank observed across all draws. This serves as a simple estimate of the model's "
+            "maximum effective capacity."
+        )
+    },
+    "absolute_scale_avg_var_all": {
+        "title": "Average Variance (All Eigenvalues)",
+        "label": r"$\langle \mathrm{Var}(\lambda) \rangle$",
+        "description": (
+            "The mean variance computed over all eigenvalues across draws, reflecting the typical spread "
+            "of the eigenvalue distributions on an absolute scale."
+        )
+    },
+    "absolute_scale_avg_var_nonzero": {
+        "title": "Average Variance (Nonzero Eigenvalues)",
+        "label": r"$\langle \mathrm{Var}_{nz}(\lambda) \rangle$",
+        "description": (
+            "The mean variance computed over only the nonzero eigenvalues across draws, measuring the typical "
+            "dispersion among the significant eigenvalues."
+        )
+    },
+    "absolute_scale_avg_trace": {
+        "title": "Average Trace of Eigenvalues",
+        "label": r"$\langle \mathrm{Tr}(Q) \rangle$",
+        "description": (
+            "The average sum of the eigenvalues across all draws, indicating the typical total information content "
+            "in the QFIM."
+        )
+    },
+    "absolute_scale_var_of_var_all": {
+        "title": "Variance of Variance (All Eigenvalues)",
+        "label": r"$\mathrm{Var}(\mathrm{Var}(\lambda))$",
+        "description": (
+            "The variance of the per-draw variances (over all eigenvalues), which quantifies the consistency "
+            "of the eigenvalue spread across different draws."
+        )
+    },
+    "absolute_scale_var_of_var_nonzero": {
+        "title": "Variance of Variance (Nonzero Eigenvalues)",
+        "label": r"$\mathrm{Var}(\mathrm{Var}_{nz}(\lambda))$",
+        "description": (
+            "The variance of the per-draw variances computed over nonzero eigenvalues, indicating the consistency "
+            "of the spread among significant eigenvalues."
+        )
+    },
+
+    # --- Local Dimension Metrics (Spectrum Shape) ---
+    # IPR-based:
+    "spectrum_shape_ipr_deffs_norm_per_draw": {
+        "title": "Normalized IPR Dimension per Draw",
+        "label": r"$\mathrm{IPR}_{\mathrm{norm}}$",
+        "description": (
+            "The normalized inverse participation ratio for each draw, calculated as 1/sum(norm(eigenvalues)^2) "
+            "after dividing by the trace. It captures the effective number of active modes based solely on the shape "
+            "of the eigenvalue spectrum."
+        )
+    },
+    "spectrum_shape_avg_ipr_deffs_norm": {
+        "title": "Average Normalized IPR Dimension",
+        "label": r"$\langle \mathrm{IPR}_{\mathrm{norm}} \rangle$",
+        "description": (
+            "The average normalized IPR over all draws, representing an overall measure of the effective number of modes "
+            "(ignoring total magnitude) in the QFIM."
+        )
+    },
+    "ipr_deffs_raw_per_draw": {
+        "title": "Raw IPR Dimension per Draw",
+        "label": r"$\mathrm{IPR}_{\mathrm{raw}}$",
+        "description": (
+            "The raw inverse participation ratio, computed as $(\mathrm{Tr}(Q))^2 / \sum \lambda_i^2$, for each draw. "
+            "This gives an absolute-scale estimate of the effective number of modes."
+        )
+    },
+    "avg_ipr_deffs_raw": {
+        "title": "Average Raw IPR Dimension",
+        "label": r"$\langle \mathrm{IPR}_{\mathrm{raw}} \rangle$",
+        "description": (
+            "The mean of the raw IPR values over all draws, summarizing the absolute effective dimensionality of the QFIM."
+        )
+    },
+    # Abbas-based:
+    "spectrum_shape_abbas_deffs_norm_per_draw": {
+        "title": "Normalized Abbas Dimension per Draw",
+        "label": r"$d_{\mathrm{eff}}^{abbas}$",
+        "description": (
+            "The normalized Abbas effective dimension for each draw, computed by summing the logarithms of (1 + α·λ) "
+            "after normalizing by the trace. It quantifies the effective dimension based on the eigenvalue spectrum's shape."
+        )
+    },
+    "spectrum_shape_avg_abbas_deffs_norm": {
+        "title": "Average Normalized Abbas Dimension",
+        "label": r"$\langle d_{\mathrm{eff}}^{abbas} \rangle$",
+        "description": (
+            "The average of the normalized Abbas dimensions across draws, providing an overall measure of the model's "
+            "effective dimensionality according to the Abbas method."
+        )
+    },
+    "abbas_deffs_raw_per_draw": {
+        "title": "Raw Abbas Dimension per Draw",
+        "label": r"$d_{\mathrm{eff}}^{abbas, raw}$",
+        "description": (
+            "The raw Abbas dimension for each draw, computed as the sum of log(1 + α·λ) over all eigenvalues. "
+            "This metric measures the effective dimension in absolute terms."
+        )
+    },
+    "avg_abbas_deffs_raw": {
+        "title": "Average Raw Abbas Dimension",
+        "label": r"$\langle d_{\mathrm{eff}}^{abbas, raw} \rangle$",
+        "description": (
+            "The mean raw Abbas dimension across draws, summarizing the overall effective dimension in absolute scale."
+        )
+    },
+    "abbas_deffs_simple": {
+        "title": "Simple Abbas Dimension",
+        "label": r"$d_{\mathrm{eff}}^{abbas, simple}$",
+        "description": (
+            "A simplified effective dimension computed by an alternative approach (e.g. using an IPR-based method) "
+            "on the eigenvalues. This serves as an alternative estimate of the model's effective capacity."
+        )
+    },
+
+    # --- Average Per Active Mode Metrics ---
+    "avg_per_active_mode_var_norm_rank_per_draw": {
+        "title": "Variance per Active Mode per Draw",
+        "label": r"$\frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "For each draw, the variance of all eigenvalues divided by the rank (i.e. number of nonzero eigenvalues), "
+            "indicating the average dispersion per active mode."
+        )
+    },
+    "avg_per_active_mode_trace_norm_rank_per_draw": {
+        "title": "Trace per Active Mode per Draw",
+        "label": r"$\frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)}$",
+        "description": (
+            "For each draw, the trace of the eigenvalues divided by the rank. This gives the average contribution per "
+            "active eigenmode."
+        )
+    },
+    "avg_per_active_mode_avg_var_norm_rank": {
+        "title": "Average Variance per Active Mode",
+        "label": r"$\langle \frac{\mathrm{Var}(\lambda)}{\mathrm{Rank}(Q)} \rangle$",
+        "description": (
+            "The average of the variance-per-rank values over all draws, reflecting the typical dispersion per active mode."
+        )
+    },
+    "avg_per_active_mode_avg_trace_norm_rank": {
+        "title": "Average Trace per Active Mode",
+        "label": r"$\langle \frac{\mathrm{Tr}(Q)}{\mathrm{Rank}(Q)} \rangle$",
+        "description": (
+            "The average of the trace-per-rank values over all draws, representing the typical signal per active mode."
+        )
+    },
+
+    # --- Spread-of-Log Metrics ---
+    "spread_mean_per_sample_variance_normal": {
+        "title": "Mean Spread-of-Log (Variance Method)",
+        "label": r"$\mu_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "The mean of the spread-of-log values computed using the variance method. This metric quantifies "
+            "the average dispersion of the logarithms of the normalized eigenvalues."
+        )
+    },
+    "spread_std_per_sample_variance_normal": {
+        "title": "Standard Deviation of Spread-of-Log (Variance Method)",
+        "label": r"$\sigma_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "The standard deviation of the spread-of-log values (via the variance method) across each draw, "
+            "indicating the variability in the eigenvalue dispersion."
+        )
+    },
+    "spread_val_pooled_variance_normal": {
+        "title": "Pooled Spread-of-Log (Variance Method)",
+        "label": r"$S_{\mathrm{spread}}^{Var}$",
+        "description": (
+            "A single pooled value computed from the spread-of-log (variance method) over all draws, summarizing "
+            "the overall dispersion of the normalized eigenvalue distribution."
+        )
+    },
+    "spread_mean_per_sample_mad_normal": {
+        "title": "Mean Spread-of-Log (MAD Method)",
+        "label": r"$\mu_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The mean of the spread-of-log values computed using the median absolute deviation (MAD) method. "
+            "It provides an alternative measure of the dispersion of the normalized eigenvalue spectrum."
+        )
+    },
+    "spread_std_per_sample_mad_normal": {
+        "title": "Standard Deviation of Spread-of-Log (MAD Method)",
+        "label": r"$\sigma_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The standard deviation of the spread-of-log values computed via the MAD method, reflecting the variability "
+            "of the eigenvalue dispersion."
+        )
+    },
+    "spread_val_pooled_mad_normal": {
+        "title": "Pooled Spread-of-Log (MAD Method)",
+        "label": r"$S_{\mathrm{spread}}^{MAD}$",
+        "description": (
+            "The pooled spread-of-log metric computed using the MAD method, representing the overall dispersion of the "
+            "normalized eigenvalue distribution."
+        )
+    },
+
+    # --- Global Dimension Metrics ---
+    "global_effective_dimension": {
+        "title": "Global Effective Dimension",
+        "label": r"$d_{\mathrm{eff}}^{global}$",
+        "description": (
+            "The effective dimension computed using a global method (e.g. from the averaged full QFIM matrix via the "
+            "log-determinant approach). It quantifies the overall capacity of the model when considering all draws collectively."
+        )
+    },
+    "fisher_trace": {
+        "title": "Fisher Trace of the Averaged QFIM",
+        "label": r"$\mathrm{Tr}(\bar{F})$",
+        "description": (
+            "The trace of the average (empirical) full QFIM matrix. This value is used as the normalization factor in "
+            "the global effective dimension calculation and reflects the overall magnitude of the QFIM."
+        )
+    },
+}
 if __name__ == "__main__":
     base_path = "/Users/so714f/Documents/offline/qrc/"
     model_type = "analog"
     N_ctrls = [2]
-    sample_range = "2pi_1tau"
+    sample_range = "normal_.5pi_.1t"
     K_str = "1"#  "1" "pi"
-    threshold = 1e-8
+    threshold = 1e-12
     by_test = False
 
     # 1) Possibly we do:
