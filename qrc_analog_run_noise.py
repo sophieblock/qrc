@@ -159,222 +159,6 @@ def create_initial_state(num_qubits, base_state):
     return state
 
 
-class Sim_QuantumReservoir:
-    def __init__(self, params, N_ctrl, N_reserv, num_J, time_steps=1, bath=False, num_bath=0, bath_factor=1.0,
-                 gamma_scale=0.05, lambda_scale=0.01, PRNG_key=jax.random.PRNGKey(0),time_dependent_bath=False, positions=None,
-                 spectral_exponent=2.0):
-        self.bath = bath
-        self.gamma_scale = gamma_scale  # Scale for system-bath coupling
-        self.lambda_scale = lambda_scale  # Scale for bath-bath coupling
-        self.bath_factor = bath_factor
-        self.num_bath = num_bath
-        self.time_dependent_bath = time_dependent_bath
-        self.spectral_exponent = spectral_exponent
-        self.PRNG_key = PRNG_key
-        self.positions = positions
-        self.N_ctrl = N_ctrl
-        self.N_reserv = N_reserv
-        self.reserv_qubits = qml.wires.Wires(list(range(N_ctrl, N_reserv+N_ctrl)))
-        self.ctrl_qubits = qml.wires.Wires(list(range(N_ctrl)))
-
-        # Initialize bath-related properties
-        if bath:
-            self.bath_qubits = qml.wires.Wires(
-                list(range(N_reserv + N_ctrl, N_reserv + N_ctrl + num_bath))
-            )
-            self.network_wires = qml.wires.Wires([*self.ctrl_qubits,*self.reserv_qubits])
-            self.all_wires = qml.wires.Wires([*self.ctrl_qubits,*self.reserv_qubits,*self.bath_qubits])
-   
-            self.N = N_ctrl + N_reserv + num_bath
-            self.dev = qml.device("default.qubit", wires=self.all_wires)
-            
-
-            # Generate local bath couplings (gamma_local)
-            local_sigma = bath_factor * np.abs(gamma_scale)
-            self.gamma_local = jax.random.normal(
-                key=jax.random.fold_in(self.PRNG_key, 0), shape=(num_bath,)
-            ) * local_sigma + gamma_scale
-
-            # Generate bath-bath interaction matrix
-            if positions is not None:
-                distances = self.compute_distances(positions)
-                self.bath_bath_interactions = self.generate_spectral_matrix_from_distances(distances, lambda_scale)
-            else:
-                self.bath_bath_interactions = self.generate_spectral_matrix(
-                    num_bath=num_bath, spectral_exponent=spectral_exponent, key=self.PRNG_key, scale=lambda_scale
-                )
-
-        else:
-            self.N = N_ctrl + N_reserv
-            self.gamma_local =  None
-            self.bath_bath_interactions =  None
-            self.dev = qml.device("default.qubit", wires = [*self.ctrl_qubits, *self.reserv_qubits]) 
-        #print(qml.wires.Wires(list(range(self.N))))
-        #print( [*self.ctrl_qubits, *self.reserv_qubits])
-        self.qubits = qml.wires.Wires(list(range(self.N)))
-        # device on which the circuit is executed
-
-        #self.z_bias = params['hz']
-        #self.y_bias = params['hy']
-        self.k_coefficient = params['K_coef']
-        self.steps = time_steps
-
-        #print(params['bath'])
-        self.num_J = num_J
-        self.params = params
-        self.current_index = 0
-        #self.interactions_fixed = interactions
-    
-        
-
-   
-    def get_all_wires(self):
-        return self.qubits            
-    def get_dev(self):
-        return self.dev
-
-    def get_ctrl_wires(self):
-        return self.ctrl_qubits
-
-    def get_reserv_wires(self):
-        return self.reserv_qubits   
-    def get_wires(self):
-        return self.qubits   
-
-    def get_XY_coupling(self, i, j):
-        '''Return the XY coupling between qubits i and j with a coefficient function.'''
-        return ((qml.PauliX(wires=i) @ qml.PauliX(wires=j)) + (qml.PauliY(wires=i) @ qml.PauliY(wires=j)))
-    def get_ZZ_coupling(self, i, j):
-        '''Return the XY coupling between qubits i and j with a coefficient function.'''
-        return ((qml.PauliZ(wires=i) @ qml.PauliZ(wires=j)) + (qml.PauliZ(wires=i) @ qml.PauliZ(wires=j)))
-    
-    def get_ZX_coupling(self, bath_qubit):
-        '''Return the ZX coupling between bath qubit and each qubit in the system.'''
-        operators = []
-        for qubit in self.network_wires:
-            operators.append(qml.PauliZ(wires=qubit) @ qml.PauliX(wires=bath_qubit))
-        return sum(operators)
-    
-    def get_X_res(self):
-        '''Return the XY coupling between qubits i and j with a coefficient function.'''
-        return (qml.PauliX(wires=r) for r in [*self.reserv_qubits])
-
-    def modulated_coupling(self, bath_idx, time_step, tau, delta_phi):
-        """
-        Modulate the coupling strength of the bath qubits at a given time step.
-
-        Args:
-            bath_idx (int): Index of the bath qubit.
-            time_step (int): Current time step.
-            tau (float): Duration of the time step.
-            delta_phi (float): Phase offset for modulation.
-
-        Returns:
-            float: Modulated coupling strength for the bath qubit.
-        """
-        # Oscillatory modulation based on time
-        modulation = jnp.cos(time_step * delta_phi[bath_idx] * tau)
-        return self.gamma_local[bath_idx] * modulation
-    
-        
-
-    @staticmethod
-    def compute_distances(positions):
-        """Compute pairwise distances between bath qubits."""
-        pos = jnp.array(positions)
-        return jnp.sqrt(((pos[:, None, :] - pos[None, :, :]) ** 2).sum(axis=-1))
-
-    @staticmethod
-    def generate_spectral_matrix_from_distances(distances, scale=1.0):
-        """Generate a bath-bath interaction matrix based on distances."""
-        return scale * jnp.exp(-distances)
-
-    @staticmethod
-    def generate_spectral_matrix(num_bath, spectral_exponent, key, scale=1.0):
-        """Generate a spectral density-based bath-bath interaction matrix."""
-        freqs = jax.random.uniform(key, shape=(num_bath, num_bath))
-        spectral_matrix = freqs ** (-spectral_exponent)
-        spectral_matrix = (spectral_matrix + spectral_matrix.T) / 2  # Symmetrize
-        return scale * spectral_matrix / jnp.max(jnp.abs(spectral_matrix))
-    
-    def get_total_hamiltonian_components_new(self):
-        coefficients = []
-        operators = []
-
-        
-        # Add h_x, h_y, and h_z terms for the reservoir qubits
-        coefficients.append(qml.pulse.constant)  # h_x
-        operators.append(sum(qml.PauliX(wires=r) for r in self.reserv_qubits))
-
-        coefficients.append(qml.pulse.constant)  # h_y
-        operators.append(sum(qml.PauliY(wires=r) for r in self.reserv_qubits))
-
-        coefficients.append(qml.pulse.constant)  # h_z
-        operators.append(sum(qml.PauliZ(wires=r) for r in self.reserv_qubits))
-        
-        # Add XY coupling terms for each control-reservoir pair
-        for i, qubit_a in enumerate(self.reserv_qubits):
-            for j, qubit_b in enumerate(self.ctrl_qubits):
-                coefficients.append(qml.pulse.constant)  # Use constant for J coefficients
-                operators.append(self.get_XY_coupling(qubit_a, qubit_b))  # Add XY coupling operator
-
-        
-        # Construct the dynamic Hamiltonian
-        H_dynamic = qml.dot(coefficients, operators)
-
-        # Construct the static Hamiltonian
-        static_coefficients = [
-            self.k_coefficient[qa, qb]
-            for qa in range(len(self.reserv_qubits))
-            for qb in range(len(self.reserv_qubits))
-            if qa != qb
-        ]
-        static_operators = [
-            self.get_XY_coupling(self.reserv_qubits[qa], self.reserv_qubits[qb])
-            for qa in range(len(self.reserv_qubits))
-            for qb in range(len(self.reserv_qubits))
-            if qa != qb
-        ]
-        if self.N_reserv == 1:
-            total_H = H_dynamic
-        
-        else:
-            H_static = qml.dot(static_coefficients, static_operators)
-            total_H = H_dynamic+H_static
-        
-        return total_H
-    
-    def get_H_bath(self):
-        def bath_sys_coupling(idx, t, delta_phi):
-            """Apply slow oscillatory modulation to coupling strengths."""
-            return self.gamma_local[idx] * jnp.cos(t * delta_phi[idx])
-       
-        coefficients,operators = [],[]
-        if self.time_dependent_bath:
-            for idx, bath_qubit in enumerate(self.bath_qubits):
-                def bath_sys_coupling(t):
-                    return self.gamma_local[idx] * jnp.cos(2 * jnp.pi * t / self.steps)
-
-                coefficients.append(bath_sys_coupling)
-                operators.append(self.get_ZX_coupling(bath_qubit))
-        else:
-            for idx, bath_qubit in enumerate(self.bath_qubits):
-                coefficients.append(self.gamma_local[idx])
-                operators.append(self.get_ZX_coupling(bath_qubit))
-
-        
-        # Add symmetric bath-bath interactions
-        for i,bath_qubit_i in enumerate(self.bath_qubits):
-            for j,bath_qubit_j in enumerate(self.bath_qubits):
-                if bath_qubit_i != bath_qubit_j and bath_qubit_i<bath_qubit_j:
-                    coefficients.append(self.bath_bath_interactions[i, j])
-                    new_operator = self.get_ZZ_coupling(bath_qubit_i, bath_qubit_j)
-                    operators.append(new_operator)
-        H_bath = qml.dot(coefficients, operators)
-        return H_bath
-
-  
-
 def array(a,dtype):
     return np.asarray(a, dtype=np.float32)
 def Array(a,dtype):
@@ -445,7 +229,7 @@ def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.25,deb
     
     
     norm_factor = global_norm / jnp.sqrt(N_params)
-    print(f"global_norm: {global_norm:.5f}, norm factor= {norm_factor:.5f}")
+    # print(f"global_norm: {global_norm:.5f}, norm factor= {norm_factor:.5f}")
     normalized_abs = grad_magnitudes / (norm_factor + 1e-8)
     median_norm = jnp.quantile(normalized_abs, 0.5)
    
@@ -453,7 +237,7 @@ def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.25,deb
     r = MAD_norm+median_norm
     # r = 0.1* (MAD+median_grad)/2
 
-    print(f"grad_magnitudes: {grad_magnitudes}")
+    # print(f"grad_magnitudes: {grad_magnitudes}")
     lr_tree2 = jax.tree_util.tree_map(lambda g:  0.1 * (r/ (g + r )), grad_magnitudes)
     lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
     # print(f"og: {lr_tree}")
@@ -466,6 +250,472 @@ def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.25,deb
         print(f"Final lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
         print(lr_tree)
     return lr_tree
+def generate_physical_bath_matrix(
+    num_bath: int,
+    key: jax.random.PRNGKey,
+    scale: float = 1.0,
+    spectral_exponent: float = 1.0,
+    positions: jnp.ndarray = None,
+    alpha_dist: float = 1.0,
+    freq_range: tuple = (0.2, 1.0),
+):
+    r"""
+    Build a matrix \Lambda of shape (num_bath, num_bath) with:
+    - Diagonal elements = local fields \Omega_i (drawn from a distribution).
+    - Off-diagonal elements = coupling g_{ij} (distance- or frequency-based).
+    
+    Parameters
+    ----------
+    num_bath : int
+        Number of bath qubits.
+    key : jax.random.PRNGKey
+        PRNG key for reproducibility.
+    scale : float
+        Global scale factor for all elements of \Lambda.
+    spectral_exponent : float
+        If positions=None, we sample local frequencies from freq^( - spectral_exponent ).
+    positions : jnp.ndarray or None
+        If provided, shape must be (num_bath, D). Used to compute distances.
+        If None, we do not use geometry-based couplings.
+    alpha_dist : float
+        Exponential decay factor for distance-based couplings, if positions is given.
+    freq_range : (float, float)
+        Range of local bath frequencies if we do a direct uniform sample (for diagonal).
+    
+    Returns
+    -------
+    bath_matrix : jnp.ndarray
+        (num_bath, num_bath) matrix with physically motivated local fields on diagonal
+        and pairwise couplings off-diagonal. No zeroing of diagonal.
+    """
+    # -----------------------------------------------------
+    # Step 1: sample local fields (the diagonal) from a power law or uniform distribution
+    # -----------------------------------------------------
+    subkey_fields, subkey_couplings = jax.random.split(key, 2)
+
+    # Example A: Uniform in freq_range, then maybe transform if you want
+    # local_freqs in [freq_min, freq_max]
+    rand_vals = jax.random.uniform(subkey_fields, shape=(num_bath,))
+    local_freqs = freq_range[0] + (freq_range[1] - freq_range[0]) * rand_vals
+
+    # If you want them "Ohmic" or "sub-Ohmic", you can do freq^(-spectral_exponent):
+    #     local_freqs = local_freqs ** (-spectral_exponent)
+    # Or you can do something else.  We'll skip that for now:
+    # local_freqs = local_freqs ** (-spectral_exponent)
+
+    # Diagonal = these local frequencies (times scale).
+    diag_terms = local_freqs
+
+    # -----------------------------------------------------
+    # Step 2: define how to compute off-diagonal couplings
+    # -----------------------------------------------------
+    bath_matrix = jnp.zeros((num_bath, num_bath))
+
+    # We'll fill in the diagonal now:
+    bath_matrix += jnp.diag(diag_terms)
+
+    # If positions is provided: use distance-based decay, e.g. exp(-alpha_dist * dist_ij)
+    # plus a factor from local_freqs if you want that correlation
+    if positions is not None:
+        # positions shape: (num_bath, D)
+        diffs = positions[:, None, :] - positions[None, :, :]
+        distances = jnp.sqrt(jnp.sum(diffs**2, axis=-1))  # shape: (num_bath, num_bath)
+
+        # For i != j: g_{ij} = scale * [some function of local_freqs[i], local_freqs[j]] * e^{-alpha_dist * r_ij}
+        # Example: g_{ij} = sqrt(omega_i * omega_j) * e^{-alpha_dist * r_ij}
+        # or maybe just e^{-alpha_dist * r_ij}.  Up to you.
+        # We'll do sqrt(...) version to reflect some spectral correlation.
+        g_offdiag = (
+            jnp.sqrt(local_freqs[:, None] * local_freqs[None, :]) * jnp.exp(-alpha_dist * distances)
+        )
+
+        # The diagonal of distances is zero, so that might produce large self-couplings.
+        # We'll preserve the diagonal from diag_terms, so we can fill off-diagonal only.
+        # We do "where = i!=j" to avoid double counting. We'll keep it symmetrical below.
+        i_idx, j_idx = jnp.triu_indices(num_bath, k=1)  # upper triangle
+        bath_matrix = bath_matrix.at[i_idx, j_idx].set(
+            scale * g_offdiag[i_idx, j_idx]
+        )
+        bath_matrix = bath_matrix.at[j_idx, i_idx].set(
+            scale * g_offdiag[j_idx, i_idx]
+        )
+
+    else:
+        # No geometry -> define a purely "spectral" correlation approach
+        # e.g. off-diagonal g_{ij} = scale * sqrt(freq_i * freq_j)
+        # or freq^( - spectral_exponent ), etc.
+
+        # Typically you might do something like:
+        g_offdiag = jnp.sqrt(local_freqs[:, None] * local_freqs[None, :])
+
+        # Symmetrically fill in:
+        i_idx, j_idx = jnp.triu_indices(num_bath, k=1)
+        bath_matrix = bath_matrix.at[i_idx, j_idx].set(g_offdiag[i_idx, j_idx])
+        bath_matrix = bath_matrix.at[j_idx, i_idx].set(g_offdiag[j_idx, i_idx])
+
+        # Then multiply by a scale factor if you like
+        bath_matrix = bath_matrix * scale
+
+    return bath_matrix
+def generate_system_bath_couplings(
+    num_bath: int,
+    system_wires,            # list or array of system qubit indices
+    key: jax.random.PRNGKey,
+    scale: float = 0.05,
+    bath_factor: float = 1.0,
+    positions_sys: jnp.ndarray = None,   # shape: (num_system, D)
+    positions_bath: jnp.ndarray = None,  # shape: (num_bath, D)
+    alpha_dist: float = 1.0
+):
+    r"""
+    Build a matrix gamma_matrix of shape (num_bath, num_system) with entries gamma[b, k],
+    where:
+      b = index of bath qubit
+      k = index of system qubit (or reservoir qubit) in 'system_wires'
+
+    Options:
+    - If positions_sys and positions_bath are given, use distance-based couplings.
+    - Otherwise, draw random normal or uniform couplings.
+
+    Returns
+    -------
+    gamma_matrix : jnp.ndarray
+        (num_bath, num_system) array of system–bath coupling strengths.
+    """
+    num_system = len(system_wires)
+
+    if (positions_sys is not None) and (positions_bath is not None):
+        # Distance-based approach:
+        #   positions_sys: (num_system, D)
+        #   positions_bath: (num_bath, D)
+        # We'll build gamma[b, k] = scale * exp(-alpha_dist * distance_{b,k})
+        # or possibly multiply by a random factor, up to you.
+        sys_pos = jnp.array(positions_sys)
+        bath_pos = jnp.array(positions_bath)
+
+        # shape: (num_bath, num_system, D)
+        diffs = bath_pos[:, None, :] - sys_pos[None, :, :]
+        # shape: (num_bath, num_system)
+        distances = jnp.sqrt(jnp.sum(diffs**2, axis=-1))
+
+        # Exponential decay with distance, plus optional "bath_factor"
+        gamma_matrix = scale * bath_factor * jnp.exp(-alpha_dist * distances)
+
+    else:
+        # No geometry -> random approach
+        # Example: Normal(mean=scale, std=bath_factor*scale)
+        subkey = jax.random.fold_in(key, 999)
+        random_norm = jax.random.normal(subkey, shape=(num_bath, num_system))
+        gamma_matrix = scale + bath_factor * scale * random_norm
+        # If you want only positive couplings, apply jnp.abs(...) or clamp, etc.
+
+    return gamma_matrix
+class Sim_QuantumReservoir:
+    def __init__(self, params, N_ctrl, N_reserv, num_J, time_steps=1, bath=False, num_bath=0, bath_factor=1.0,
+                 gamma_scale=0.05, lambda_scale=0.01, PRNG_key=jax.random.PRNGKey(0),time_dependent_bath=False, positions=None,
+                 spectral_exponent=2.0):
+        self.bath = bath
+        self.gamma_scale = gamma_scale  # Scale for system-bath coupling
+        self.lambda_scale = lambda_scale  # Scale for bath-bath coupling
+        self.bath_factor = bath_factor
+        self.num_bath = num_bath
+        self.time_dependent_bath = time_dependent_bath
+        self.spectral_exponent = spectral_exponent
+        self.PRNG_key = PRNG_key
+        self.positions = positions
+        self.N_ctrl = N_ctrl
+        self.N_reserv = N_reserv
+        self.reserv_qubits = qml.wires.Wires(list(range(N_ctrl, N_reserv+N_ctrl)))
+        self.ctrl_qubits = qml.wires.Wires(list(range(N_ctrl)))
+
+        # Initialize bath-related properties
+        if bath:
+            self.bath_qubits = qml.wires.Wires(
+                list(range(N_reserv + N_ctrl, N_reserv + N_ctrl + num_bath))
+            )
+            self.network_wires = qml.wires.Wires([*self.ctrl_qubits,*self.reserv_qubits])
+            self.all_wires = qml.wires.Wires([*self.ctrl_qubits,*self.reserv_qubits,*self.bath_qubits])
+   
+            self.N = N_ctrl + N_reserv + num_bath
+            self.dev = qml.device("default.qubit", wires=self.all_wires)
+            
+
+            # Generate local bath couplings (gamma_local)
+            local_sigma = bath_factor * np.abs(gamma_scale)
+            self.gamma_local = jax.random.normal(
+                key=jax.random.fold_in(self.PRNG_key, 0), shape=(num_bath,)
+            ) * local_sigma 
+            self.gamma_matrix = generate_system_bath_couplings(
+                num_bath=num_bath,
+                system_wires=self.network_wires,   # all qubits in the "system" side
+                key=self.PRNG_key,
+                scale=gamma_scale,
+                bath_factor=bath_factor,
+                positions_sys=None,    # If you want geometry-based, pass arrays
+                positions_bath=None,   # or define self.positions_bath
+                alpha_dist=1.0
+            )
+            # Generate bath-bath interaction matrix
+            self.bath_bath_interactions = generate_physical_bath_matrix(
+                num_bath = num_bath,
+                key      = self.PRNG_key,
+                scale    = lambda_scale,
+                spectral_exponent = self.spectral_exponent,
+                positions = positions,        # can be None or an array
+                alpha_dist = 1.0,            # or whatever exponential factor
+                freq_range = (0.2, 1.0),     # or any range you want
+            )
+
+        else:
+            self.N = N_ctrl + N_reserv
+            self.gamma_local =  None
+            self.gamma_matrix =None
+            self.bath_bath_interactions =  None
+            self.dev = qml.device("default.qubit", wires = [*self.ctrl_qubits, *self.reserv_qubits]) 
+        #print(qml.wires.Wires(list(range(self.N))))
+        #print( [*self.ctrl_qubits, *self.reserv_qubits])
+        self.qubits = qml.wires.Wires(list(range(self.N)))
+        # device on which the circuit is executed
+
+        #self.z_bias = params['hz']
+        #self.y_bias = params['hy']
+        self.k_coefficient = params['K_coef']
+        self.steps = time_steps
+
+        #print(params['bath'])
+        self.num_J = num_J
+        self.params = params
+        self.current_index = 0
+        #self.interactions_fixed = interactions
+    
+        
+
+   
+    def get_all_wires(self):
+        return self.qubits            
+    def get_dev(self):
+        return self.dev
+
+    def get_ctrl_wires(self):
+        return self.ctrl_qubits
+
+    def get_reserv_wires(self):
+        return self.reserv_qubits   
+    def get_wires(self):
+        return self.qubits   
+
+    def get_XY_coupling(self, i, j):
+        '''Return the XY coupling between qubits i and j with a coefficient function.'''
+        return ((qml.PauliX(wires=i) @ qml.PauliX(wires=j)) + (qml.PauliY(wires=i) @ qml.PauliY(wires=j)))
+   
+    def get_ZZ_coupling(self, i, j):
+        return qml.PauliZ(wires=i) @ qml.PauliZ(wires=j)
+    def get_ZX_coupling(self, bath_qubit):
+        '''Return the ZX coupling between bath qubit and each qubit in the system.'''
+        operators = []
+        for qubit in self.network_wires:
+            operators.append(qml.PauliZ(wires=qubit) @ qml.PauliX(wires=bath_qubit))
+        return sum(operators)
+    
+    def get_X_res(self):
+        '''Return the XY coupling between qubits i and j with a coefficient function.'''
+        return (qml.PauliX(wires=r) for r in [*self.reserv_qubits])
+
+    def modulated_coupling(self, bath_idx, time_step, tau, delta_phi):
+        """
+        Modulate the coupling strength of the bath qubits at a given time step.
+
+        Args:
+            bath_idx (int): Index of the bath qubit.
+            time_step (int): Current time step.
+            tau (float): Duration of the time step.
+            delta_phi (float): Phase offset for modulation.
+
+        Returns:
+            float: Modulated coupling strength for the bath qubit.
+        """
+        # Oscillatory modulation based on time
+        modulation = jnp.cos(time_step * delta_phi[bath_idx] * tau)
+        return self.gamma_local[bath_idx] * modulation
+    
+
+
+    
+    def get_total_hamiltonian_components(self):
+        coefficients = []
+        operators = []
+
+        
+        # Add h_x, h_y, and h_z terms for the reservoir qubits
+        coefficients.append(qml.pulse.constant)  # h_x
+        operators.append(sum(qml.PauliX(wires=r) for r in self.reserv_qubits))
+
+        coefficients.append(qml.pulse.constant)  # h_y
+        operators.append(sum(qml.PauliY(wires=r) for r in self.reserv_qubits))
+
+        coefficients.append(qml.pulse.constant)  # h_z
+        operators.append(sum(qml.PauliZ(wires=r) for r in self.reserv_qubits))
+        
+        # Add XY coupling terms for each control-reservoir pair
+        for i, qubit_a in enumerate(self.reserv_qubits):
+            for j, qubit_b in enumerate(self.ctrl_qubits):
+                coefficients.append(qml.pulse.constant)  # Use constant for J coefficients
+                operators.append(self.get_XY_coupling(qubit_a, qubit_b))  # Add XY coupling operator
+
+        
+        # Construct the dynamic Hamiltonian
+        H_dynamic = qml.dot(coefficients, operators)
+
+        # Construct the static Hamiltonian
+        static_coefficients = [
+            self.k_coefficient[qa, qb]
+            for qa in range(len(self.reserv_qubits))
+            for qb in range(len(self.reserv_qubits))
+            if qa != qb
+        ]
+        static_operators = [
+            self.get_XY_coupling(self.reserv_qubits[qa], self.reserv_qubits[qb])
+            for qa in range(len(self.reserv_qubits))
+            for qb in range(len(self.reserv_qubits))
+            if qa != qb
+        ]
+        if self.N_reserv == 1:
+            total_H = H_dynamic
+        
+        else:
+            H_static = qml.dot(static_coefficients, static_operators)
+            total_H = H_dynamic+H_static
+        
+        return total_H
+    def get_H_bath_new(self):
+        """Construct the bath part of the Hamiltonian, including:
+        1) System-bath couplings (either time-dependent or not).
+        2) Diagonal local fields from bath_bath_interactions[i, i].
+        3) Off-diagonal pairwise ZZ couplings from bath_bath_interactions[i, j] with i < j.
+        """
+        coefficients = []
+        operators = []
+
+        # ----------------------------------------------------------------
+        # 1) System–bath couplings: gamma_local * (Zsys ⊗ Xbath)
+        # ----------------------------------------------------------------
+        if self.time_dependent_bath:
+            # Time-dependent couplings
+            for b_idx, bath_qubit in enumerate(self.bath_qubits):
+                for k_idx, sys_qubit in enumerate(self.network_wires):
+                    def gamma_fn(t, b=b_idx, k=k_idx):
+                        # example: gamma_matrix[b, k] * cos(2π * t / steps)
+                        return self.gamma_matrix[b, k] * jnp.cos(2.0 * jnp.pi * t / self.steps)
+
+                    coefficients.append(gamma_fn)
+                    operators.append(
+                        qml.PauliZ(wires=sys_qubit) @ qml.PauliX(wires=bath_qubit)
+                )
+        else:
+            # Time-independent couplings
+            for b_idx, bath_qubit in enumerate(self.bath_qubits):
+                for k_idx, sys_qubit in enumerate(self.network_wires):
+                    gamma_val = self.gamma_matrix[b_idx, k_idx]
+                    coefficients.append(gamma_val)
+                    operators.append(
+                        qml.PauliZ(wires=sys_qubit) @ qml.PauliX(wires=bath_qubit)
+                    )
+
+        # ----------------------------------------------------------------
+        # 2) Local field terms (diagonal of bath_bath_interactions)
+        #    Each bath qubit gets Ω_i * Z_i
+        # ----------------------------------------------------------------
+        for i, bath_qubit_i in enumerate(self.bath_qubits):
+            Omega_i = self.bath_bath_interactions[i, i]
+            if Omega_i != 0.0:
+                coefficients.append(Omega_i)
+                operators.append(qml.PauliZ(wires=bath_qubit_i))
+
+        # ----------------------------------------------------------------
+        # 3) Pairwise ZZ couplings (off-diagonal)
+        #    For i < j, g_{ij} * (Z_i ⊗ Z_j)
+        # ----------------------------------------------------------------
+        for i, bath_qubit_i in enumerate(self.bath_qubits):
+            for j, bath_qubit_j in enumerate(self.bath_qubits):
+                if j > i:  # or: if bath_qubit_j > bath_qubit_i
+                    g_ij = self.bath_bath_interactions[i, j]
+                    # Only add if non-zero
+                    if g_ij != 0.0:
+                        coefficients.append(g_ij)
+                        operators.append(
+                            self.get_ZZ_coupling(bath_qubit_i, bath_qubit_j)
+                        )
+                        print(
+                            f"Adding BB interactions for q{bath_qubit_i} and q{bath_qubit_j} "
+                            f"with coeff={g_ij:.3f} (indices {(i,j)})."
+                        )
+
+        # Construct the total bath Hamiltonian
+        H_bath = qml.dot(coefficients, operators)
+        return H_bath
+    def get_H_bath(self):
+        """Construct the bath part of the Hamiltonian, including:
+        1) System-bath couplings (either time-dependent or not).
+        2) Diagonal local fields from bath_bath_interactions[i, i].
+        3) Off-diagonal pairwise ZZ couplings from bath_bath_interactions[i, j] with i < j.
+        """
+        coefficients = []
+        operators = []
+
+        # ----------------------------------------------------------------
+        # 1) System–bath couplings: gamma_local * (Zsys ⊗ Xbath)
+        # ----------------------------------------------------------------
+        if self.time_dependent_bath:
+            # Time-dependent (modulated) couplings
+            for idx, bath_qubit in enumerate(self.bath_qubits):
+                def bath_sys_coupling_fn(t):
+                    # example: gamma_local[idx] * cos(2π * t / total_steps)
+                    return self.gamma_local[idx] * jnp.cos(2.0 * jnp.pi * t / self.steps)
+
+                coefficients.append(bath_sys_coupling_fn)
+                operators.append(self.get_ZX_coupling(bath_qubit))
+        else:
+            # Time-independent couplings
+            for idx, bath_qubit in enumerate(self.bath_qubits):
+                gamma_val = self.gamma_local[idx]
+                coefficients.append(gamma_val)
+                operators.append(self.get_ZX_coupling(bath_qubit))
+
+        # ----------------------------------------------------------------
+        # 2) Local field terms (diagonal of bath_bath_interactions)
+        #    Each bath qubit gets Ω_i * Z_i
+        # ----------------------------------------------------------------
+        for i, bath_qubit_i in enumerate(self.bath_qubits):
+            Omega_i = self.bath_bath_interactions[i, i]
+            if Omega_i != 0.0:
+                coefficients.append(Omega_i)
+                operators.append(qml.PauliZ(wires=bath_qubit_i))
+
+        # ----------------------------------------------------------------
+        # 3) Pairwise ZZ couplings (off-diagonal)
+        #    For i < j, g_{ij} * (Z_i ⊗ Z_j)
+        # ----------------------------------------------------------------
+        for i, bath_qubit_i in enumerate(self.bath_qubits):
+            for j, bath_qubit_j in enumerate(self.bath_qubits):
+                if j > i:  # or: if bath_qubit_j > bath_qubit_i
+                    g_ij = self.bath_bath_interactions[i, j]
+                    # Only add if non-zero
+                    if g_ij != 0.0:
+                        coefficients.append(g_ij)
+                        operators.append(
+                            self.get_ZZ_coupling(bath_qubit_i, bath_qubit_j)
+                        )
+                        print(
+                            f"Adding BB interactions for q{bath_qubit_i} and q{bath_qubit_j} "
+                            f"with coeff={g_ij:.3f} (indices {(i,j)})."
+                        )
+
+        # Construct the total bath Hamiltonian
+        H_bath = qml.dot(coefficients, operators)
+        return H_bath
+
+  
+
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
              gate,gate_name,init_params_dict,dataset_key, bath=False,num_bath = 0,gamma_scale=0.05,
              lambda_scale=0.01, bath_factor= 0.1,time_dependent_bath=False):
@@ -525,9 +775,11 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     
 
 
-    parameterized_ham = sim_qr.get_total_hamiltonian_components_new()
+    parameterized_ham = sim_qr.get_total_hamiltonian_components()
     if sim_qr.bath:
-        H_bath = sim_qr.get_H_bath()
+        # H_bath = sim_qr.get_H_bath()
+        H_bath = sim_qr.get_H_bath_new()
+        print(f"H_bath: {H_bath}")
         total_H = parameterized_ham+H_bath
     else:
         total_H = parameterized_ham
@@ -537,13 +789,15 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     reserv_wires = sim_qr.get_reserv_wires()
     qnode_dev = sim_qr.get_dev()
     all_wires = sim_qr.get_all_wires()
-
+    # print(f"H: {total_H}")
    
 
     @qml.qnode(qnode_dev, interface="jax")
-    def circuit(params,state_input):
+    def circuit(params, state_input):
+        # print("DEBUG: params.shape =", np.array(params).shape)
         
         taus = params[:time_steps]
+        # print("DEBUG: type(taus) =", type(taus))
 
         qml.StatePrep(state_input, wires=[*ctrl_wires])
         
@@ -558,7 +812,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
             # Concatenate hx_array with J_values
             current_step = np.concatenate([J_values,hx_array,hy_array,hz_array])
             
-            qml.evolve(parameterized_ham)(current_step, t=tau)
+            qml.evolve(total_H)(current_step, t=tau)
             
         return qml.density_matrix(wires=[*ctrl_wires])
     
@@ -568,7 +822,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     num_gates = specs['resources'].num_gates
 
     # print(f"spcs: {specs_func(params,input_states[0])}")
-    
+    # print(f"Running circuit without JIT:{circuit(params, input_states[0])}")
+    # out = circuit(params, input_states[0])
     jit_circuit = jax.jit(circuit)
     vcircuit = jax.vmap(jit_circuit, in_axes=(None, 0))
     def batched_cost_helper(params, X, y):
@@ -584,6 +839,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     @jit
     def cost_func(params,input_states, target_states):
         params = jnp.asarray(params, dtype=jnp.float64)
+        # params = jnp.reshape(params, (-1,))
         X = jnp.asarray(input_states, dtype=jnp.complex128)
         y = jnp.asarray(target_states, dtype=jnp.complex128)
         # Process the batch of states
@@ -608,32 +864,19 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     @jit
     def update(params, opt_state, input_states, target_states, value):
         """Update all parameters including tau."""
-        # params = jnp.asarray(params, dtype=jnp.float64)
-        # input_states = jnp.asarray(input_states, dtype=jnp.complex128)
-        # target_states = jnp.asarray(target_states, dtype=jnp.complex128)
+        
         loss, grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
-        if not isinstance(opt_state[-1], optax.contrib.ReduceLROnPlateauState):
-            updates, opt_state = opt.update(grads, opt_state, params)
-        else:
-            updates, opt_state = opt.update(grads, opt_state, params=params, value=value)
+        updates, opt_state = opt.update(grads, opt_state, params=params, value=value)
         new_params = optax.apply_updates(params, updates)
         # Ensure outputs are float64
         loss = jnp.asarray(loss, dtype=jnp.float64)
         grads = jnp.asarray(grads, dtype=jnp.float64)
         return new_params, opt_state, loss, grads
-
-
-    # print(total_H)
-    # if opt_lr == None:
-    #     s = time.time()
-    #     init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
-    #     e = time.time()
-    #     dt = e - s
+\
         
-    #     opt_lr,grad_norm = get_initial_learning_rate(init_grads)
-        # print(f"Adjusted initial learning rate: {opt_lr}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm}")
         
-    
+    #     return new_params, opt_state, loss, grads
+
     
     if opt_lr == None:
         # s = time.time()
@@ -644,8 +887,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
         # raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
         opt_lr = get_initial_lr_per_param(
             init_grads,
-            base_step=0.001,
+            base_step=0.005,
             max_lr=0.2,
+            debug=False
 
         )
        
@@ -655,19 +899,28 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     opt_descr = 'per param'
     
     print("________________________________________________________________________________")
-    print(f"Gamma scale: {gamma_scale} -- gamma local: {sim_qr.gamma_local}")
-    print(f"Lambda scale: {lambda_scale}")
-    print(f"Bath Factor (general bath scalar): {bath_factor}")
-    print(f"B-B Interactions: {sim_qr.bath_bath_interactions}")
-    print("H: ",total_H)
+    print(f"\nStarting optimization for {gate_name} with optimal lr {jnp.mean(opt_lr):.4e} time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
+    bath_stats = {}
+    bath_stats['gamma_matrix'] = sim_qr.gamma_matrix
+    bath_stats['bath_bath_int'] = sim_qr.bath_bath_interactions
+   
+    if sim_qr.bath_bath_interactions is not None:
+        print(f"Gamma scale: {gamma_scale} -- gamma local: {sim_qr.gamma_local}")
+        print(f"Lambda scale: {lambda_scale}")
+        print(f"Bath Factor (general bath scalar): {bath_factor}")
+        print(f"B-B Interactions {sim_qr.bath_qubits}: {sim_qr.bath_bath_interactions}")
+        
+
+   
+
+    # print("H: ",total_H)
     specs = specs_func(params,input_states[0])
     circuit_depth = specs['resources'].depth
     gate_count = specs['resources'].num_gates
-    print(f"Depth: {circuit_depth}, gates: {gate_count}, Number of trainable parameters: {len(params)}")
+    # print(f"Depth: {circuit_depth}, gates: {gate_count}, Number of trainable parameters: {len(params)}")
 
-    print(f"\nStarting optimization for {gate_name} with optimal lr {opt_lr} time_steps = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
     
-    print(f"initial loss: {init_loss}")
+    # print(f"initial loss: {init_loss}")
     
     
    
@@ -699,8 +952,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     prev_cost = float('inf')  # Initialize with infinity
     consecutive_improvement_count = 0
     cost_threshold = 1e-5
+    threshold_counts = 0
     consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
-    backup_params = None
+    backup_params = init_params
     improvement = True
     backup_cost = float('inf')  
     epoch = 0
@@ -756,7 +1010,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
         grads_per_epoch.append(grad)
         # Logging
         max_abs_grad = jnp.max(jnp.abs(grad))
-        if epoch == 0 or (epoch + 1) % 250 == 0:
+        if epoch == 0 or (epoch + 1) % 200 == 0:
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
             e = time.time()
@@ -869,7 +1123,10 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
             'specs':specs,
                 'epochs': num_epochs,
                 'lrs': learning_rates,
-              
+                'bath_stats':bath_stats,
+                'gamma_scale':gamma_scale,
+                'lambda_scale':lambda_scale,
+                'bath_factor':bath_factor,
                 'scale_reduction_epochs': scale_reduction_epochs,  # Add epochs of scale reduction
                 'rocs':rocs,
                 'min_var_indices':min_var_indices,
@@ -905,7 +1162,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
                 
                 
             }
-    print(f"Saving results to {filename}")
+    print(f"Saving results to {filename}\n\n")
     df = pd.DataFrame([data])
     while os.path.exists(filename):
         name, ext = filename.rsplit('.', 1)
@@ -926,11 +1183,11 @@ if __name__ == '__main__':
 
 
     # run below 
-    N_ctrl = 2
+    N_ctrl = 1
     
     # trots = [1,2,3,4,5]
     trots = [2,4,6,8,10]
-    # trots = [3]
+    trots = [1,3]
     res = [1]
 
     # trots = [1,4,6,8,10,12,14]
@@ -946,7 +1203,7 @@ if __name__ == '__main__':
     # gamma_scale_values = [0.05, 0.1, 0.2]  # System-bath coupling scale
     # lambda_scale_values = [0.01, 0.05, 0.1]  # Bath-bath coupling scale
     gamma_scale_values = [0.01]  # System-bath coupling scale
-    lambda_scale_values = [0.1,0.5]  # Bath-bath coupling scale
+    lambda_scale_values = [0.1]  # Bath-bath coupling scale
     bath_factor = 1.0
     time_dependent_bath = False
     if time_dependent_bath:
@@ -954,17 +1211,17 @@ if __name__ == '__main__':
                    'gamma_{gamma_scale}/lambda_{lambda_scale}/'
         )
     else:
-        base_folder_template = (f'./analog_results_trainable_baths/trainsize_{N_train}_epoch{num_epochs}_per_param_opt/bath_factor_{{bath_factor}}/'
+        base_folder_template = (f'./analog_results_trainable_baths_realistic/trainsize_{N_train}_epoch{num_epochs}_per_param_opt/bath_factor_{{bath_factor}}/'
                     'gamma_{gamma_scale}/lambda_{lambda_scale}/'
             )
    
 
     gates_random = []
     
-    # baths = [False]
-    # num_baths = [0]
-    baths = [False,True,True]
-    num_baths = [0,1,2]
+    baths = [False,True]
+    num_baths = [0,1]
+    # baths = [False,True,True]
+    # num_baths = [0,1,2]
     for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         #pprint(Matrix(np.array(U)))
@@ -1017,7 +1274,8 @@ if __name__ == '__main__':
                                 # Combine the two parts
                                 params = jnp.concatenate([time_step_params, main_params])
                                 # params = jnp.asarray([0.4033546149730682, 1.4487122297286987, 2.3020467758178711, 2.9035964012145996, 0.9584765434265137, 1.7428307533264160, -1.3020169734954834, -0.8775904774665833, 2.4736261367797852, -0.4999605417251587, -0.8375297188758850, 1.7014273405075073, -0.8763229846954346, -3.1250307559967041, 1.1915868520736694, -0.4640290737152100, -1.0656110048294067, -2.6777451038360596, -2.7820897102355957, -2.3751690387725830, 0.1393062919378281])
-                                print(f"time_step_params: {time_step_params}")
+                                # print(f"time_step_params: {time_step_params}")
+                                # print(params)
 
                                 run_test(
                                         params=params, 
