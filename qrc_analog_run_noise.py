@@ -412,8 +412,9 @@ def generate_system_bath_couplings(
     return gamma_matrix
 class Sim_QuantumReservoir:
     def __init__(self, params, N_ctrl, N_reserv, num_J, time_steps=1, bath=False, num_bath=0, bath_factor=1.0,
-                 gamma_scale=0.05, lambda_scale=0.01, PRNG_key=jax.random.PRNGKey(0),time_dependent_bath=False, positions=None,
-                 spectral_exponent=2.0):
+                 gamma_scale=0.05, lambda_scale=0.01, PRNG_key=jax.random.PRNGKey(0),time_dependent_bath=False, positions_sys=None,
+                 positions_bath=None,
+                 spectral_exponent=1.0):
         self.bath = bath
         self.gamma_scale = gamma_scale  # Scale for system-bath coupling
         self.lambda_scale = lambda_scale  # Scale for bath-bath coupling
@@ -422,7 +423,8 @@ class Sim_QuantumReservoir:
         self.time_dependent_bath = time_dependent_bath
         self.spectral_exponent = spectral_exponent
         self.PRNG_key = PRNG_key
-        self.positions = positions
+        self.positions_bath = positions_bath
+        self.positions_sys = positions_sys
         self.N_ctrl = N_ctrl
         self.N_reserv = N_reserv
         self.reserv_qubits = qml.wires.Wires(list(range(N_ctrl, N_reserv+N_ctrl)))
@@ -451,8 +453,8 @@ class Sim_QuantumReservoir:
                 key=self.PRNG_key,
                 scale=gamma_scale,
                 bath_factor=bath_factor,
-                positions_sys=None,    # If you want geometry-based, pass arrays
-                positions_bath=None,   # or define self.positions_bath
+                positions_sys=self.positions_sys,    # If you want geometry-based, pass arrays
+                positions_bath=self.positions_bath,   # or define self.positions_bath
                 alpha_dist=1.0
             )
             # Generate bath-bath interaction matrix
@@ -461,7 +463,7 @@ class Sim_QuantumReservoir:
                 key      = self.PRNG_key,
                 scale    = lambda_scale,
                 spectral_exponent = self.spectral_exponent,
-                positions = positions,        # can be None or an array
+                positions = self.positions_bath,        # can be None or an array
                 alpha_dist = 1.0,            # or whatever exponential factor
                 freq_range = (0.2, 1.0),     # or any range you want
             )
@@ -713,12 +715,183 @@ class Sim_QuantumReservoir:
         # Construct the total bath Hamiltonian
         H_bath = qml.dot(coefficients, operators)
         return H_bath
+    def describe_bath_interactions_analog(self, analytical=True):
+        """
+        Summarize the system-bath and bath-bath interactions in an 'analog' style.
+
+        Args:
+            analytical (bool): If True, return symbolic variable names. If False, return numeric values.
+        
+        Returns:
+            str: A multi-line string describing the bath interactions.
+        """
+        if not self.bath or self.num_bath == 0:
+            return "No bath qubits present. No system–bath or bath–bath interactions."
+
+        interaction_terms = []
+
+        # -------------------------
+        # 1) System–Bath Interactions
+        # gamma_matrix[b, s] => \sigma^z_{s} \otimes \sigma^x_{b}
+        # s runs over self.network_wires, b runs over self.bath_qubits
+        # -------------------------
+        if self.gamma_matrix is not None:
+            nb, nsys = self.gamma_matrix.shape
+            for b_idx in range(nb):
+                bath_q = self.bath_qubits[b_idx]
+                for s_idx in range(nsys):
+                    if analytical:
+                        coupling_str = f"γ_{{b={b_idx},s={s_idx}}}"
+                    else:
+                        val = float(self.gamma_matrix[b_idx, s_idx])
+                        coupling_str = f"{val:.2e}"
+                    interaction_terms.append(
+                        f"{coupling_str} * [Z({s_idx}) @ X({bath_q})]"
+                    )
+        else:
+            interaction_terms.append("No system–bath couplings (gamma_matrix is None).")
+
+        # -------------------------
+        # 2) Bath–Bath Interactions
+        # bath_bath_interactions[i, j] => \sigma^z_i \otimes \sigma^z_j
+        # i, j run over self.bath_qubits
+        # -------------------------
+        if (self.bath_bath_interactions is not None and
+            isinstance(self.bath_bath_interactions, jnp.ndarray)):
+
+            for i in range(self.num_bath):
+                for j in range(i+1, self.num_bath):
+                    val = self.bath_bath_interactions[i, j]
+                    if abs(val) < 1e-14:
+                        # skip near-zero couplings
+                        continue
+                    if analytical:
+                        coeff_str = f"Λ_{{{i},{j}}}"
+                    else:
+                        coeff_str = f"{float(val):.2e}"
+                    bq_i = self.bath_qubits[i]
+                    bq_j = self.bath_qubits[j]
+                    interaction_terms.append(
+                        f"{coeff_str} * [Z({bq_i}) @ Z({bq_j})]"
+                    )
+        else:
+            interaction_terms.append("No bath–bath couplings (bath_bath_interactions is None or empty).")
+
+        if len(interaction_terms) == 0:
+            return "No bath interactions present."
+
+        # Format
+        return "Bath Interactions (Analog):\n  " + "\n  ".join(interaction_terms)
+    def describe_analog_hamiltonian(self, x_coeff, y_coeff, z_coeff, J_coeffs, analytical=True):
+        """
+        Provide a high-level description of the entire analog Hamiltonian, including:
+        - Local fields on reservoir qubits
+        - Reservoir–reservoir couplings (K_coef)
+        - System–bath couplings (gamma_matrix)
+        - Bath–bath interactions (bath_bath_interactions)
+        - Control–reservoir XY couplings (J_coeffs)
+        
+        This parallels the digital version but references the analog variables
+        in self.
+        
+        Args:
+            x_coeff: numeric or symbolic X-field coefficient for reservoir qubits
+            y_coeff: numeric or symbolic Y-field coefficient for reservoir qubits
+            z_coeff: numeric or symbolic Z-field coefficient for reservoir qubits
+            J_coeffs: array of shape (num_J,) with control–reservoir XY couplings
+            analytical (bool): If True, return symbolic strings; if False, numeric.
+
+        Returns:
+            str: multi-line string describing the Hamiltonian terms.
+        """
+        h_terms = []
+
+        # 1) Local fields on reservoir qubits: x_coeff, y_coeff, z_coeff
+        for r in self.reserv_qubits:
+            if analytical:
+                h_terms.append(f"hx * X({r})")
+                h_terms.append(f"hy * Y({r})")
+                h_terms.append(f"hz * Z({r})")
+            else:
+                h_terms.append(f"{x_coeff} * X({r})")
+                h_terms.append(f"{y_coeff} * Y({r})")
+                h_terms.append(f"{z_coeff} * Z({r})")
+
+        # 2) Reservoir–Reservoir couplings: self.k_coefficient => XY couplings
+        # K_{a,b} * (X(a) X(b) + Y(a) Y(b))
+        if self.N_reserv > 1:
+            for i in range(self.N_reserv):
+                for j in range(i+1, self.N_reserv):
+                    k_val = self.k_coefficient[i, j]
+                    q_i = self.reserv_qubits[i]
+                    q_j = self.reserv_qubits[j]
+                    if analytical:
+                        k_str = f"K_{{r={i},{j}}}"
+                    else:
+                        k_str = f"{float(k_val):.2e}"
+                    h_terms.append(
+                        f"{k_str} * [X({q_i})@X({q_j}) + Y({q_i})@Y({q_j})]"
+                    )
+
+        # 3) Control–Reservoir couplings: J_coeffs => for each reservoir qubit + each control qubit
+        # J_{(a, c)} * (X(a) X(c) + Y(a) Y(c))
+        idx = 0
+        for i, rsv_q in enumerate(self.reserv_qubits):
+            for c_q in self.ctrl_qubits:
+                val = J_coeffs[idx]
+                idx += 1
+                if analytical:
+                    j_str = f"J_{{r={i},c={c_q}}}"
+                else:
+                    j_str = f"{float(val):.2e}"
+                h_terms.append(
+                    f"{j_str} * [X({rsv_q})@X({c_q}) + Y({rsv_q})@Y({c_q})]"
+                )
+
+        # 4) System–Bath couplings: self.gamma_matrix => Z(s) X(b)
+        #    s in [self.ctrl_qubits + self.reserv_qubits], b in self.bath_qubits
+        if self.bath and self.gamma_matrix is not None:
+            nb, nsys = self.gamma_matrix.shape
+            for b_idx in range(nb):
+                bq = self.bath_qubits[b_idx]
+                for s_idx in range(nsys):
+                    val = self.gamma_matrix[b_idx, s_idx]
+                    if analytical:
+                        gamma_str = f"γ_{{b={b_idx},s={s_idx}}}"
+                    else:
+                        gamma_str = f"{float(val):.2e}"
+                    h_terms.append(
+                        f"{gamma_str} * [Z({s_idx})@X({bq})]"
+                    )
+
+        # 5) Bath–Bath interactions: self.bath_bath_interactions => ZZ
+        if self.bath and self.bath_bath_interactions is not None:
+            if isinstance(self.bath_bath_interactions, jnp.ndarray) and self.num_bath > 1:
+                for i in range(self.num_bath):
+                    for j in range(i+1, self.num_bath):
+                        val = self.bath_bath_interactions[i, j]
+                        bq_i = self.bath_qubits[i]
+                        bq_j = self.bath_qubits[j]
+                        if abs(val) < 1e-14:
+                            continue
+                        if analytical:
+                            lambd_str = f"Λ_{{b={i},{j}}}"
+                        else:
+                            lambd_str = f"{float(val):.2e}"
+                        h_terms.append(
+                            f"{lambd_str} * [Z({bq_i})@Z({bq_j})]"
+                        )
+
+        if len(h_terms) == 0:
+            return "H_analog: ( no terms )"
+        joined_terms = " + \n    ".join(h_terms)
+        return f"H_analog: (\n    {joined_terms}\n)"
 
   
 
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
              gate,gate_name,init_params_dict,dataset_key, bath=False,num_bath = 0,gamma_scale=0.05,
-             lambda_scale=0.01, bath_factor= 0.1,time_dependent_bath=False):
+             lambda_scale=0.01, bath_factor= 0.1,time_dependent_bath=False,positions_sys=None,positions_bath=None,spectral_exponent=1.0):
     float32=''
     opt_lr = None
     preopt_results = None
@@ -756,7 +929,10 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
                                   lambda_scale=lambda_scale,
                                   PRNG_key=dataset_key,
                                   time_dependent_bath=time_dependent_bath,
-                                  positions=None,)
+                                  positions_sys=positions_sys,
+                                  positions_bath=positions_bath,
+                                  spectral_exponent=spectral_exponent
+                                  )
     
 
     init_params = params
@@ -779,8 +955,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     if sim_qr.bath:
         # H_bath = sim_qr.get_H_bath()
         H_bath = sim_qr.get_H_bath_new()
-        print(f"H_bath: {H_bath}")
-        total_H = parameterized_ham+H_bath
+        # print(f"H_bath: {H_bath}")
+        # total_H = parameterized_ham+H_bath
+        total_H = H_bath+parameterized_ham
     else:
         total_H = parameterized_ham
 
@@ -872,7 +1049,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
         loss = jnp.asarray(loss, dtype=jnp.float64)
         grads = jnp.asarray(grads, dtype=jnp.float64)
         return new_params, opt_state, loss, grads
-\
+
         
         
     #     return new_params, opt_state, loss, grads
@@ -887,7 +1064,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
         # raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
         opt_lr = get_initial_lr_per_param(
             init_grads,
-            base_step=0.005,
+            base_step=0.01,
             max_lr=0.2,
             debug=False
 
@@ -903,13 +1080,21 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
     bath_stats = {}
     bath_stats['gamma_matrix'] = sim_qr.gamma_matrix
     bath_stats['bath_bath_int'] = sim_qr.bath_bath_interactions
-   
+    bath_stats['positions_sys'] = sim_qr.positions_sys
+    bath_stats['positions_bath'] = sim_qr.positions_bath
     if sim_qr.bath_bath_interactions is not None:
-        print(f"Gamma scale: {gamma_scale} -- gamma local: {sim_qr.gamma_local}")
+        print(f"Gamma scale: {gamma_scale}")
         print(f"Lambda scale: {lambda_scale}")
-        print(f"Bath Factor (general bath scalar): {bath_factor}")
-        print(f"B-B Interactions {sim_qr.bath_qubits}: {sim_qr.bath_bath_interactions}")
-        
+        # print(f"Bath Factor (general bath scalar): {bath_factor}")
+        # print(f"B-B Interactions {sim_qr.bath_qubits}: {sim_qr.bath_bath_interactions}")
+    idx = 0
+    hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
+    hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
+    hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
+    J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
+    hamiltonian_str = sim_qr.describe_analog_hamiltonian(hx_array, hy_array, hz_array, J_values,analytical=False)
+    interaction_description = sim_qr.describe_bath_interactions_analog(analytical=False)
+    print(interaction_description)
 
    
 
@@ -1052,7 +1237,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,
             # current_cost_check = cost
             current_cost_check = cost_func(params, input_states,target_states)
             backup_cost_check = cost_func(backup_params, input_states,target_states)
-            if np.abs(backup_cost_check-backup_cost) > 1e-6:
+            if np.abs(backup_cost_check-backup_cost) > 1e-6 and epoch > 2:
                 print(f"Back up cost different then its check. diff: {backup_cost_check-backup_cost:.3e}\nbackup params: {backup_params}")
             if current_cost_check < backup_cost:
                 # print(f"Epoch {epoch}: Valid improvement found. Updating backup params: {backup_cost:.2e} > {current_cost_check:.2e}")
@@ -1183,11 +1368,11 @@ if __name__ == '__main__':
 
 
     # run below 
-    N_ctrl = 1
+    N_ctrl = 2
     
     # trots = [1,2,3,4,5]
     trots = [2,4,6,8,10]
-    trots = [1,3]
+    trots = [4,6]
     res = [1]
 
     # trots = [1,4,6,8,10,12,14]
@@ -1203,7 +1388,7 @@ if __name__ == '__main__':
     # gamma_scale_values = [0.05, 0.1, 0.2]  # System-bath coupling scale
     # lambda_scale_values = [0.01, 0.05, 0.1]  # Bath-bath coupling scale
     gamma_scale_values = [0.01]  # System-bath coupling scale
-    lambda_scale_values = [0.1]  # Bath-bath coupling scale
+    lambda_scale_values = [0.5]  # Bath-bath coupling scale
     bath_factor = 1.0
     time_dependent_bath = False
     if time_dependent_bath:
@@ -1218,8 +1403,12 @@ if __name__ == '__main__':
 
     gates_random = []
     
-    baths = [False,True]
-    num_baths = [0,1]
+    # baths = [False,True]
+    # num_baths = [0,1]
+    baths = [True]
+    num_baths = [1]
+    baths = [True]
+    num_baths = [2]
     # baths = [False,True,True]
     # num_baths = [0,1,2]
     for i in range(20):
@@ -1267,8 +1456,11 @@ if __name__ == '__main__':
                                 
                                 
                                 time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
-                                init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
-                                
+                                K_half = jax.random.uniform(params_subkey1, (N, N))
+                                K = (K_half + K_half.T) / 2  # making the matrix symmetric
+                                K = 2. * K - 1.
+                                init_params_dict = {'K_coef': jnp.asarray(K)}
+                            
 
 
                                 # Combine the two parts
@@ -1294,7 +1486,10 @@ if __name__ == '__main__':
                                         gamma_scale=gamma_scale, 
                                         lambda_scale=lambda_scale, 
                                         bath_factor=bath_factor, 
-                                        time_dependent_bath=time_dependent_bath
+                                        time_dependent_bath=time_dependent_bath,
+                                        positions_sys=None,
+                                        positions_bath=None,
+                                        spectral_exponent=1.0
                                         
                                     )
 
