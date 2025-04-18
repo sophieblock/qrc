@@ -343,7 +343,7 @@ def process_and_cache_new_files_dqfim(base_path,
 # 4) update_cached_data_dqfim: Re-check an existing file for new fixed_param/test_key
 ###############################################################################
 def update_cached_data_dqfim(data_file, cached_data, processed_files, 
-                             N_ctrl, threshold, n_reserv, trotter_steps):
+                             N_ctrl, threshold):
     """
     Load the data_file, compare structure vs. cached_data[file_id]["raw_keys"].
     If new param/test keys appear, re-run process_data_dqfim and update.
@@ -422,12 +422,15 @@ def update_cache_with_new_data_dqfim(base_path,
                 continue
 
             if file_id in cached_data:
+
                 updated = update_cached_data_dqfim(
                     data_file, 
                     cached_data, 
                     processed_files,
                     N_ctrl,
-                    threshold
+                    threshold,
+                    # n_reserv=n_reserv,
+                    # trotter_steps=
                 )
                 if updated:
                     row_data = cached_data[file_id]["processed_data"]
@@ -625,13 +628,13 @@ def maybe_rebuild_or_process_dqfim(base_path,
 # Example usage
 ###############################################################################
 if __name__ == "__main__":
-    base_path = "/Users/sophieblock/QRCCapstone/parameter_analysis_directory/"
+    base_path = "/Users/sophieblock/QRCCapstone/"
     model_type = "gate"
     num_L = 20
     N_ctrls = [2]
-    sample_range = "pi"
-    K_str = "1b"
-    threshold = 1e-8
+    sample_range = "normal_pi"
+    K_str = "1bb"
+    threshold = 1e-12
     by_test = False
 
     df_dqfim = maybe_rebuild_or_process_dqfim(
