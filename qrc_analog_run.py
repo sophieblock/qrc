@@ -7,6 +7,15 @@ import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
+# schedule = optax.exponential_decay(
+#     init_value=opt_lr, transition_steps=100, decay_rate=0.9, staircase=False
+# )
+# opt = optax.chain(
+#     optax.clip_by_global_norm(1.0),
+#     optax.inject_hyperparams(optax.adam)(
+#         learning_rate=schedule, b1=0.9, b2=0.99, eps=1e-8
+#     ),
+# )
 from qiskit import *
 from jax import numpy as np
 import sympy
