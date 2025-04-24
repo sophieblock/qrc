@@ -7,15 +7,6 @@ import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
-# schedule = optax.exponential_decay(
-#     init_value=opt_lr, transition_steps=100, decay_rate=0.9, staircase=False
-# )
-# opt = optax.chain(
-#     optax.clip_by_global_norm(1.0),
-#     optax.inject_hyperparams(optax.adam)(
-#         learning_rate=schedule, b1=0.9, b2=0.99, eps=1e-8
-#     ),
-# )
 from qiskit import *
 from jax import numpy as np
 import sympy
@@ -131,6 +122,30 @@ def generate_dataset(
     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
 
     return np.asarray(X), np.asarray(y)
+def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, key):
+   
+
+    N = N_reserv + N_ctrl
+    
+
+    
+    K_half = jax.random.uniform(key, (N, N))
+    K = (K_half + K_half.T) / 2  # making the matrix symmetric
+    K = 2. * K - 1.
+    
+    
+    if bath:
+        bath_array = 0.01 * jax.random.normal(key, (num_bath, N_ctrl + N_reserv))
+        return {
+            
+
+            'K_coef': jnp.asarray(K),
+            'bath':bath_array
+        }
+    return {
+
+            'K_coef': jnp.asarray(K)
+        }
 
 def create_initial_state(num_qubits, base_state):
     """
@@ -165,15 +180,23 @@ class Sim_QuantumReservoir:
         else:
             self.N = N_ctrl + N_reserv
             self.dev = qml.device("default.qubit", wires = [*self.ctrl_qubits, *self.reserv_qubits]) 
-
+        #print(qml.wires.Wires(list(range(self.N))))
+        #print( [*self.ctrl_qubits, *self.reserv_qubits])
         self.qubits = qml.wires.Wires(list(range(self.N)))
+        # device on which the circuit is executed
 
+        #self.z_bias = params['hz']
+        #self.y_bias = params['hy']
         self.k_coefficient = params['K_coef']
         self.steps = time_steps
 
+        #print(params['bath'])
         self.num_J = num_J
         self.params = params
         self.current_index = 0
+        #self.interactions_fixed = interactions
+    
+        
 
    
     def get_all_wires(self):
@@ -254,7 +277,7 @@ class Sim_QuantumReservoir:
         for qubit_a in range(len(self.reserv_qubits)):
             
             for qubit_b in range(len(self.reserv_qubits)):
-                
+                # if qubit_a < qubit_b:
                 if qubit_a != qubit_b:
                     
                     interaction_coeff = self.k_coefficient[qubit_a, qubit_b]
@@ -280,6 +303,389 @@ class Sim_QuantumReservoir:
         return total_H
     
 
+
+def array(a,dtype):
+    return np.asarray(a, dtype=np.float32)
+def Array(a,dtype):
+    return np.asarray(a, dtype=np.float32)
+
+def calculate_iqr(data, x,y):
+    """
+    Calculate the Interquartile Range (IQR) of the input data.
+    """
+    iqr = np.percentile(data, x) - np.percentile(data, y)
+
+   
+    return iqr
+
+def compute_initial_learning_rate(gradients, scale_factor=0.1, min_lr=1e-3, max_lr = 0.2):
+    """
+    Compute an initial learning rate based on the norm of gradients.
+    """
+    # Compute the norm of the gradients
+    
+    norm_grad = jnp.linalg.norm(gradients)
+    min_abs_grad = jnp.min(jnp.abs(gradients))
+    #mean_norm_grad = jnp.mean(norm_grad)
+    initial_lr = scale_factor / (norm_grad + 1e-8)  # Adding a small value to prevent division by zero
+    print(norm_grad, initial_lr, initial_lr / (min_abs_grad * 10))
+    #initial_lr =initial_lr / (min_abs_grad * 10)
+    initial_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    return initial_lr
+
+
+
+def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_dict, N_train, num_datasets, key):
+    datasets = []
+    print(f"{gate.name}, dt= {time_steps}: Pre-processing {num_datasets} training sets for selection...")
+    all_A, all_b = [], []
+    for i in range(num_datasets):
+        key, subkey = jax.random.split(key)  # Split the key for each dataset generation
+        A, b = generate_dataset(gate, N_ctrl, N_train, subkey)  # Generate dataset with the subkey
+        all_A.append(A)
+        all_b.append(b)
+    all_A = jnp.stack(all_A)
+    all_b = jnp.stack(all_b)
+    
+    num_J = N_reserv * N_ctrl
+    
+    sim_qr = Sim_QuantumReservoir(init_params_dict, N_ctrl, N_reserv, num_J, time_steps, bath, num_bath)
+    parameterized_ham = sim_qr.get_total_hamiltonian_components()
+    ctrl_wires = sim_qr.get_ctrl_wires()
+    reserv_wires = sim_qr.get_reserv_wires()
+    qnode_dev = sim_qr.get_dev()
+    all_wires = sim_qr.get_all_wires()
+    @jit
+    @qml.qnode(qnode_dev, interface="jax")
+    def circuit(params, state_input):
+        taus = params[:time_steps]
+        qml.StatePrep(state_input, wires=[*ctrl_wires])
+        for idx, tau in enumerate(taus):
+            hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
+            hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
+            hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
+            J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
+            current_step = np.concatenate([J_values, hx_array, hy_array, hz_array])
+            qml.evolve(parameterized_ham)(current_step, t=tau)
+        return qml.density_matrix(wires=[*ctrl_wires])
+
+    @jit
+    def cost_func(params, input_state, target_state):
+        output_state = circuit(params, input_state)
+        fidelity = qml.math.fidelity(output_state, target_state)
+        return 1 - fidelity  # Minimizing infidelity
+
+    @jit
+    def collect_gradients(params, input_states, target_states):
+        grad_fn = jax.grad(cost_func, argnums=0)
+        gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
+        return gradients
+    
+    def calculate_unbiased_stats_global(gradients, abs_grad=True):
+        """Calculate the mean and unbiased variance of the gradients across all states."""
+        if abs_grad:
+            gradients = jnp.abs(gradients)
+        
+        mean_grad = jnp.mean(gradients, axis=0)  # Mean across all gradients
+        mean_grad_squared = jnp.mean(gradients ** 2, axis=0)  # Mean squared gradients across all states
+        
+        # Use ddof=1 for unbiased variance
+        var_grad = jnp.var(gradients, axis=0, ddof=1)  # Unbiased variance across all states
+        
+        grad_norm = jnp.linalg.norm(mean_grad)  # Norm of the mean gradient
+        
+        return mean_grad, var_grad, grad_norm
+    batched_collect_gradients = jax.vmap(collect_gradients, in_axes=(None, 0, 0))
+    
+    all_gradients = batched_collect_gradients(params, all_A[:, :N_train], all_b[:, :N_train])
+    print(f'all_gradients shape: {all_gradients.shape}')
+    # print(f'batched_collect_gradients shape: {batched_collect_gradients.shape}')
+    # Normalize gradients before sending to the statistics function
+    def normalize_gradients(gradients):
+        norm = jnp.linalg.norm(gradients, axis=-1, keepdims=True) + 1e-8  # Add small epsilon to avoid division by zero
+        return gradients / norm
+
+
+     # Collect all variances and IQRs for percentile-based comparison
+    # Lists to store metrics for normalization purposes
+    var_grad_means,var_var_grads,var_grad_means_normalized,normalized_var_grad_norms = [], [],[], []
+    grad_norms_normalized,grad_norms = [], []
+    min_var_grad_means,max_var_grad_means = [],[]
+    mean_normalized_var_grads = []
+    min_var_grad_norm = np.inf
+    max_var_grad_norm = 0.0
+    normalized_variance_gradients = []
+    mean_gradients_normalized,mean_gradients = [],[]
+    min_gradvars,max_gradvars = [], []
+    min_mean_grads,max_mean_grads = [], []
+    # First, collect all var_grad_means and grad_norms for normalization
+    for i in range(num_datasets):
+
+        normalized_gradients_per_state = normalize_gradients(all_gradients[i])
+            # Calculate stats for all training states
+       
+
+        mean_grad, var_grad, grad_norm = calculate_unbiased_stats_global(all_gradients[i])
+        mean_grad_norm, var_grad_norm, grad_norm_norm = calculate_unbiased_stats_global(normalized_gradients_per_state)
+        # print(gradnorm.shape, vargrad.shape)
+        # print(f"A{i}: gradnorm: {gradnorm.mean():.2e}, grad_norm: {grad_norm:.2e}, vargrad ({vargrad.shape}): {vargrad.mean():.2e}, var_grad ({var_grad.shape}):  {var_grad.mean():.2e}")
+        # print(f"    - grad_norm_norm: {grad_norm_norm:.2e}, var_grad_norm ({var_grad_norm.shape}): {var_grad_norm.mean():.2e}")
+        mean_gradients.append(mean_grad)
+
+        # _,_, normalized_var_grad = calculate_correct_normalized_var_grad(all_gradients[i])
+        var_grad_means.append(var_grad.mean())
+        min_vargrad = min(var_grad)
+        max_vargrad = max(var_grad)
+        min_gradvars.append(min_vargrad)
+        max_gradvars.append(max_vargrad)
+        min_mean_grads.append(min(np.abs(mean_grad)))
+        max_mean_grads.append(max(np.abs(mean_grad)))
+        
+        var_var_grads.append(jnp.var(var_grad,ddof=1))
+
+        grad_norms.append(grad_norm)
+        
+
+        var_grad_means_normalized.append(var_grad_norm.mean())
+        normalized_var_grad_norms.append(np.float64(jnp.var(var_grad_norm,ddof=1))*100)
+        # normalized_var_grad_norms.append(np.float64(variance_of_variance_gradients_normalized)*100)
+        mean_gradients_normalized.append(mean_grad_norm)
+        # normalized_variance_gradients.append(var_grad)
+        grad_norms_normalized.append(grad_norm_norm)
+        # print(f'set A{i}: normalized_var_grad: {normalized_var_grad.mean():.2e}, normalized_var_grad2: {normalized_var_grad2.mean():.2e}')
+    
+
+    
+    min_var_var,max_var_var = min(var_var_grads), max(var_var_grads)
+    min_var_grad = min(var_grad_means)
+
+
+    print(f"Variance of the gradients: [min: {min(min_gradvars):.2e}), max: {max(max_gradvars):.2e}]")
+    print(f"Mean gradients: [min: {min(min_mean_grads):.2e}), max: {max(max_mean_grads):.2e}]")
+    def normalize_metric(value, min_val, max_val, epsilon=1e-6, upper_bound=0.999):
+        if max_val > min_val:
+            # Adjust to avoid exactly 0.0 and 1.0, and ensure upper bound doesn't reach 1.0
+            normalized_value = (value - min_val ) / (max_val - min_val + 2 )
+            return min(normalized_value, upper_bound)
+        else:
+            return 0.5  # Neutral value if min and max are the same
+
+    # Store the gradient stats for all datasets
+    results = {}
+
+    # Variables to track the best datasets for three purposes
+    best_for_initial_training_idx = None
+    best_for_replacement_idx = None
+    best_for_fine_tuning_idx = None
+    best_initial_score = jnp.inf
+    best_replacement_score = jnp.inf  # We want lower variability here
+    best_fine_tuning_score = jnp.inf  # Small, but more precise gradient shifts
+
+
+
+    # Initialize tracking for scores and results
+    results = {}
+
+
+    alpha = 0.1
+    w1 = 0.8  # Weight for normalized variance of the gradient
+    w2 = .2# Weight for normalized gradient norm
+    w3 = 0.5 # Weight for normalized variance of the variance of the gradient
+
+    beta =0.5
+    min_norm_var_grad = min(normalized_var_grad_norms)
+    max_norm_var_grad = max(normalized_var_grad_norms)
+    print(f"min: {min_norm_var_grad:.2e}, max: {max_norm_var_grad:.2e}")
+    min_mean = min(min_mean_grads)
+    max_mean = max(max_mean_grads)
+    min_var_grad = min(min_gradvars)
+    max_var_grad = max(max_gradvars)
+    max_scale = max(max_mean,max_var_grad)
+    min_scale = min(min_mean,min_var_grad)
+    print(f"Scaled: [min: {min_scale:.2e}), max: {max_scale:.2e}]")
+    # First, compute all the gradient statistics and scores for each dataset
+    for i in range(num_datasets):
+        # normalized_variance_gradient = normalized_variance_gradients[i]
+
+
+        mean_variance_of_gradient, mean_variance_of_gradient_normalized = var_grad_means[i],var_grad_means_normalized[i]  # Mean of the variance of the gradients (gradients no normalized)
+        variance_of_variance_gradients,variance_of_variance_gradients_normalized = var_var_grads[i], normalized_var_grad_norms[i] # Variance of the variance of the gradients (gradients no normalized)
+        mean_gradient, mean_gradient_normalized = mean_gradients[i], mean_gradients_normalized[i]
+        grad_norm, grad_norm_normalized = grad_norms[i], grad_norms_normalized[i]
+        # norm_var_grad_mean = normalized_var_grad.mean()  # Mean of normalized gradient variance across params
+       
+        # variance_of_variance_normalized_gradient = jnp.var(normalized_variance_gradient) # Varia
+        # mean_of_variance_normalized_gradient = jnp.abs(normalized_variance_gradient).mean()
+
+        average_of_mean_gradients_abs = np.abs(mean_gradient).mean()
+        average_of_mean_gradients_normalized_abs = np.abs(mean_gradient_normalized).mean()
+        variance_of_mean_gradients = jnp.var(mean_gradient,ddof=1)
+        variance_of_mean_gradients_normalized = jnp.var(mean_gradient_normalized)
+        min_grad = min(np.abs(mean_gradient))
+        max_grad = max(np.abs(mean_gradient))
+
+        variance_of_variance_gradients_normalized_scaled = normalize_metric(variance_of_variance_gradients_normalized, min_norm_var_grad,max_norm_var_grad)
+        normalized_mean_variance_of_gradient = normalize_metric(mean_variance_of_gradient, min_scale,max_scale)
+        normalized_mean_gradient_score = normalize_metric(average_of_mean_gradients_abs,  min_scale,max_scale)
+        # normalized_mean_variance_of_gradient_normalized = normalize_metric(mean_variance_of_gradient_normalized, min_var_grad, max_var_grad)
+        normalized_var_var_grads = normalize_metric(variance_of_variance_gradients,   min_scale,max_scale)
+        normalized_var_mean_gradient = normalize_metric(variance_of_mean_gradients, min_scale,max_scale)
+
+
+        initial_score = (
+            w1 * (normalized_mean_variance_of_gradient)  # Reward high gradient variance
+            +w2 * (normalized_mean_gradient_score)   # Reward high gradient norm
+            # +w2*(average_of_mean_gradients_normalized_abs)
+            -w3* (variance_of_variance_gradients_normalized_scaled)  # Penalize high variance of variance of gradients
+             -beta * (normalized_var_mean_gradient)  # Penalize high variance of mean gradients
+        )
+        other_score = (
+            w1 * (mean_variance_of_gradient)  # Reward high gradient variance
+            +w2 * (average_of_mean_gradients_abs)   # Reward high gradient norm
+            # +w2*(average_of_mean_gradients_normalized_abs)
+            -w3* (variance_of_variance_gradients)  # Penalize high variance of variance of gradients
+             -w3 * (variance_of_mean_gradients)  # Penalize high variance of mean gradients
+        )
+        
+        # Replacement score favors stable gradients with moderate variance
+        replacement_score = (
+            mean_variance_of_gradient * np.exp(-beta * (grad_norm_normalized - 1) ** 2) 
+        )
+       
+        # initial_Score =  normalized_mean_variance_of_gradient * np.exp(-alpha * (normalized_grad_norm_score - 1) ** 2)
+       
+        # replacement_score = (
+        #     normalized_mean_variance_of_gradient * np.exp(-beta * (normalized_grad_norm_score - 1) ** 2) 
+        # )
+
+
+        fine_tuning_score = 0.5 * mean_variance_of_gradient_normalized + 0.5 * mean_variance_of_gradient_normalized
+        # if i == 2:
+        #     initial_score = 1.248400e-01+.5
+
+
+        results[f"dataset_{i}"] = {
+            "Mean(Var Grad)": mean_variance_of_gradient,
+            "Var(Var Grad)": variance_of_variance_gradients,
+            "Mean(Mean Grad)": average_of_mean_gradients_abs,
+            "Var(Mean Grad)": variance_of_mean_gradients,
+            "Min Gradient": min_grad,
+            "Max Gradient": max_grad,
+            "min_var_grad_means": min_gradvars[i],
+            "max_var_grad_means": max_gradvars[i],
+            "Gradient Norm": grad_norm,
+            "Norm(Gradient Norm)":grad_norm_normalized,
+            "Mean(Var Grad) [normalized]": mean_variance_of_gradient_normalized,  # Mean of normalized gradient variance
+            "Var(Var Grad) [normalized]": variance_of_variance_gradients_normalized,    # Variance of normalized gradient variance
+            "Mean(Mean Grad) [normalized]": average_of_mean_gradients_normalized_abs,  # Mean of normalized gradient variance
+            "Var(Mean Grad) [normalized]": variance_of_mean_gradients_normalized,    # Variance of normalized gradient variance
+            "Initial Score": initial_score,
+            "Replacement Score": replacement_score,
+            "Fine-Tuning Score": fine_tuning_score,
+            "dataset": (all_A[i], all_b[i])  # Store dataset A and b
+        }
+
+        # # Print the detailed summary statistics for each dataset
+        # print(f"(A{i}, b{i}):")
+        # print(f"    Raw Var(Grad): {mean_variance_of_gradient:.2e}, Normalized Var(Grad): {mean_variance_of_gradient_normalized:.2e}")
+        # # print(f"    Raw Mean(Grad):  {average_of_mean_gradients_abs:.2e}, Normalized Mean(Grad): {normalized_mean_gradient_score:.2e}")
+        # print(f"    Var(Grad): {w1*normalized_mean_variance_of_gradient:.2e}, Mean(Grad): {w2*normalized_mean_gradient_score:.2e} ->  Var(Grad)+Mean(Grad) = {w1*normalized_mean_variance_of_gradient+w2*normalized_mean_gradient_score:.2e} [scaled]")
+        # print(f"    Var(Var) scaled: {variance_of_variance_gradients_normalized_scaled:.2e}, Var(Mean(Grad)): {normalized_var_mean_gradient:.2e} -> {-w3*variance_of_variance_gradients_normalized_scaled+ -beta*normalized_var_mean_gradient:.2e}")
+        # # print(f"    Var(Var) not scaled: {variance_of_variance_gradients_normalized:.2e}")
+        # print(f"    Initial Score: {initial_score:.2e}, Replacement Score: {replacement_score:.2e}, Fine-Tuning Score: {fine_tuning_score:.2e}\n")
+
+    
+
+    # Now select the best datasets for initial training, replacement, and fine-tuning
+    sorted_by_initial = sorted(results.items(), key=lambda x: x[1]["Initial Score"], reverse=True)
+    sorted_by_replacement = sorted(results.items(), key=lambda x: x[1]["Replacement Score"], reverse=True)
+    sorted_by_fine_tuning = sorted(results.items(), key=lambda x: x[1]["Fine-Tuning Score"])
+
+    # Best for initial training
+    # Use the numeric index directly when accessing arrays
+    best_for_initial_training = sorted_by_initial[0]
+    best_for_replacement = sorted_by_replacement[1] if sorted_by_replacement[0][0] == best_for_initial_training[0] else sorted_by_replacement[0]
+    best_for_fine_tuning = sorted_by_fine_tuning[0]
+
+    # Extract the indices and scores for printing
+    best_for_initial_training_idx =  int(best_for_initial_training[0].split('_')[1])
+    best_initial_score = best_for_initial_training[1]["Initial Score"]
+
+    best_for_replacement_idx = int(best_for_replacement[0].split('_')[1])
+    best_replacement_score = best_for_replacement[1]["Replacement Score"]
+
+    best_for_fine_tuning_idx =  int(best_for_fine_tuning[0].split('_')[1])
+    best_fine_tuning_score = best_for_fine_tuning[1]["Fine-Tuning Score"]
+    # normalized_gradients_per_state = normalize_gradients(all_gradients[i])
+    best_gradients =  all_gradients[best_for_initial_training_idx]
+    # best_gradients =  normalize_gradients(all_gradients[best_for_initial_training_idx])
+    initial_grad_norm = results[f"dataset_{best_for_initial_training_idx}"]["Gradient Norm"]
+    initial_lr = compute_initial_learning_rate(best_gradients)
+
+    print(f"Best Dataset for Initial Training: A{best_for_initial_training_idx}, with score: {best_initial_score:.4e}")
+    print(f"Best Dataset for Replacement: A{best_for_replacement_idx}, with score: {best_replacement_score:.4e}")
+    print(f"Best Dataset for Fine-Tuning: A{best_for_fine_tuning_idx}, with score: {best_fine_tuning_score:.4e}")
+    print(f"Initial Gradient Norm: {initial_grad_norm:2e}")
+    # Extract the actual data
+    best_initial_A = best_for_initial_training[1]["dataset"][0]
+    best_initial_b = best_for_initial_training[1]["dataset"][1]
+    best_replacement_A = best_for_replacement[1]["dataset"][0]
+    best_replacement_b = best_for_replacement[1]["dataset"][1]
+    best_fine_tuning_A = best_for_fine_tuning[1]["dataset"][0]
+    best_fine_tuning_b = best_for_fine_tuning[1]["dataset"][1]
+    return results, best_initial_A, best_initial_b, best_replacement_A, best_replacement_b, best_fine_tuning_A, best_fine_tuning_b, initial_lr, (best_for_initial_training_idx,best_for_replacement_idx,best_for_fine_tuning_idx)
+
+
+def normalize_gradients(gradients):
+    norm = jnp.linalg.norm(gradients, axis=-1, keepdims=True) + 1e-12  # Add small epsilon to avoid division by zero
+    return gradients / norm
+
+def calculate_gradient_stats(gradients,abs_grad=True):
+    if abs_grad:
+        gradients = jnp.abs(gradients)
+    mean_grad = jnp.mean(gradients, axis=0)
+    mean_grad_squared = jnp.mean(gradients ** 2, axis=0)
+    var_grad = mean_grad_squared - mean_grad ** 2
+    grad_norm = jnp.linalg.norm(mean_grad)
+    return mean_grad, var_grad, grad_norm
+
+def calculate_gradient_stats_per_state(gradients,abs_grad=True):
+    
+    """Calculate the mean and variance of the gradients for each state."""
+    if abs_grad:
+        gradients = jnp.abs(gradients)
+    mean_grad = jnp.mean(gradients, axis=-1)  # Mean across parameters for each state
+    mean_grad_squared = jnp.mean(gradients ** 2, axis=-1)  # Mean squared gradients across parameters
+    var_grad = mean_grad_squared - mean_grad ** 2  # Variance per state
+    grad_norm = jnp.linalg.norm(gradients, axis=-1)  # Norm per state
+
+    return mean_grad, var_grad, grad_norm
+
+def calculate_unbiased_variance(gradients, abs_grad=True):
+    if abs_grad:
+        gradients = jnp.abs(gradients)
+    mean_grad = jnp.mean(gradients, axis=-1)  # Mean across parameters for each state
+    sum_sq_diff = jnp.sum((gradients - mean_grad[..., None]) ** 2, axis=-1)  # Sum of squared differences
+    var_grad_unbiased = sum_sq_diff / (gradients.shape[-1] - 1)  # Use Bessel's correction
+    grad_norm = jnp.linalg.norm(gradients, axis=-1)
+
+    return mean_grad, var_grad_unbiased, grad_norm
+
+
+def calculate_unbiased_stats(gradients, abs_grad=True):
+    """Calculate the mean and unbiased variance of the gradients for each state."""
+    if abs_grad:
+        gradients = jnp.abs(gradients)
+    mean_grad = jnp.mean(gradients, axis=-1)  # Mean across parameters for each state
+    mean_grad_squared = jnp.mean(gradients ** 2, axis=-1)  # Mean squared gradients across parameters
+    
+    # Use ddof=1 for unbiased variance
+    var_grad = jnp.var(gradients, axis=-1, ddof=1)  # Unbiased variance per state
+    
+    grad_norm = jnp.linalg.norm(gradients, axis=-1)  # Norm per state
+
+    return mean_grad, var_grad, grad_norm
+
 def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
     
     prev_improvement = prev_cost - second_prev_cost
@@ -288,12 +694,30 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
 
     return acceleration
 
-
-def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.25,debug=True):
+def get_base_learning_rate(grads, scale_factor=.1, min_lr=0.001, max_lr=0.2):
+    """Estimate a more practical initial learning rate based on the gradient norms."""
+    grad_norm = jnp.linalg.norm(grads)
+    
+    initial_lr = jnp.where(grad_norm > 0, scale_factor / grad_norm, 0.1)
+    
+    clipped_lr = jnp.clip(initial_lr, min_lr, max_lr)
+    print(f"grad_norm: {grad_norm}, initial base lr: {initial_lr:.5f}, clipped: {clipped_lr:.5f}")
+    return initial_lr, clipped_lr,grad_norm
+def get_initial_lr_per_param_original(grads, base_step=0.01, min_lr=1e-5, max_lr=0.2, debug=True):
+    # print(f"grads: {grads}")
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"lr_tree: {lr_tree}")
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    return lr_tree
+def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max_lr=0.25,debug=True):
      # print(f"grads: {grads}")
     
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
     global_norm = jnp.linalg.norm(grad_magnitudes)
+    # a,b,c=get_base_learning_rate(grads)
+    # print(get_initial_lr_per_param_original(grads,max_lr=a))
     N_params = grad_magnitudes.shape[0]
     median_grad = jnp.quantile(grad_magnitudes, 0.5)  # For debugging
     MAD = jnp.median(jnp.abs(grad_magnitudes - median_grad))
@@ -305,21 +729,110 @@ def get_initial_lr_per_param(grads, base_step=0.01, min_lr=1e-4, max_lr=0.25,deb
     median_norm = jnp.quantile(normalized_abs, 0.5)
    
     MAD_norm = jnp.quantile(jnp.abs(normalized_abs - median_norm), 0.5)
+    # if raw_lr:
+    #     r = raw_lr
+    # else:
+    #     r = (MAD+median_grad) /2
     r = MAD+median_grad
-    # r = (MAD+median_grad)/2
+    # r = 0.1* (MAD+median_grad)/2
 
     # print(f"grad_magnitudes: {grad_magnitudes}")
-    lr_tree2 = jax.tree_util.tree_map(lambda g:  0.2* (r/ (g + r )), grad_magnitudes)
+    lr_tree2 = jax.tree_util.tree_map(lambda g: max_lr * (r/ (g + r )), grad_magnitudes)
+    min2 = float(jnp.min(lr_tree2))
+    max2 = float(jnp.max(lr_tree2))
+    med2 = float(jnp.median(lr_tree2))
     lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
-    # print(f"og: {lr_tree}")
-    # print(f"lr_tree2: {lr_tree2}")
-    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
+    print(f"og: {lr_tree}")
+    # print(f"lr_tree2 (min={min2:.2e}, max={max2:.3e}, med2={med2:.3e}): {lr_tree2}")
+
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, med2/2, max_lr), lr_tree2)
     if debug:
-        print(f"Median: {median_grad:.3e}, Median norm: {median_norm:.3e}")
-        print(f"MAD: {MAD:.3e}, MAD_norm: {MAD_norm:.3e}")
-        print(f"MAD+Med: {MAD+median_grad:.3e}, MAD+Med norm: {MAD_norm+median_norm:.3e}")
-        print(f"Final lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
+        print(f"Median: {median_grad:.3e}")
+        print(f"MAD: {MAD:.3e}")
+        print(f"MAD+Med: {MAD+median_grad:.3e}, r: {r:.3e}")
+        print(f"Final lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, med={float(jnp.median(lr_tree))}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
         print(lr_tree)
+    return lr_tree
+def improved_get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2,
+                                      outlier_clip=1.0, fudge_factor=None,debug=True):
+    """
+    Compute per-parameter learning rates robustly based on the gradient magnitudes.
+    
+    Method:
+      1. Flatten the gradient PyTree and compute the absolute gradients.
+      2. Concatenate all absolute values to obtain a vector all_abs.
+      3. Optionally clip extreme values in all_abs (using outlier_clip) to obtain clipped_abs.
+      4. Compute a robust scale “r”:
+             median_val = median(clipped_abs)
+             MAD = median(|clipped_abs - median_val|)
+             r = median_val + MAD  (if r is zero, fall back to median_val)
+      5. Define the fudge factor:
+             fudge = fudge_factor, if provided;
+                     otherwise, fudge = 0.1 * r
+      6. For each parameter (with gradient g), compute the raw learning rate:
+             lr_raw = base_step * (r / (|g| + fudge))
+      7. Clamp lr_raw to the range [min_lr, max_lr].
+      8. Restore the original PyTree structure.
+    
+    This procedure ensures that:
+      - Parameters with gradient magnitudes much below r receive higher learning rates.
+      - Parameters with high gradients receive lower learning rates.
+      - The fudge term is derived from the data via robust statistics rather than from max_lr.
+    
+    Arguments:
+      grads        : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
+      base_step    : Baseline step; if |grad| ≈ r, then lr ≈ base_step.
+      min_lr       : Minimum allowed learning rate.
+      max_lr       : Maximum allowed learning rate.
+      outlier_clip : Quantile (between 0 and 1) used to clip extreme gradient magnitudes before computing robust statistics.
+      fudge_factor : If provided, use this value as the fudge term; otherwise, set fudge = 0.1 * r.
+    
+    Returns:
+      A PyTree of learning rates matching the structure of grads.
+    """
+    # Step 1: Flatten the gradient tree.
+    grad_leaves, tree_def = jax.tree_util.tree_flatten(grads)
+    if not grad_leaves:
+        raise ValueError("grads is empty; no gradients provided.")
+    
+    # Step 2: Compute the absolute gradients for each leaf.
+    abs_leaves = [jnp.abs(g) + 1e-12 for g in grad_leaves]  # add a tiny epsilon to avoid division by zero
+    all_abs = jnp.concatenate([jnp.ravel(g) for g in abs_leaves])
+    
+    # Step 3: Optionally clip extreme values in all_abs.
+    if outlier_clip is not None and 0 < outlier_clip < 1:
+        clip_val = jnp.quantile(all_abs, outlier_clip)
+        clipped_abs = jnp.clip(all_abs, 0, clip_val)
+    else:
+        clipped_abs = all_abs
+    
+    # Step 4: Compute robust statistics.
+    median_val = jnp.quantile(clipped_abs, 0.5)
+    MAD = jnp.quantile(jnp.abs(clipped_abs - median_val), 0.5)
+    r = median_val + MAD
+    r = jnp.where(r == 0, median_val, r)
+    
+    # Step 5: Define the fudge factor.
+    fudge = fudge_factor if fudge_factor is not None else 0.1 * r
+    # fudge = fudge_factor if fudge_factor is not None else 0.1 * r
+    
+    # Step 6: Compute raw learning rates for each parameter.
+    # NOTE: Iterate over grad_leaves (not grads) to preserve the PyTree structure.
+    # lr_leaves = [(base_step / (jnp.abs(g) + fudge)) for g in grad_leaves]
+    lr_leaves = [base_step * (r / (jnp.abs(g) + fudge)) for g in grad_leaves]
+    
+    # Step 7: Clamp each learning rate to [min_lr, max_lr].
+    lr_leaves = [jnp.clip(lr, a_min=min_lr, a_max=max_lr) for lr in lr_leaves]
+    
+    # Step 8: Reassemble the learning rate tree.
+    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    if debug:
+        print(f"fudge: {fudge:.3e}")
+        print(f"median_val: {median_val:.3e}")
+        print(f"MAD: {MAD}")
+        print(f"r: {r}")
+        print(f"Final lr_tree: min = {float(jnp.min(jnp.abs(lr_tree))):.2e}, max = {float(jnp.max(jnp.abs(lr_tree))):.2e}, med={float(jnp.median(lr_tree))}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
+    print(lr_tree)
     return lr_tree
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key):
     float32=''
@@ -364,7 +877,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
 
     test_dataset_key = jax.random.split(dataset_key)[1]
-    test_in, test_targ = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=False)
+    test_in, test_targ = generate_dataset(gate, N_ctrl,training_size= 2000, key=test_dataset_key, new_set=True)
     
 
 
@@ -407,7 +920,6 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     
     jit_circuit = jax.jit(circuit)
     vcircuit = jax.vmap(jit_circuit, in_axes=(None, 0))
-
     def batched_cost_helper(params, X, y):
         # Process the batch of states
         batched_output_states = vcircuit(params, X)
@@ -433,8 +945,6 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         grad_fn = jax.grad(cost_func, argnums=0)
         gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
         return gradients
-
-
     def final_test(params,test_in,test_targ):
         params = jnp.asarray(params, dtype=jnp.float64)
         X = jnp.asarray(test_in, dtype=jnp.complex128)
@@ -447,7 +957,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         return fidelities
  
     
-
+    
     min_raw_lr = 0.
     # Initial training to determine appropriate learning rate
     if opt_lr == None:
@@ -457,18 +967,49 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         e = time.time()
         dt = e - s
         raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
+        if raw_lr>0.25:
+            max_lr = 0.25
+        elif raw_lr < 0.1:
+            max_lr=0.1
+        else:
+            max_lr = raw_lr
+        print(f"max_lr: {max_lr:.3e}")
         opt_lr = get_initial_lr_per_param(
             init_grads,
-            base_step=0.005,
-            max_lr=raw_lr,
-            debug=False
+            # base_step=max_lr,
+            # raw_lr=raw_lr,
+            # base_step=
+            max_lr=max_lr,
+            debug=True
 
         )
+        # opt_lr = improved_get_initial_lr_per_param(
+        #     init_grads,
+        #     base_step=max_lr,
+        #     max_lr=0.2,
+
+        # )
        
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
         cost = init_loss
-   
-    opt_descr = 'per param'
+    else:
+        s = time.time()
+        
+        init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
+        e = time.time()
+        dt = e - s
+        raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
+        print(f"raw lr: {raw_lr:.3e}, grad_norm: {grad_norm:.3e}")
+        cost = init_loss
+        
+
+    opt_lr = np.array([0.00376524, 0.00438356, 0.00351822, 0.00168949, 0.00534178,
+       0.00195076, 0.00152807, 0.02003479, 0.00153036, 0.00532235,
+       0.00210372, 0.0034243 , 0.00216419, 0.2       , 0.00678675,
+       0.03010317, 0.05555207, 0.16873981, 0.03439653, 0.2       ,
+       0.12010882, 0.05761787, 0.2       , 0.01128127, 0.01129959,
+       0.01483492, 0.03782067, 0.02124858, 0.01687325, 0.01654504,
+       0.01325018, 0.01236597, 0.00554659])
     # opt = optax.chain(
     #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
     #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
@@ -476,14 +1017,114 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     # )
     # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
     
-    learning_rate_schedule = optax.constant_schedule(opt_lr)
+    opt_descr = 'per param'
     opt = optax.chain(
         optax.clip_by_global_norm(1.0),
         # optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr),
-        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7),
-        # optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.9, b2=0.99, eps=1e-7),
+        # optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-8),
+        optax.inject_hyperparams(optax.adam)(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-8),
         )
     
+    # schedule = optax.exponential_decay(
+    #     init_value=opt_lr, transition_steps=100, decay_rate=0.9, staircase=False
+    # )
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(
+    #         learning_rate=schedule, b1=0.9, b2=0.99, eps=1e-8
+    #     ),
+    # )
+
+
+    
+    """
+    case #0
+    # """
+    # opt_descr = 'case 0'
+    # learning_rate_schedule = optax.constant_schedule(opt_lr)
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate_schedule),
+    #     )
+    """
+    case #1
+    """
+    # opt_descr = 'case 1'
+    
+    # learning_rate_schedule = optax.constant_schedule(opt_lr)
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(learning_rate=learning_rate_schedule, b1=0.99, b2=0.999, eps=1e-7),
+    #     )
+    """
+    case #2
+    """
+    # opt_descr = 'case 2'
+    # warmup_steps = num_epochs//2
+    # total_steps = num_epochs//2
+    # schedule = optax.sgdr_schedule([
+    #     {"init_value": opt_lr*0.85, "peak_value": opt_lr, "decay_steps": total_steps, "warmup_steps": warmup_steps,"end_value": opt_lr*0.5},
+    #     {"init_value": opt_lr/5, "peak_value": opt_lr/2, "decay_steps": total_steps, "warmup_steps": warmup_steps,"end_value": opt_lr *1e-1},
+    #      {"init_value": opt_lr*0.85, "peak_value": opt_lr, "decay_steps": total_steps, "warmup_steps": warmup_steps,"end_value": opt_lr*0.5},
+    # ])
+
+
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(learning_rate=schedule),
+    # )
+
+
+    """
+    case #3
+    """
+    # opt_descr = 'case 3'
+    # lr_min = opt_lr*0.1
+    # t = 5
+    
+    # factor = (lr_min/opt_lr)**(1/t)
+    # PATIENCE = 50
+    # COOLDOWN = 0
+    # FACTOR = 0.9
+    # RTOL = 1e-4
+    # ACCUMULATION_SIZE = 10
+    # MIN_SCALE = 0.1
+    # # Create the Adam optimizer
+    # adam = optax.adam(learning_rate= opt_lr)
+
+    # # Add the reduce_on_plateau transformation
+    # reduce_on_plateau = optax.contrib.reduce_on_plateau(
+    #     factor=FACTOR,
+    #     patience=PATIENCE,
+    #     rtol=RTOL,
+    #     cooldown=COOLDOWN,
+    #     accumulation_size=ACCUMULATION_SIZE,
+    #     min_scale=MIN_SCALE,
+    # )
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     adam, 
+    #     reduce_on_plateau)
+   
+    """
+    case #4
+    """
+    # opt_descr = 'case 4'
+   
+    
+    # schedule = optax.warmup_cosine_decay_schedule(
+    #     init_value=opt_lr*0.9,
+    #     peak_value=opt_lr*1.2,
+    #     warmup_steps=100,
+    #     decay_steps=num_epochs,
+    #     end_value=opt_lr*0.85,
+    # )
+
+
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.inject_hyperparams(optax.adam)(learning_rate=schedule, b1=0.99, b2=0.999, eps=1e-7),
+    # )
 
 
     # Define the optimization update function
@@ -526,7 +1167,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     acceleration = 0.0
     rocs = []
     consecutive_improvement_count = 0
-    cost_threshold = 1e-5
+    
     consecutive_threshold_limit = 4  # Number of consecutive epochs below threshold without improvement needed to stop
     backup_params = init_params
     improvement = True
@@ -547,10 +1188,37 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     scales_per_epoch = []  # Store scale values per epoch
     new_scale = 1.0  # Initial scale value
     while epoch < num_epochs or improvement:
-       
+        if opt_descr in ['case 3']:
+            plateau_state = opt_state[-1]
+            scale,best_val,plateau_count,cooldown_count,*_ = plateau_state
+
+            current_avg = plateau_state.avg_value
         params, opt_state, cost, grad = update(params, opt_state, input_states, target_states,value=cost)
-      
-        learning_rates.append('fixed')
+        if opt_descr in ['case 3']:
+            plateau_state = opt_state[-1]
+            plateau_scale = plateau_state.scale
+            adjusted_lr = opt_lr * plateau_scale
+            learning_rates.append(adjusted_lr)
+            scales_per_epoch.append(plateau_scale)
+            
+            # Check if plateau should have triggered
+            if (
+                plateau_state.avg_value >= plateau_state.best_value * (1 - RTOL) + RTOL
+                and plateau_state.plateau_count >= PATIENCE
+            ):
+                print(f"ReduceLROnPlateau *should* have triggered at Epoch {epoch + 1}!")
+            # Verify if scale is reducing
+            if plateau_state.scale < new_scale:
+                print(f"Reduced scale at epoch {epoch}: \n - current_avg: {current_avg:.2e},\n - best: {plateau_state.best_value:.2e},\n - res: {plateau_state.best_value * (1 - RTOL) + RTOL:.2e}")
+                # print(f"Reduced scale at epoch {epoch}: {plateau_state.scale:.5f}. \n - current_avg: {current_avg:.2e},\n - best: {plateau_state.best_value:.2e},\n - res: {plateau_state.best_value * (1 - RTOL) + RTOL:.2e}")
+                scale_reduction_epochs.append(epoch + 1)
+                new_scale = plateau_state.scale
+        # elif 'learning_rate' in opt_state[1].hyperparams:
+        #     plateau_scale = 1.0
+        #     learning_rate = opt_state[1].hyperparams['learning_rate']
+        #     learning_rates.append(learning_rate)
+        else:
+            learning_rates.append('fixed')
         if epoch > 1:
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
@@ -570,7 +1238,12 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 average_roc = np.mean(np.array(rocs[10:]))
                 a_marked = np.abs(average_roc)
                 a_threshold = max(a_marked * 1e-3, 1e-7)
-               
+                # a_threshold = a_marked*1e-3 if a_marked*1e-3 > 9e-7 else a_marked*1e-2
+                
+                # print(f"acceration: {a_marked:.2e}, marked: {a_threshold:.2e}")
+                # if N_ctrl == 3:
+                # # if True:
+                #     a_threshold *= 10
                 a_condition_set = True
             rocs.append(acceleration)
 
@@ -584,9 +1257,17 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             var_grad = np.var(grad,ddof=1)
             mean_grad = np.mean(jnp.abs(grad))
             e = time.time()
-           
+            # avg_value = plateau_state.avg_value
+            # has_improved = jnp.where(
+            #     avg_value < (1 - plateau_state.rtol) * plateau_state.best_value - plateau_state.atol, 1, 0
+            # )
+            # new_best_value = jnp.where(has_improved, avg_value, plateau_state.best_value)
+            # curr_plateau_count = jnp.where(
+            #     has_improved, 0, numerics.safe_increment(plateau_state.plateau_count)
+            # )
             epoch_time = e - s
             
+            # learning_rate = opt_state[1].hyperparams['learning_rate']
             if cost < 1e-3:
                 print(f'Epoch {epoch + 1} --- cost: {cost:.3e}, '
 
@@ -594,10 +1275,17 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                     )
             else:
                 print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
-                
+                # print(f'Epoch {epoch + 1} --- cost: {cost:.4f}, best={best_val:.4f}, avg: {current_avg:.4f}, lr={learning_rates[-1]:.4f} [{plateau_state.scale:.3f}], '
+                    #   f' count: {plateau_state.plateau_count} '
+        
+                    # f'Var(grad): {var_grad:.1e}, '
+                    # f'GradNorm: {np.linalg.norm(grad):.1e}, '
+                    #  f'Mean(grad): {mean_grad:.1e}, '
                     f'[t: {epoch_time:.1f}s]'
                     )
-         
+            # print(f" opt_state: {opt_state}")
+            # print(f"    --- Learning Rate: {learning_rate}")
+        
             s = time.time()
 
         if cost < prev_cost:
@@ -641,7 +1329,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         gradient_condition= max(jnp.abs(grad)) < 1e-8
         epoch_cond = epoch >= 2*num_epochs
         # plateau_state = opt_state[-1]
-        if gradient_condition or var_condition or epoch_cond or epoch > 2000:
+        if gradient_condition or var_condition or epoch_cond:
             if epoch_cond:
                 print(f"Epoch greater than max. Ending opt at epoch: {epoch}")
             if var_condition:
@@ -655,21 +1343,24 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
     if backup_cost < cost and not epoch < num_epochs and backup_epoch < epoch - 25:
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
-       
+        # print(f"recomputed cost (i.e. cost_func(backup_params,input_states, target_states)): {cost_func(backup_params,input_states, target_states)}")
+        # print(f"cost_func(params, input_states,target_states): {cost_func(params, input_states,target_states)}")
+        # print(f"final_test(backup_params,test_in, test_targ): {final_test(backup_params,test_in, test_targ)}")
+        # print(f"final_test(params,test_in, test_targ): {final_test(params,test_in, test_targ)}")
         params = backup_params
 
     full_e = time.time()
 
     epoch_time = full_e - full_s
     print(f"Time optimizing: {epoch_time}")
-  
+    # filename = os.path.join(folder_gate, f'{min_var_indices}.pickle')
+   
     testing_results = final_test(params,test_in, test_targ)
     
     f64 = np.array(testing_results, dtype=np.float64)
     infids = 1.0 - f64
    
-    print("\nAverage Final Fidelity: ", avg_fidelity)
-  
+    print("\nAverage Final Fidelity: ", f64.mean())
     data = {'Gate':base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
             'opt_description': opt_descr,
             'specs':specs,
@@ -694,8 +1385,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 "avg_fidelity":   float(f64.mean()),
                 "avg_infidelity": float(infids.mean()),
                 "avg_log_error":  float(np.log10(infids).mean()),
-                "testing_results": f64,
-                "infidelities":    infids,
+                "testing_results": f64.tolist(),
+                "infidelities":    infids.tolist(),
                 'costs': costs,
                 'params_per_epoch':param_per_epoch,
                 'training_states': input_states,
@@ -705,7 +1396,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 'bath': bath,
                 'num_bath':num_bath,
                 'partial_rho_qfim':True,
-                'infidelities':infidelities,
+                # 'infidelities':infidelities,
                 'training_state_metrics':training_state_metrics,
                 'depth':circuit_depth,
                 'total_time':epoch_time,
@@ -737,14 +1428,19 @@ if __name__ == '__main__':
     N_ctrl = 2
    
    
-
+    # trots = [10,15,20,25,30,35,40,45]
+    # trots = [17,20,22,25,27,32,35,37,40]
+    # trots = [15,20,25,30,35,40,45]
+    # trots = [4,6,8,10,12,14,16,18,20]
     trots = [1,15,20,25,30,35,40]
     trots = [30,35,40]
-    trots = [4,5,6,7,8,10,16,20]
-    # trots = [22]
+    # trots = [1,2,3,4,5,6,8]
+    trots = [12]
+    # trots = [1,2,3,4,5]
 
     # res = [1, 2, 3]
-    res = [1,2]
+    # res = [2]
+    res = [1]
   
 
     
@@ -756,10 +1452,12 @@ if __name__ == '__main__':
     num_epochs = 1500
     N_train = 20
     add=0
-  
+    # if N_ctrl ==4:
+    #     add = 5_optimized_by_cost3
     
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
-    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt/'
+    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_experimental_decy/'
+    # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param4_opt/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
     gates_random = []
@@ -778,9 +1476,13 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        # if not gate_idx in [1,3]:
+        # if not gate_idx in [2]:
         #     continue
-
+        # if not gate_idx in [11,12,13,14,15,16,17,18,19]:
+        #     continue
+        # if gate_idx < 20:
+        #     continue
+       
 
         for time_steps in trots:
           
@@ -788,7 +1490,7 @@ if __name__ == '__main__':
             
             
             for N_reserv in res:
-                if N_reserv == 2 and time_steps in [5,7]:
+                if N_reserv == 1 and time_steps == 22:
                     continue
                 
                 N =N_ctrl+N_reserv
@@ -801,17 +1503,20 @@ if __name__ == '__main__':
                     dataset_key = jax.random.PRNGKey(dataset_seed)
                     main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
                     
-      
+                    # main_params = jax.random.normal(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi/2, maxval=np.pi/2)
+                   
                     params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
                     
                     
                     time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
-                    K_half = jax.random.uniform(params_subkey1, (N, N))
-                    K = (K_half + K_half.T) / 2  # making the matrix symmetric
-                    K = 2. * K - 1.
-                    init_params_dict = {'K_coef': jnp.asarray(K)}
-                 
+                    init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
+                    # print(f"init_params_dict: {init_params_dict}")
+
+
                     # Combine the two parts
                     params = jnp.concatenate([time_step_params, main_params])
+                    # print(params)
+                  
+
 
                     run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,init_params_dict = init_params_dict,dataset_key = dataset_key)
