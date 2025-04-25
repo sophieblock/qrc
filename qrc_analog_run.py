@@ -733,7 +733,7 @@ def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max
     #     r = raw_lr
     # else:
     #     r = (MAD+median_grad) /2
-    r = MAD+median_grad
+    r = (MAD+median_grad)/2
     # r = 0.1* (MAD+median_grad)/2
 
     # print(f"grad_magnitudes: {grad_magnitudes}")
@@ -742,10 +742,10 @@ def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max
     max2 = float(jnp.max(lr_tree2))
     med2 = float(jnp.median(lr_tree2))
     lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
-    print(f"og: {lr_tree}")
+    # print(f"og: {lr_tree}") 
     # print(f"lr_tree2 (min={min2:.2e}, max={max2:.3e}, med2={med2:.3e}): {lr_tree2}")
 
-    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, med2/2, max_lr), lr_tree2)
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, med2*0.1, max_lr), lr_tree2)
     if debug:
         print(f"Median: {median_grad:.3e}")
         print(f"MAD: {MAD:.3e}")
@@ -941,10 +941,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
         return loss
     
-    def collect_gradients(params, input_states, target_states):
-        grad_fn = jax.grad(cost_func, argnums=0)
-        gradients = jax.vmap(grad_fn, in_axes=(None, 0, 0))(params, input_states, target_states)
-        return gradients
+    
     def final_test(params,test_in,test_targ):
         params = jnp.asarray(params, dtype=jnp.float64)
         X = jnp.asarray(test_in, dtype=jnp.complex128)
@@ -969,8 +966,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
         if raw_lr>0.25:
             max_lr = 0.25
-        elif raw_lr < 0.1:
-            max_lr=0.1
+        elif raw_lr < 0.2:
+            max_lr=0.2
         else:
             max_lr = raw_lr
         print(f"max_lr: {max_lr:.3e}")
@@ -980,7 +977,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             # raw_lr=raw_lr,
             # base_step=
             max_lr=max_lr,
-            debug=True
+            debug=False
 
         )
         # opt_lr = improved_get_initial_lr_per_param(
@@ -1001,15 +998,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
         print(f"raw lr: {raw_lr:.3e}, grad_norm: {grad_norm:.3e}")
         cost = init_loss
-        
-
-    opt_lr = np.array([0.00376524, 0.00438356, 0.00351822, 0.00168949, 0.00534178,
-       0.00195076, 0.00152807, 0.02003479, 0.00153036, 0.00532235,
-       0.00210372, 0.0034243 , 0.00216419, 0.2       , 0.00678675,
-       0.03010317, 0.05555207, 0.16873981, 0.03439653, 0.2       ,
-       0.12010882, 0.05761787, 0.2       , 0.01128127, 0.01129959,
-       0.01483492, 0.03782067, 0.02124858, 0.01687325, 0.01654504,
-       0.01325018, 0.01236597, 0.00554659])
+ 
     # opt = optax.chain(
     #     optax.clip_by_global_norm(1.0),            # Clip gradients globally
     #     scale_by_param_lr(opt_lr),             # Apply per-parameter scaling
@@ -1435,12 +1424,13 @@ if __name__ == '__main__':
     trots = [1,15,20,25,30,35,40]
     trots = [30,35,40]
     # trots = [1,2,3,4,5,6,8]
-    trots = [12]
+    trots = [8,12,20,24]
+    # trots = [24]
     # trots = [1,2,3,4,5]
 
     # res = [1, 2, 3]
     # res = [2]
-    res = [1]
+    res = [1,2]
   
 
     
@@ -1450,13 +1440,13 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 20
+    N_train = 15
     add=0
     # if N_ctrl ==4:
     #     add = 5_optimized_by_cost3
     
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
-    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_experimental_decy/'
+    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_experimental/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param4_opt/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
@@ -1478,9 +1468,9 @@ if __name__ == '__main__':
 
         # if not gate_idx in [2]:
         #     continue
-        # if not gate_idx in [11,12,13,14,15,16,17,18,19]:
+        # if not gate_idx in [19]:
         #     continue
-        # if gate_idx < 20:
+        # if gate_idx < 7:
         #     continue
        
 
@@ -1490,8 +1480,8 @@ if __name__ == '__main__':
             
             
             for N_reserv in res:
-                if N_reserv == 1 and time_steps == 22:
-                    continue
+                # if N_reserv == 1 and time_steps == 22:
+                #     continue
                 
                 N =N_ctrl+N_reserv
                 
