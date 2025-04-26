@@ -1487,25 +1487,27 @@ if __name__ == '__main__':
                 
                 #folder = f'./param_initialization/Nc{N_ctrl}_Nr{N_reserv}_dt{time_steps}/fixed_params4/test7/'
                 for num_bath,bath in zip(num_baths,baths):
-                    params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
-                    params_key = jax.random.PRNGKey(params_key_seed)
-                    dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
-                    dataset_key = jax.random.PRNGKey(dataset_seed)
-                    main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
-                    
-                    # main_params = jax.random.normal(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi/2, maxval=np.pi/2)
-                   
-                    params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
-                    
-                    
-                    time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
-                    init_params_dict = get_init_params(N_ctrl, N_reserv, time_steps,bath,num_bath,params_subkey1)
-                    # print(f"init_params_dict: {init_params_dict}")
+                                folder = os.path.join(base_folder, f"{num_bath}_num_baths/")
+                                params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
+                                params_key = jax.random.PRNGKey(params_key_seed)
+                                dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
+                                dataset_key = jax.random.PRNGKey(dataset_seed)
+                                main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
+                                # print(f"main_params: {main_params}")
+                                params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
+                                
+                                
+                                time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
+                                K_half = jax.random.uniform(params_subkey1, (N, N))
+                                K = (K_half + K_half.T) / 2  # making the matrix symmetric
+                                K = 2. * K - 1.
+                                init_params_dict = {'K_coef': jnp.asarray(K)}
+                            
 
 
-                    # Combine the two parts
-                    params = jnp.concatenate([time_step_params, main_params])
-                    # print(params)
+                                # Combine the two parts
+                                params = jnp.concatenate([time_step_params, main_params])
+                         # print(params)
                   
 
 
