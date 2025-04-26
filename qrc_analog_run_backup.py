@@ -897,7 +897,12 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     f64 = np.array(testing_results, dtype=np.float64)
     infids = 1.0 - f64
    
-    print("\nAverage Final Fidelity: ", f64.mean())
+    avg_fidelity = np.mean(f64)
+    if 1.-avg_fidelity <1e-4:
+        print(f'Avg Fidelity: {avg_fidelity:.8e}, Err: {float(np.log10(infids).mean()):.5f}')
+    else: 
+        print(f'Avg Fidelity: {avg_fidelity:.5f}')
+     
   
     data = {'Gate':base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
             'opt_description': opt_descr,
