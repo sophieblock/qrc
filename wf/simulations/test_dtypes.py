@@ -884,7 +884,7 @@ def test_ndim_dtype_consistency():
 #     assert check_dtypes_consistent([MatrixType, TensorType], MatrixType)
 #     assert not check_dtypes_consistent([MatrixType, TensorType], int)
 
-def test_is_consistent_data_type():
+def test_is_consistent_tensortype():
     t1 = TensorType((2, 4))
     t2 = TensorType((3, 4))
     assert not check_dtypes_consistent(t1, t2)
@@ -948,6 +948,31 @@ def test_tensor_multiply_broadcast():
     assert t3.shape == (2,3)
     assert isinstance(t3, TensorType)
 
+def test_tensor_broadcast_mult():
+    tensor1 = TensorType(shape=(2, 3, 4), element_type=float)
+    tensor2 = TensorType(shape=(1, 3, 1), element_type=float)
+    result = tensor1.multiply(tensor2)
+    assert result.shape == (2, 3, 4)
+
+def _element_size(dtype):
+    """
+    Returns the element size for a dtype, in bytes
+    """
+    if not isinstance(dtype, torch.dtype):
+        raise RuntimeError(f"expected torch.dtype, but got {type(dtype)}")
+
+    if dtype.is_complex:
+        print(torch.finfo(dtype).bits)
+        return torch.finfo(dtype).bits >> 2
+    elif dtype.is_floating_point:
+        print(torch.finfo(dtype).bits)
+        return torch.finfo(dtype).bits >> 3
+    elif dtype == torch.bool:
+        return 1
+    else:
+        print(torch.iinfo(dtype).bits)
+        return torch.iinfo(dtype).bits >> 3
+
 def test_tensortype_memory_calculations():
     torch_tensor_int8 = torch.ones((2, 2, 2), dtype=torch.int8)
     # print("[int8]: ", f"_element_size({str(torch_tensor_int8.dtype)}): {_element_size(torch_tensor_int8.dtype)}",
@@ -970,6 +995,15 @@ def test_tensortype_memory_calculations():
     assert tensor.element_size() == torch_tensor_float32.element_size(), f'tensor should have element_size = {torch_tensor_float32.element_size()}. Got: {tensor.element_size()}'
     assert tensor.nbytes == torch_tensor_float32.nbytes, f'tensor should have nbytes = {torch_tensor_float32.nbytes}. Got: {tensor.nbytes}'
     assert tensor.total_bits == torch_total_bits(torch_tensor_float32), f'tensor should have total_bits = {torch_total_bits(torch_tensor_float32)}. Got: {tensor.total_bits}'
+
+    torch_tensor_int8 = torch.ones((2,3), dtype=torch.int8)
+    tensor_c  = TensorType((2,3), element_type=CInt(8))
+    print("[int8]: ", f"_element_size({str(torch_tensor_int8.dtype)}): {_element_size(torch_tensor_int8.dtype)}",
+          f"tensor.element_size(): {torch_tensor_int8.element_size()}, got: {tensor_c.total_bits}",
+          f"tensor.nbytes: {torch_tensor_int8.nbytes}, total_bits={torch_total_bits(torch_tensor_int8)} tensor.untyped_storage().element_size: {torch_tensor_int8.untyped_storage().element_size()}")
+    
+    assert tensor_c.total_bits == torch_total_bits(torch_tensor_int8), f'tensor should have total_bits = {torch_total_bits(torch_tensor_int8)}. Got: {tensor_c.total_bits}'
+
 
 @pytest.mark.parametrize("dtype,expected_element_size,expected_bits_per_element,expected_total_bits", [
     
