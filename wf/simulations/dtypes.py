@@ -128,6 +128,25 @@ def prod(args: Iterable[SymbolicT]) -> SymbolicT:
     return ret
 
 
+def _element_size(dtype):
+    """
+    Returns the element size for a dtype, in bytes
+    """
+    if not isinstance(dtype, torch.dtype):
+        raise RuntimeError(f"expected torch.dtype, but got {type(dtype)}")
+
+    if dtype.is_complex:
+        print(torch.finfo(dtype).bits)
+        return torch.finfo(dtype).bits >> 2
+    elif dtype.is_floating_point:
+        print(torch.finfo(dtype).bits)
+        return torch.finfo(dtype).bits >> 3
+    elif dtype == torch.bool:
+        return 1
+    else:
+        print(torch.iinfo(dtype).bits)
+        return torch.iinfo(dtype).bits >> 3
+
 class _DynType:
     """
     _DynType defines a type which stands for the absence of type information.
@@ -765,6 +784,46 @@ class CBit(CType):
         return 'CBit()'
 
 @frozen
+class CAny(CType):
+   
+    bit_width: SymbolicInt = field(default=32)
+
+
+
+    @property
+    def data_width(self) -> int:
+        return self.bit_width
+    # def to_bits(self, x: int) -> List[int]:
+    #     # delegate to unsigned int
+    #     return CUInt(self.bit_width).to_bits(x)
+
+    # def from_bits(self, bits: Sequence[int]) -> int:
+    #     return CUInt(self.bit_width).from_bits(bits)
+    def to_bits(self, x: int) -> List[int]:
+        """Convert an integer to its bit representation."""
+        if not isinstance(x, int) or x < 0 or x >= 2**self.bit_width:
+            raise ValueError(f"Invalid value for CAny with {self.bit_width} bits.")
+        return [int(b) for b in bin(x)[2:].zfill(self.bit_width)]
+
+    def from_bits(self, bits: Sequence[int]) -> int:
+        """Reconstruct an integer from its bit representation."""
+        if len(bits) != self.bit_width:
+            raise ValueError(f"Expected {self.bit_width} bits; got {len(bits)}.")
+        return int("".join(map(str, bits)), 2)
+
+
+    def get_classical_domain(self) -> Iterable[Any]:
+        """Enumerate all possible values representable by this type."""
+        if is_symbolic(self.bit_width):
+            raise ValueError("Can't enumerate domain for symbolic bit-size.")
+        return range(2 ** self.bit_width)
+   
+    def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
+        if not isinstance(val, int) or val < 0 or val >= 2**self.bit_width:
+            raise ValueError(f"{debug_str} must be a valid integer for {self.bit_width} bits. Got: {val}")
+
+
+@frozen
 class CInt(CType):
     """
     Classical signed integer (two's complement).
@@ -1011,8 +1070,8 @@ class CFloat(CType):
     bit_width: int = 32
 
     def __attrs_post_init__(self):
-        if self.bit_width not in (8,16, 32, 64):
-            raise ValueError("Unsupported float size")
+        if self.bit_width not in (8, 16, 32, 64):
+            raise ValueError(f"Unsupported float size: {self.bit_width}")
 
     @property
     def data_width(self) -> int:
@@ -1202,28 +1261,12 @@ def _bits_for_dtype(dt) -> int:
     # Possibly default to 64 (or 32)
     if dt is float:
         return 32
-    if dt is int:
+    if dt is int: 
         return 32
     
     return 32  
-def _element_size(dtype):
-    """
-    Returns the element size for a dtype, in bytes
-    """
-    if not isinstance(dtype, torch.dtype):
-        raise RuntimeError(f"expected torch.dtype, but got {type(dtype)}")
 
-    if dtype.is_complex:
-        print(torch.finfo(dtype).bits)
-        return torch.finfo(dtype).bits >> 2
-    elif dtype.is_floating_point:
-        print(torch.finfo(dtype).bits)
-        return torch.finfo(dtype).bits >> 3
-    elif dtype == torch.bool:
-        return 1
-    else:
-        print(torch.iinfo(dtype).bits)
-        return torch.iinfo(dtype).bits >> 3
+     
 
 @frozen
 class TensorType(CType):
@@ -1314,29 +1357,7 @@ class TensorType(CType):
             return [build_nested(flat_list, shape_dims[1:]) for _ in range(dim)]
         shape_copy = self.shape
         return build_nested(flat_elems, shape_copy)
-    # def from_bits(self, bits: List[int]):
-    #     # Reconstruct nested list from flat bits according to shape
-    #     if any(d is None for d in self.shape):
-    #         raise RuntimeError("Cannot reconstruct CTensor with dynamic shape without additional info")
-    #     # Determine number of elements and element bit-width
-    #     elem_width = self.element_type.data_width()
-    #     total_elems = 1
-    #     for d in self.shape:
-    #         total_elems *= d
-    #     expected_bits = total_elems * elem_width
-    #     if len(bits) != expected_bits:
-    #         raise ValueError(f"Bit length {len(bits)} does not match tensor size {expected_bits}")
-    #     # Build nested list by slicing bits for each element
-    #     flat_elems = [self.element_type.from_bits(bits[i*elem_width:(i+1)*elem_width])
-    #                   for i in range(total_elems)]
-    #     # Now reshape flat_elems into the given multi-dimensional shape
-    #     def build_nested(flat_list, shape_dims):
-    #         if not shape_dims:  # no more dims, just a scalar
-    #             return flat_list.pop(0)
-    #         dim = shape_dims[0]
-    #         return [build_nested(flat_list, shape_dims[1:]) for _ in range(dim)]
-    #     nested_value = build_nested(flat_elems, self.shape.copy())
-    #     return nested_value
+   
     def get_classical_domain(self) -> Iterable[Any]:
         """Yields all possible values representable by this tensor type."""
         if self.element_type is not None:
@@ -1415,15 +1436,14 @@ class MatrixType(TensorType):
     @property
     def cols(self) -> int:
         return self.shape[1]
-    
+    @property
     def data_width(self) -> int:
-        if any(d is None for d in self.shape):
-            raise RuntimeError("TensorType has dynamic shape; data_width is undefined until shape is concrete")
-        total_elems = 1
-        for d in self.shape:
-            total_elems *= d
-        return total_elems * self.element_type.data_width()
-    
+        """
+        Bits **per element** – same as the underlying element_type.
+        """
+        return self.element_type.data_width
+
+
     def multiply(self, other: "MatrixType") -> "MatrixType":
         """Matrix multiplication shape logic (rows x cols)."""
         if self.cols != other.rows:
@@ -1601,7 +1621,7 @@ def _check_cuint_cfixed_consistent(cu: CUInt, cfix: CFxp) -> bool:
     """
     if cfix.signed:
         return False
-    if _is_sym_width(cu.bit_width) or _is_sym_width(cfix.bit_width):
+    if _is_symbolic_dim(cu.bit_width) or _is_symbolic_dim(cfix.bit_width):
         return True
     if cu.bit_width != cfix.bit_width:
         return False
@@ -1641,34 +1661,18 @@ def _map_to_domain(level: DTypeCheckingSeverity) -> tuple[C_PromoLevel, Q_PromoL
     
     raise ValueError(f"Unknown severity {level}")
 
-def _is_sym_width(w) -> bool:
+def _is_symbolic_dim(w) -> bool:
     return w is Dyn or isinstance(w, sympy.Basic) or not isinstance(w, int)
 
 
 def _width_equal_or_symbolic(w1, w2) -> bool:
     """Return True if widths *exactly* match – or one is Dyn/symbolic."""
     
-    # symbolic = lambda w: w is Dyn or _is_sym_width(w)
-    return (w1 == w2) or _is_sym_width(w1) or _is_sym_width(w2)
-def _bitcast_compatible(a: Any, b: Any) -> bool:
-    """
-    RELAXED-only logic: allow exact bit-for-bit reinterpretations
-    within one domain.
-    """
-    # 1) TensorType: shapes match (allow Dyn) & total_bits equal
-    if isinstance(a, TensorType) and isinstance(b, TensorType):
-        if len(a.shape) != len(b.shape):
-            return False
-        for da, db in zip(a.shape, b.shape):
-            if da != db and da is not Dyn and db is not Dyn:
-                return False
-        # compare total bit count
-        if a.total_bits != b.total_bits:
-            return False
-        return True
+    # symbolic = lambda w: w is Dyn or _is_symbolic_dim(w)
+    return (w1 == w2) or _is_symbolic_dim(w1) or _is_symbolic_dim(w2)
 
-    # 2) Atomic: exact bit-width match
-    return getattr(a, "data_width", None) == getattr(b, "data_width", None)
+
+
 def check_dtypes_consistent(
     dtype_a: DataType,
     dtype_b: DataType,
@@ -1761,8 +1765,8 @@ def check_dtypes_consistent(
     if c_lvl is C_PromoLevel.STRICT:
         if dtype_a == dtype_b:
             return True
-        if same_dtype and _is_sym_width(getattr(dtype_a, "bit_width", None)) \
-                   and _is_sym_width(getattr(dtype_b, "bit_width", None)):
+        if same_dtype and _is_symbolic_dim(getattr(dtype_a, "bit_width", None)) \
+                   and _is_symbolic_dim(getattr(dtype_b, "bit_width", None)):
             return True
         return False
 
@@ -1787,8 +1791,8 @@ def check_dtypes_consistent(
     # PROMOTE – symbolic wildcard OR widening int→float
     if c_lvl is C_PromoLevel.PROMOTE:
         # symbolic width passes within same class
-        if same_dtype and (_is_sym_width(getattr(dtype_a, "bit_width", None))
-                      or _is_sym_width(getattr(dtype_b, "bit_width", None))):
+        if same_dtype and (_is_symbolic_dim(getattr(dtype_a, "bit_width", None))
+                      or _is_symbolic_dim(getattr(dtype_b, "bit_width", None))):
             return True
         # int / uint → float widening
         int_to_float = (
@@ -1829,3 +1833,120 @@ def check_dtypes_consistent(
     # everything else fails
     return False
 
+def _bitcast_ok(a, b) -> bool:
+    return (not _cross_domain(a, b)) and (a.data_width == b.data_width)
+def _bitcast_compatible(a: Any, b: Any) -> bool:
+    """
+    RELAXED-only logic: allow exact bit-for-bit reinterpretations
+    within one domain.
+    """
+    # 1) TensorType: shapes match (allow Dyn) & total_bits equal
+    if isinstance(a, TensorType) and isinstance(b, TensorType):
+        if len(a.shape) != len(b.shape):
+            return False
+        for da, db in zip(a.shape, b.shape):
+            if da != db and da is not Dyn and db is not Dyn:
+                return False
+        # compare total bit count
+        if a.total_bits != b.total_bits:
+            return False
+        return True
+
+    # 2) Atomic: exact bit-width match
+    return getattr(a, "data_width", None) == getattr(b, "data_width", None)
+
+# ------------------------------------------------------------------
+#  Atomic promotion rules *within one domain*
+# ------------------------------------------------------------------
+def _promote_atomic(a, b) -> bool:
+    """
+    Returns True if `a` can widen/promote to `b` (or vice-versa) without
+    narrowing *and* the two dtypes live in the same domain.
+    """
+    # ------------------ quantum ------------------
+    if _is_quantum(a) and _is_quantum(b):
+        return _width_eq_or_sym(getattr(a, "num_qubits"), getattr(b, "num_qubits"))
+
+    # ------------------ classical numeric ------------------
+    from workflow.simulation.refactor.dtypes import (
+        CInt,
+        CUInt,
+        CFloat,
+        CFxp,
+    )
+
+    if isinstance(a, (CInt, CUInt, CFloat, CFxp)) and isinstance(b, (CInt, CUInt, CFloat, CFxp)):
+        wa, wb = a.data_width, b.data_width
+
+        # int → float always okay
+        if isinstance(a, (CInt, CUInt)) and isinstance(b, CFloat):
+            return True
+        if isinstance(b, (CInt, CUInt)) and isinstance(a, CFloat):
+            return True
+
+        # widen within same numeric family
+        same_int   = isinstance(a, (CInt, CUInt)) and isinstance(b, (CInt, CUInt))
+        same_float = isinstance(a, CFloat) and isinstance(b, CFloat)
+        same_fixed = isinstance(a, CFxp) and isinstance(b, CFxp) and (a.signed == b.signed)
+
+        def _le(x, y):
+            try:
+                return x <= y
+            except TypeError:  # symbolic widths
+                return True
+
+        if same_int   and _le(wa, wb): return True
+        if same_float and _le(wa, wb): return True
+        if same_fixed and _le(wa, wb): return True
+
+        # CUInt ↔ CFxp(frac_bits=0) iff same width
+        if isinstance(a, CUInt) and isinstance(b, CFxp) and b.frac_bits == 0 and wa == wb:
+            return True
+        if isinstance(b, CUInt) and isinstance(a, CFxp) and a.frac_bits == 0 and wa == wb:
+            return True
+
+    return False
+
+
+
+# ------------------------------------------------------------------
+#  Tensor / Matrix promotion
+# ------------------------------------------------------------------
+def _promote_tensor(a, b, severity) -> bool:
+    from workflow.simulation.refactor.dtypes import TensorType
+
+    if not (isinstance(a, TensorType) and isinstance(b, TensorType)):
+        return False
+
+    # rank must match
+    if len(a.shape) != len(b.shape):
+        return False
+
+    # if BOTH shapes are fully concrete, never promote
+    concrete = lambda d: isinstance(d, int) and d is not Dyn
+    if all(concrete(d) for d in a.shape) and all(concrete(d) for d in b.shape):
+        return False
+
+    # element-wise dim check
+    for da, db in zip(a.shape, b.shape):
+        if da == db:
+            continue
+        if _is_symbolic_dim(da) or _is_symbolic_dim(db):
+            continue
+        return False
+
+    return check_dtypes_consistent(a.element_type, b.element_type, severity)
+
+# ------------------------------------------------------------------
+#  Struct promotion
+# ------------------------------------------------------------------
+def _promote_struct(a, b, severity) -> bool:
+    from workflow.simulation.refactor.dtypes import CStruct
+
+    if not (isinstance(a, CStruct) and isinstance(b, CStruct)):
+        return False
+    if set(a.fields) != set(b.fields):
+        return False
+    return all(
+        check_dtypes_consistent(a.fields[k], b.fields[k], severity) for k in a.fields
+    )
