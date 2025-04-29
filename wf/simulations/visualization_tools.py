@@ -2,7 +2,7 @@
 from .simulation.refactor.data import Data, DataSpec
 from .simulation.refactor.register import Signature, Flow
 from .simulation.refactor.builder import DanglingT,LeftDangle,RightDangle,Connection, Port,ProcessInstance
-from .simulation.refactor.dtypes import QBit,CBit
+from .simulation.refactor.dtypes import QBit,CBit,TensorType,MatrixType, check_dtypes_consistent
 # from .simulation.refactor.graph import DirectedEdge,Network
 
 import itertools
@@ -38,8 +38,8 @@ def _assign_ids_to_nodes_and_edges(process_instances, all_ports):
     def add(item: Any, desired_id: str):
         nonlocal disambiguator
         if item in to_id:
-            raise ValueError(f"Item {item} was already added to the ID mapping.")
-
+            # raise ValueError(f"Item {item} was already added to the ID mapping.")
+            return
         if desired_id not in ids:
             unique_id = desired_id
         else:
@@ -54,7 +54,15 @@ def _assign_ids_to_nodes_and_edges(process_instances, all_ports):
         add(pinst, f'{pinst.process.__class__.__name__}')
         for groupname,_ in pinst.process.signature.groups():
             add((pinst,groupname),groupname)
-    # print(all_ports)
+    # 2) **new**: also give every possible port in those groups an ID,
+    #    so that when add_pinst does Port(pinst,reg,idx) those show up here
+    
+    # for pinst in process_instances:
+    #     for _, groupregs in pinst.process.signature.groups():
+    #         for reg in groupregs:
+    #             for idx in reg.all_idxs():
+    #                 port = Port(pinst, reg, idx)
+    #                 add(port, reg.name)
     for port in all_ports:
         add(port,f'{port.reg.name}')
 
@@ -95,16 +103,20 @@ def _parition_registers_in_a_group(
 from pathlib import Path
 import os
 
-def display_mod(process, type: str="dtype"):
+def display_mod(process, type: str="dtype",  show_bookkeeping=True):
     if type.lower() == 'dtype':
-        IPython.display.display(ModuleDrawer(process, label_type="dtype", show_bookkeeping=True))
+        IPython.display.display(ModuleDrawer(process, label_type="dtype", show_bookkeeping=show_bookkeeping))
+    elif type.lower() == 'nbytes':
+        IPython.display.display(ModuleDrawer(process, label_type="nbytes", show_bookkeeping=show_bookkeeping))
+    elif type.lower() == 'shape':
+        IPython.display.display(ModuleDrawer(process, label_type="shape", show_bookkeeping=show_bookkeeping))
 
 
 class ModuleDrawer:
     """A class to encapsulate methods for displaying or saving a Workflow as a graph using pydot."""
 
     def __init__(self, cnode, label_type="dtype", show_bookkeeping = True):
-        self.cnode = cnode
+        cnode = cnode.as_composite()
         self._cnode = cnode
         self._ports = cnode.all_ports
         self._pinsts = cnode.pinsts
@@ -167,7 +179,18 @@ class ModuleDrawer:
         return port.pretty()
 
     def _register_td(self, port: Optional[Port], *, with_empty_td: bool, rowspan: int = 1) -> str:
-        
+        """Return the html code for an individual <TD>.
+
+        This includes some factored-out complexity which aims to correctly pad cells that
+        are empty due to a differing number of left and right dataports.
+
+        Args:
+            port: The optional port.
+            with_empty_td: If `soq` is `None`, return an empty `<TD>` in its place if
+                this is set to True. Otherwise, omit the empty TD and rely on the rowspan arguments.
+            rowspan: If greater than `1`, include the `rowspan` html attribute on the TD to
+                span multiple rows.
+        """
 
         if port is None:
             if with_empty_td:
@@ -181,7 +204,7 @@ class ModuleDrawer:
         else:
             rowspan_html = ''
 
-        return f'<TD {rowspan_html} port="{self.ids[port]}">{self.get_port_label(port)}</TD>'
+        return f'<TD {rowspan_html} port="{self.ids[port]}">{html.escape(self.get_port_label(port))}</TD>'
 
     def _get_register_tr(
         self,
@@ -274,39 +297,50 @@ class ModuleDrawer:
     def _fmt_dtype(dtype):
         return str(dtype)
 
-    def cxn_label(self, cxn: Connection) -> str:
-        """Overridable method to return labels for connections."""
-        # print(cxn.left.reg)
-        l, r = cxn.left.reg.dtype, cxn.right.reg.dtype
-        # print(cxn.right.data.metadata)
-        if l == r:
-            # print(l, str(l))
-            return self._fmt_dtype(l)
-        elif l.data_width == 1:
-            return self._fmt_dtype(l if isinstance(l,(QBit,CBit)) else r)
-        else:
-            return f'{self._fmt_dtype(l)}-{self._fmt_dtype(r)}'
 
     def cxn_edge(self, left_id: str, right_id: str, cxn: Connection) -> pydot.Edge:
         """Overridable method to style a pydot.Edge for connecionts."""
         l, r = cxn.left.reg, cxn.right.reg
-        # logger.debug(f"cxn: {cxn}. l.data_width: {l.data_width}, r.data_width: {r.data_width}")
+        logger.debug(f"cxn: {cxn}. l.dtype: {l.dtype}, l.shape: {l.shape}, l.nbytes: {l.dtype.nbytes}, \nr.dtype: {r.dtype}, r.shape: {r.shape}, r.dtype.nbytes: {r.dtype.nbytes}")
         if self.label_type == 'shape':
-            l, r = cxn.left.reg, cxn.right.reg
+            # l, r = cxn.left.reg, cxn.right.reg
             if l == r:
                 # print(f"l == r")
-                cxn_label =  self._fmt_dtype(l)
-           
-        elif self.label_type == 'dtype':
-            cxn_label = self.cxn_label(cxn)
-        elif self.label_type == 'data_width':
+                # cxn_label =  self._fmt_dtype(l)
+                cxn_label = str(r.shape)
             
-            cxn_label = str(cxn.shape)
-            # print(cxn.left.data.bit_length)
-            # print(cxn.left.data)
-            cxn_label = cxn.left.reg.data_width
+            if isinstance(l.dtype,(TensorType,MatrixType)) and not isinstance(r.dtype,(TensorType,MatrixType)):
+                cxn_label = f'{l.dtype.shape}-{r.shape}'
+            elif isinstance(l.dtype,(TensorType,MatrixType)) and isinstance(r.dtype,(TensorType,MatrixType)):
+                cxn_label = f'{l.dtype.shape}-'
+            elif not isinstance(l.dtype,(TensorType,MatrixType)) and isinstance(r.dtype,(TensorType,MatrixType)):
+                cxn_label = f'-{r.dtype.shape}'
+            else:
+                cxn_label = f"{l.shape}->{r.shape}"
+        elif self.label_type == 'dtype':
+            l_dtype, r_dtype = l.dtype, r.dtype
+            if l_dtype == r_dtype:
+                # print(l, str(l))
+                cxn_label =  self._fmt_dtype(l_dtype)
+            elif l_dtype.data_width == 1:
+                cxn_label =  self._fmt_dtype(l_dtype if isinstance(l_dtype,(QBit,CBit)) else r_dtype)
+            else:
+                # TODO: choose 'wider' dtype
+                assert check_dtypes_consistent(l_dtype,r_dtype)
+                cxn_label =  f'{self._fmt_dtype(l_dtype)}-{self._fmt_dtype(r_dtype)}'
+
+            
+        elif self.label_type == 'nbytes':
+            l_bytes, r_bytes = l.dtype.nbytes, r.dtype.nbytes
+            if l_bytes == 0 or r_bytes == 0:
+                l_width, r_width = l.dtype.data_width, r.dtype.data_width
+                cxn_label = str(r_width)
+            else:
+                # print(cxn.left.data.bit_length)
+                # print(cxn.left.data)
+                cxn_label = str(r_bytes)
         else: 
-            cxn_label =self.cxn_label(cxn)
+            cxn_label = cxn.left.reg.total_bits() 
         # print(cxn_label,self.label_type)
         # logger.debug(f"cxn label: {cxn_label}, shape: {cxn.shape}")
         assert cxn_label is not None, f"cxn_label cannot be None for label_type={self.label_type}. cxn label: {cxn_label}, shape: {cxn.shape}"
