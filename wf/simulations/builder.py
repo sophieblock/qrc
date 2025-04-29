@@ -166,8 +166,8 @@ class Connection:
     @cached_property
     def shape(self) -> int:
 
-        ls = self.left.reg.data_width
-        rs = self.right.reg.data_width
+        ls = self.left.reg.bitsize
+        rs = self.right.reg.bitsize
 
         if ls != rs:
             raise ValueError(f"Invalid Connection {self}: shape mismatch: {ls} != {rs}")
@@ -179,7 +179,13 @@ class Connection:
 _PortType = TypeVar('_PortType', bound=np.generic)
 PortT = Union[Port, NDArray[_PortType]]
 PortInT = Union[Port, NDArray[_PortType], Sequence[Port]]
+def _shape_of(dt: DataType | Any) -> tuple[int, ...]:
+    """Return tensor/matrix shape, or () when scalar."""
+    return tuple(getattr(dt, "shape", ()))
 
+def _element_dtype_of(dt: DataType | Any) -> DataType:
+    """Tensor/Matrix → element_type; otherwise return dt itself."""
+    return canonicalize_dtype(dt.element_type) if hasattr(dt, "element_type") else dt
 @define
 class Split(Process):
     """ Splits one register of a given dtype into an array of e.g. CBit or QBit.
@@ -201,42 +207,58 @@ class Split(Process):
     @cached_property
     def signature(self) -> Signature:
         """
-        We define a left RegisterSpec with shape=() for an 'atomic' input,
-        or shape=(1,) if you want a single chunk. Then a right register
-        that is an array shape if you want multi-wire.
-
-        Alternatively, you can rely on self.dtype.shape to build the final shape.
-      
-
-        This is analogous to Qualtran: one "left" register is dtype,
-        the "right" register is an array of QBit or CBit of shape=(data_width,).
+        INPUT  (LEFT)   : one atomic register carrying `self.dtype`
+        OUTPUT (RIGHT)  : an *array* of wires whose length equals the
+                          **top-level element count** of the input value.
+        Rules
+        -----
+        • If `dtype` is TensorType/MatrixType  
+          –  Each output wire carries the *element_type*  
+          –  Fan-out =  product(dtype.shape)  (flatten the tensor)
+        •	Scalar inputs (e.g. CInt(4), QInt(8)) 
+            –  Each output wire carries one CBit or QBit, respectively  
+            –  Fan-out =  dtype.data_width  (bit / qubit splitter)
+            
+            This is analogous to Qualtran: one "left" register is dtype,
+            the "right" register is an array of QBit or CBit of shape=(data_width,).
         """
       
-        left_reg = RegisterSpec(
-            name="arg",
-            dtype=self.dtype,   
-            shape=tuple(),         
-            flow=Flow.LEFT
-        )
-        total_wires = (
-        self.dtype.total_bits
-        if hasattr(self.dtype, "total_bits")
-        else self.dtype.data_width
-    )
+        left_reg = RegisterSpec("arg", dtype=self.dtype, shape=(), flow=Flow.LEFT)
+        # total_wires = (
+        #     self.dtype.total_bits
+        #     if hasattr(self.dtype, "total_bits")
+        #     else self.dtype.data_width
+        # )
+        shp          = _shape_of(self.dtype)
+        elem_dt      = _element_dtype_of(self.dtype)
+        elem_width   = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
+        n_elems      = prod(shp) or 1
+        
         # pick out_dtype (one bit / qubit per split)
-        if hasattr(self.dtype, "element_type"):
-            out_dtype = canonicalize_dtype(self.dtype.element_type)
+        if isinstance(self.dtype, (TensorType, MatrixType)):
+            out_dtype = elem_dt
+            fan_out   = prod(_shape_of(self.dtype)) or 1
+            logger.debug(f"{self.dtype} with element dtype: {self.dtype.element_type} output dtype: {out_dtype}, elem_width: {elem_width}, n_elems: {n_elems}, fan_out: {fan_out}")
+       
         elif isinstance(self.dtype, CType):
             out_dtype = CBit()
+            fan_out   = self.dtype.data_width
+            logger.debug(f"{self.dtype}, output dtype: {out_dtype}, fan_out: {fan_out}")
         elif isinstance(self.dtype, QType):
             out_dtype = QBit()
+            fan_out   = self.dtype.data_width
+            logger.debug(f"{self.dtype}, output dtype: {out_dtype}, fan_out: {fan_out}")
         else:
             raise TypeError(f"Split cannot infer element_type from {self.dtype}")
-
+        # logger.debug(f'total_wires: {total_wires}')
+        if fan_out == 1:
+            right_shape = ()
+        else:
+            right_shape = (fan_out,)
         right_reg = RegisterSpec(
             name="arg",
             dtype=out_dtype,
-            shape=(total_wires,),
+            shape=right_shape,
             flow=Flow.RIGHT,
         )
         return Signature([left_reg, right_reg])
@@ -254,80 +276,103 @@ class Split(Process):
         if other.__class__ is not self.__class__:
             return NotImplemented
         return (self.dtype,) == (other.dtype,)
-    
-@define 
+
+@define  
 class Join(Process):
     """
-    Joins multiple 'sub-wires' into a single register of a given dtype.
+    Join an *array* of wires into a single atomic register of `dtype`.
 
-    E.g. if we have an array of shape=(num_splits,) each of QBit or CBit,
-    we unify them into one atomic register spec on the RIGHT side.
+    INPUT  (LEFT)
+        • Tensor/Matrix target
+              – if its element-type is *multi-bit* classical
+                    in_shape = (*tensor.shape, elem_width)
+                    wire_dtype = CBit()
+              – else
+                    in_shape = tensor.shape
+                    wire_dtype = element_type
+        • Scalar CType
+              in_shape = (dtype.data_width,)
+              wire_dtype = CBit()
+        • Scalar QType
+              in_shape = (dtype.data_width,)
+              wire_dtype = QBit()
+        • CBit / QBit target
+              in_shape = ()
+              wire_dtype = same CBit / QBit
+
+    OUTPUT (RIGHT)
+        a single atomic register carrying `self.dtype`
     """
-    dtype: DataType = field()
-  
+
+    dtype: DataType = field(converter=canonicalize_dtype)
+
 
     @cached_property
     def signature(self) -> Signature:
-        # Left: shape=(num_parts,) of sub-wire
+        shp          = _shape_of(self.dtype)
+        elem_dt      = _element_dtype_of(self.dtype)
+        elem_width   = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
+        n_elems      = prod(shp) or 1
+
+        # ---------- determine wire_dtype & in_shape --------------------
+        if isinstance(self.dtype, (TensorType, MatrixType)):
+            wire_dtype  = _element_dtype_of(self.dtype)
+            in_shape  = _shape_of(self.dtype) or ()
+
+            # if isinstance(elem_dt, CType) and elem_w > 1:
+            #     # one CBit per *bit* of every element
+            #     wire_dtype = CBit()
+            #     in_shape   = (*self.dtype.shape, elem_w) if n_elems != 1 else (elem_w,)
+            # else:
+            #     wire_dtype = elem_dt
+            #     in_shape   = self.dtype.shape
+
+        elif isinstance(self.dtype, CType):
+            in_dtype  = self.dtype.__class__(**getattr(self.dtype, "__dict__", {}))
+            if isinstance(self.dtype, CBit):
+                wire_dtype = CBit()
+                in_shape   = (self.dtype.data_width,)
+            else:
+                wire_dtype = in_dtype
+                in_shape   = (self.dtype.data_width,)
+
+        elif isinstance(self.dtype, QType):
+
+            wire_dtype = QBit()
+            in_shape   = (self.dtype.data_width,)
+
+        else:
+            raise TypeError(f"Join cannot handle dtype {self.dtype!r}")
+
+        # ---------- LEFT array register --------------------------------
         left_reg = RegisterSpec(
             name="arg",
-            dtype=CBit(),  # or QBit if quantum
-            shape=(self.dtype.data_width,),
-            flow=Flow.LEFT
+            dtype=wire_dtype,
+            shape=in_shape,
+            flow=Flow.LEFT,
         )
 
-        # Right: a single atomic chunk
+        # ---------- RIGHT atomic register ------------------------------
         right_reg = RegisterSpec(
             name="arg",
-            dtype=self.dtype,   # e.g. CBit() shape=()
-            shape=tuple(),
-            flow=Flow.RIGHT
+            dtype=self.dtype,
+            shape=(),
+            flow=Flow.RIGHT,
         )
+
         return Signature([left_reg, right_reg])
-    
+    @dtype.validator
+    def _validate_dtype(self, attribute, value):
+        if value.is_symbolic():
+            raise ValueError(f"{self} Cannot split with symbolic data_width.")
     def set_expected_input_properties(self):
         # If you want dictionary-based checks, define them here
         self.expected_input_properties = [{"Data Type": type(self.dtype), "Usage": "Join"}]
     def __repr__(self):
         return 'Join'
-
-
-
-_ALLOCATION_PRIORITY: int = int(1e16)
-"""A large constant value to ensure that allocations are performed as late as possible
-and de-allocations (with -_ALLOCATION_PRIORITY priority) are performed as early as possible.
-To determine ordering among allocations, we may add a priority to this base value."""
-
-
-def _priority(node: 'ProcessInstance') -> int:
-    
-
-    if isinstance(node, DanglingT):
-        return 0
-
-    if node.process_is(Allocate):
-        return _ALLOCATION_PRIORITY
-
-    if node.process_is(Free):
-        return -_ALLOCATION_PRIORITY
-
-    signature = node.bloq.signature
-    return total_bits(signature.rights()) - total_bits(signature.lefts())
-
-
-def greedy_topological_sort(pinst_graph: nx.DiGraph) -> Iterator['ProcessInstance']:
-    """
-
-    Args:
-        pinst_graph: A networkx DiGraph with `ProcessInstance`s as nodes. Usually obtained
-        from `CompositeMod._pinst_graph` 
-
-    Yields:
-        Nodes from the input graph returned in a greedy topological sorted order with the
-        goal to minimize (qubit) allocations and deallocations by pushing allocations to the
-        right and de-allocations to the left.
-    """
-    yield from nx.lexicographical_topological_sort(pinst_graph, key=_priority)
+    def __hash__(self):  return hash(self.dtype)
+    def __eq__(self, other):
+        return isinstance(other, Join) and self.dtype == other.dtype
 
 def _to_set(x: Iterable[ProcessInstance]) -> FrozenSet[ProcessInstance]:
 
@@ -953,6 +998,7 @@ def _to_port(
 
 def _process_ports(registers: Iterable['RegisterSpec'], 
                        in_ports: Mapping[str,PortInT], 
+                       debug_str: str,
                        func: Callable[[Port, RegisterSpec, Tuple[int, ...]], None],):
     """
     Processes the connection between input Ports in the context of register specs
@@ -978,34 +1024,40 @@ def _process_ports(registers: Iterable['RegisterSpec'],
     unchecked_names: Set[str] = set(in_ports.keys())
 
     
-    for data_register in registers:
+    for reg in registers:
         # Get the ID of the expected data register
-        data_name = data_register.name
+        reg_name = reg.name
         
         
         try:
-            in_port = np.asarray(in_ports[data_name])
+            in_port = np.asarray(in_ports[reg_name])
         except KeyError:
-            raise KeyError(f"Incorrect port name '{data_name}' not in: {in_ports}")
+            raise KeyError(f"Incorrect port name '{reg_name}' not in: {in_ports}")
        
         
         
-        unchecked_names.remove(data_name)
+        unchecked_names.remove(reg_name)
         # logger.debug(f"Resolved shape for Data {data_id}: {data_register.resolve_shape()}")
 
         
-        for left_index in data_register.all_idxs():
+        for left_index in reg.all_idxs():
             # logger.debug(f"Processing index {left_index} for Data '{data_id}'")
             indexed_port = in_port[left_index]
-            assert isinstance(indexed_port,Port)
+            assert isinstance(indexed_port,Port), indexed_port
 
             
-            func(indexed_port, data_register, left_index)
+            func(indexed_port, reg, left_index)
             # We need to add a RegisterSpec consistentancy check here. Partly why I think that 
             # this function may be of use at runtime with user input args. 
-            
+            if not check_dtypes_consistent(indexed_port.reg.dtype, reg.dtype, severity=DTypeCheckingSeverity.LOOSE,classical_level= C_PromoLevel.PROMOTE,quantum_level= Q_PromoLevel.LOOSE):
+                extra_str = (
+                    f"{indexed_port.reg.name}: {indexed_port.reg.dtype} vs {reg.name}: {reg.dtype}"
+                )
+                raise ValueError(
+                    f"{debug_str} register dtypes are not consistent {extra_str}."
+                )
     if unchecked_names:
-        raise ValueError(f"Unexpected input provided for data ID: {data_name}. {[reg.name for reg in registers]}")
+        raise ValueError(f"Unexpected input provided for data ID: {reg_name}. {[reg.name for reg in registers]}")
    
 
 class ProcessBuilder:
@@ -1115,6 +1167,7 @@ class ProcessBuilder:
         once and they must match the 'Register' specifications of the process_model.
 
         """
+        # logger.debug(f'in_ports: {in_ports}')
         outs = self.add_t(process_model, **in_ports)
         if len(outs) == 0:
             return None
@@ -1221,6 +1274,7 @@ class ProcessBuilder:
         _process_ports(
             registers=process.signature.lefts(),
             in_ports=in_ports,
+            debug_str=str(process),
             func=_add_edge
         )
         
@@ -1293,6 +1347,7 @@ class ProcessBuilder:
         _process_ports(
             registers=signature.rights(),
             in_ports=final_ports,
+            debug_str='Finalizing',
             func=_finish_edges
         )
         # Return the composite with all connections, pinsts, and normalized_map
@@ -1396,12 +1451,13 @@ class ProcessBuilder:
     def join(self, ports: List[PortT], dtype: Optional[DataType] = None) -> PortT:
         """Concatenate multiple ports into a single register."""
         try:
+            ports = np.asarray(ports)
             (n,) = ports.shape
         except AttributeError:
             raise ValueError("Can on merge/join equal-shaped ports. (potentiall only size 1?)")
         if dtype is None:
             dtype = CAny(n)
-        # logger.debug(f"ports.shape: {ports.shape},\ndtype: {dtype}")
+        logger.debug(f"ports.shape: {ports.shape},\ndtype: {dtype}")
         return self.add(Join(dtype=dtype), arg=ports)
     
     

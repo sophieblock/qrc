@@ -696,20 +696,23 @@ def test_any_disallows_numeric_conversions():
     "dtype_a, dtype_b, severity, expected",
     [
         # --------- C_PromoLevel.STRICT  ---------
-        (CInt(16),  CInt(16),   DTypeCheckingSeverity.STRICT, True),   # identical OK
-        (CInt(16),  CFloat(16), DTypeCheckingSeverity.STRICT, False),  # int ≠ float
-        (CInt(16),  CUInt(16),  DTypeCheckingSeverity.STRICT, False),  # signed ≠ unsigned
+        (CInt(1),  CBit(),  C_PromoLevel.STRICT,  True), 
+        (CInt(16),  CInt(16),   C_PromoLevel.STRICT, True),   # identical OK
+        (CInt(16),  CFloat(16), C_PromoLevel.STRICT, False),  # int ≠ float
+        (CInt(16),  CUInt(16),  C_PromoLevel.STRICT, False),  # signed ≠ unsigned
 
         # --------- C_PromoLevel.PROMOTE (global ANY) -----------
-        (CInt(16),  CFloat(16), DTypeCheckingSeverity.ANY,    True),   # int → float widen
-        (CInt(16),  CUInt(16),  DTypeCheckingSeverity.ANY,    False),  # int ↔ uint still blocked
-        (CFloat(32), CFloat(16), DTypeCheckingSeverity.ANY,   False),  # float widths differ
+        (CInt(1),  CBit(),  C_PromoLevel.PROMOTE,  True), 
+        (CInt(16),  CFloat(16), C_PromoLevel.PROMOTE,    True),   # int → float widen
+        (CInt(16),  CUInt(16),  C_PromoLevel.PROMOTE,    False),  # int ↔ uint still blocked
+        (CFloat(32), CFloat(16), C_PromoLevel.PROMOTE,   False),  # float widths differ
 
         # --------- C_PromoLevel.CAST (global LOOSE) ------------
-        (CInt(32),  CUInt(32),  DTypeCheckingSeverity.LOOSE,  True),   # signed ↔ unsigned bit-cast
-        (CUInt(8),  CFxp(8, 0), DTypeCheckingSeverity.LOOSE,  True),   # uint ↔ fixed-pt (frac=0)
-        (CFloat(32), CInt(32),  DTypeCheckingSeverity.LOOSE,  True),   # float ↔ int re-interpret
-        (CFloat(16), CFxp(16, 5), DTypeCheckingSeverity.LOOSE, False), # float ≠ fxp even with same width
+        (CInt(1),  CBit(),  C_PromoLevel.CAST,  True), 
+        (CInt(32),  CUInt(32),  C_PromoLevel.CAST,  True),   # signed ↔ unsigned bit-cast
+        (CUInt(8),  CFxp(8, 0), C_PromoLevel.CAST,  True),   # uint ↔ fixed-pt (frac=0)
+        (CFloat(32), CInt(32),  C_PromoLevel.CAST,  True),   # float ↔ int re-interpret
+        (CFloat(16), CFxp(16, 5), C_PromoLevel.CAST, False), # float ≠ fxp even with same width
     ],
 )
 def test_classical_promo_matrix(dtype_a, dtype_b, severity, expected):
@@ -721,7 +724,7 @@ def test_classical_promo_matrix(dtype_a, dtype_b, severity, expected):
         ANY    → C_PromoLevel.PROMOTE
         LOOSE  → C_PromoLevel.CAST
     """
-    assert check_dtypes_consistent(dtype_a, dtype_b, severity) is expected
+    assert check_dtypes_consistent(dtype_a, dtype_b, classical_level=severity) is expected
 
 
 @pytest.mark.parametrize(

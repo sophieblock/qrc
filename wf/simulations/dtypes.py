@@ -793,6 +793,9 @@ class CAny(CType):
     @property
     def data_width(self) -> int:
         return self.bit_width
+    @property
+    def nbytes(self) -> int:       
+        return self.data_width // 8
     # def to_bits(self, x: int) -> List[int]:
     #     # delegate to unsigned int
     #     return CUInt(self.bit_width).to_bits(x)
@@ -833,7 +836,9 @@ class CInt(CType):
     @property
     def data_width(self):
         return self.bit_width
-    
+    @property
+    def nbytes(self) -> int:       
+        return self.data_width // 8
     def get_classical_domain(self) -> Iterable[int]:
         half = 1 << (self.bit_width - 1)
         return range(-half, half)
@@ -878,6 +883,9 @@ class CUInt(CType):
     @property
     def data_width(self):
         return self.bit_width
+    @property
+    def nbytes(self) -> int:       
+        return self.data_width // 8
     @bit_width.validator
     def _check_bit_width(self, attribute, value):
         """
@@ -998,6 +1006,9 @@ class CFxp(CType):
     @property
     def data_width(self) -> int:
         return self.bit_width
+    @property
+    def nbytes(self) -> int:       
+        return self.data_width // 8
 
     @property
     def num_int(self) -> int:
@@ -1076,7 +1087,9 @@ class CFloat(CType):
     @property
     def data_width(self) -> int:
         return self.bit_width
-
+    @property
+    def nbytes(self) -> int:       
+        return self.data_width // 8
     def to_bits(self, value: float) -> List[int]:
         if self.bit_width == 128:
             raise ValueError("128-bit float conversion not implemented")
@@ -1130,7 +1143,9 @@ class CString(CType):
     @property
     def data_width(self) -> int:
         return 8 * self.max_length
-
+    @property
+    def nbytes(self) -> int:       
+        return self.max_length
     def to_bits(self, value: str) -> List[int]:
         if len(value) > self.max_length:
             raise ValueError("String exceeds max_length")
@@ -1179,7 +1194,12 @@ class CStruct(CType):
     def data_width(self) -> int:
         # sum of each field's data_width
         return sum(ft.data_width for ft in self.fields.values())
-
+    @property
+    def nbytes(self) -> int:                      # <── NEW
+        return sum(
+            getattr(ft, "nbytes", ft.data_width // 8)
+            for ft in self.fields.values()
+        )
     @property
     def bit_width(self) -> int:
         # alias for compatibility with check_dtypes_consistent
@@ -1718,14 +1738,14 @@ def check_dtypes_consistent(
     if a_is_q: 
         same_dtypes = dtype_a == dtype_b
         same_n_qubits = dtype_a.num_qubits == dtype_b.num_qubits
-        print(f'dtype a: {dtype_a}, num qubits: {dtype_a.num_qubits},')
-        print(f'dtype b: {dtype_b}, num qubits: {dtype_b.num_qubits}')
+        logger.debug(f'dtype a: {dtype_a}, num qubits: {dtype_a.num_qubits},')
+        logger.debug(f'dtype b: {dtype_b}, num qubits: {dtype_b.num_qubits}')
         if same_dtypes or same_n_qubits and dtype_a.num_qubits == 1:
             return True
         same_subclass = type(dtype_a) is type(dtype_b)
         width_ok      = _width_equal_or_symbolic(dtype_a.data_width,
                                                  dtype_b.data_width)
-        print(f'same_subclass: {same_subclass}, width_ok: {width_ok}')
+        logger.debug(f'same_subclass: {same_subclass}, width_ok: {width_ok}')
         if q_lvl is Q_PromoLevel.STRICT:
             return False
 
@@ -1755,6 +1775,8 @@ def check_dtypes_consistent(
         dtype_a = TensorType(shape=dtype_a.shape, element_type=dtype_a.element_type)
     if isinstance(dtype_b, MatrixType):
         dtype_b = TensorType(shape=dtype_b.shape, element_type=dtype_b.element_type)
+    if getattr(dtype_a, "data_width", None) == 1 and getattr(dtype_b, "data_width", None) == 1:
+        return True
     if isinstance(dtype_a, TensorType) and isinstance(dtype_b, TensorType):
         return _check_tensor_consistency(dtype_a, dtype_b,severity)
     same_dtype = type(dtype_a) is type(dtype_b)
@@ -1771,9 +1793,9 @@ def check_dtypes_consistent(
         return False
 
     
-    print(f'Level: {severity} - CLevel: {c_lvl}, width_ok: {width_ok}')
-    print(f'dtype a: {dtype_a}, bit_width: {dtype_a.data_width},')
-    print(f'dtype b: {dtype_b}, bit_width: {dtype_b.data_width}')
+    # print(f'Level: {severity} - CLevel: {c_lvl}, width_ok: {width_ok}')
+    # print(f'dtype a: {dtype_a}, bit_width: {dtype_a.data_width},')
+    # print(f'dtype b: {dtype_b}, bit_width: {dtype_b.data_width}')
     
     
     
@@ -1801,6 +1823,9 @@ def check_dtypes_consistent(
         )
         if int_to_float and width_ok:
             return True
+        if isinstance(dtype_a, CAny) or isinstance(dtype_b, CAny):
+            
+            return width_ok
         return False
     
     

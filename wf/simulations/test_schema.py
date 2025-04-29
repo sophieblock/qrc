@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-import random 
+import re 
 import math
 import torch
 import sympy
@@ -19,7 +19,7 @@ from workflow.simulation.refactor.unification_tools import (
 from workflow.simulation.refactor.process import Process,ClassicalProcess
 from workflow.assert_checks import assert_registers_match_parent, assert_multiline_equal
 
-from workflow.visualization_tools import ModuleDrawer
+from workflow.visualization_tools import ModuleDrawer, _assign_ids_to_nodes_and_edges
 from workflow.simulation.refactor.builder import ProcessBuilder,ProcessInstance, CompositeMod,PortInT,PortT,Port, LeftDangle,RightDangle
 from workflow.simulation.refactor.Process_Library.for_testing import Atom,Atom_n,TwoBitOp,SwapTwoBit, AtomChain,NAtomParallel,SplitJoin
 qbit_reg  = RegisterSpec(name="qb",  dtype=QBit(), flow=Flow.THRU)
@@ -522,7 +522,32 @@ def test_atom():
     drawer = ModuleDrawer(catom)
     
     drawer.render(display=False, save_fig=True, filename="catom.png")  # To save the graph
+
+# def test_atom_n():
+#     print(f"{sep_str}Starting test_atom_as_composite()")
+#     bitsize = 4
+
+
+#     atom = Atom_n(n=bitsize)
+#     print(atom.signature)
     
+#     assert len(atom.signature) == 1
+#     assert len(atom.signature._lefts) == 1  # Confirm 1 input in signature
+#     assert len(atom.signature._rights) == 1, f"atom.signature._rights len(atom.signature._rights): {len(atom.signature._rights)}"
+
+#     catom = atom.as_composite()
+#     assert isinstance(catom, CompositeMod)
+#     assert (catom.signature == atom.signature)
+#     process_instances = list(catom.pinsts)
+#     assert len(process_instances) == 1
+#     assert process_instances[0].process == atom
+#     bag = atom.signature
+#     assert bag[0].data_width == 4, f'Expected 4 got {bag[0].data_width}'
+#     catom.print_tabular()
+#     drawer = ModuleDrawer(catom)
+    
+#     drawer.render(display=False, save_fig=True, filename="catom_n.png")  # To save the graph
+
 def test_split():
     from workflow.simulation.refactor.builder import Split
     split = Split(CInt(4)).as_composite()
@@ -531,11 +556,24 @@ def test_split():
     drawer.render(display=False, save_fig=True, filename="splitter.png")  # To save the graph
 
 
-# def test_no_symbolic():
-#     from workflow.simulation.refactor.builder import Split
-#     n = sympy.Symbol('n')
-#     with pytest.raises(ValueError, match=r'.*cannot have a symbolic data type\.'):
-#         Split(QUInt(n))
+def test_no_symbolic():
+    from workflow.simulation.refactor.builder import Split
+    n = sympy.Symbol('n')
+    with pytest.raises(ValueError, match=r'.*Cannot split with symbolic data_width:*'):
+        Split(QUInt(n))
+
+# def test_util_bloqs_tensor_contraction():
+#     from workflow.simulation.refactor.builder import Split,Join
+#     builder = ProcessBuilder()
+#     qany_10 = RegisterSpec(name="q", dtype=QAny(10))
+
+#     qs1 = builder.add_register(qany_10)
+#     qs2 = builder.add(Split(QAny(10)), arg=qs1)
+#     qs3 = builder.add(Join(QAny(10)), arg=qs2)
+#     cbloq = builder.finalize(out=qs3)
+#     expected = np.zeros(2**10)
+#     expected[0] = 1
+#     np.testing.assert_allclose(cbloq.tensor_contract(), expected)
 
 
 def test_builder_splitjoin():
@@ -700,6 +738,37 @@ AtomChain<0>
     drawer = ModuleDrawer(composite_chained, label_type="num_units")
     
     drawer.render(display=False, save_fig=True, filename="chained_highlevel_num_units.png")  # To save the graph
+
+
+
+import re
+
+def test_assign_ids():
+    num_parallel = 3
+    d = Data(CAny(3), properties={"Usage": "bits"})
+    cbloq = NAtomParallel(inputs=[d],num_parallel=num_parallel).decompose()
+    
+    id_map = _assign_ids_to_nodes_and_edges(cbloq.pinsts, cbloq.all_ports)
+
+    ids = sorted(id_map.values())
+
+    # check correct number
+    n_pinst = 3 + 1 + 1  # Atom, Split, Join
+    n_group = n_pinst  # Each has one register group in this example
+    n_port = 1 + 1 + 3 + 3 + 3 + 1 + 1  # dangle, split(l), split(r), atoms, join(l), join(r), dangle
+    assert len(ids) == n_pinst + n_group + n_port
+
+    # ids are prefix_G123
+    prefixes = set()
+    for v in ids:
+        ma = re.match(r'(\w+)_G(\d+)', v)
+        if ma is None:
+            prefixes.add(v)
+            continue
+        prefixes.add(ma.group(1))
+    # print(prefixes)
+    sorted_prefixes = sorted(prefixes)
+    assert sorted_prefixes == ['Atom','Join', 'Split', 'arg', 'bag', 'n'], f'Got: {sorted_prefixes}'
 
 def test_parallel_atoms():
     print(f"{sep_str}Starting test_parallel_atoms()")

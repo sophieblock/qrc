@@ -194,7 +194,11 @@ class RegisterSpec:
         shape = self.shape
         yield from itertools.product(*[range(int(dim)) for dim in shape])
     
-
+    # def all_idxs(self):
+    #     """Generate all index tuples based on the node's shape."""
+    #     shape = self.shape
+    #     return itertools.product(*[range(int(dim)) for dim in shape])
+    
     # ------------------------------------------------------------------
     #  Equality / hashing (name, dtype, shape, flow)
     # ------------------------------------------------------------------
