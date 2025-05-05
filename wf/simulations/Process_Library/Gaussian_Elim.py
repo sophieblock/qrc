@@ -294,7 +294,7 @@ class GE_RowReduction(ClassicalProcess):
         self.expected_input_properties = [
             {"Data Type": type(np.array([])), "Usage": "Principle Row"},
             {
-                "Data Type": type(np.array([])),
+                "Data Type": [type(np.array([])), list],
                 "Usage": "Reduction Row",
                 "Row Idx": self.row_idx,
             },
@@ -343,6 +343,7 @@ class GE_RowReduction(ClassicalProcess):
         principle_dims = self.input_data["Principle Row"].shape
         reduction_dims = self.input_data["Reduction Row"].shape
         return principle_dims == reduction_dims
+
     @compute_resources
     def update(self):
         """Updates the given process state.
@@ -362,8 +363,10 @@ class GE_RowReduction(ClassicalProcess):
         principle_row = self.input_data["Principle Row"]
         reduction_row = self.input_data["Reduction Row"]
         column_idx = self.input_data["Column Idx"]
-
+        
         reduction_factor = reduction_row[column_idx] / principle_row[column_idx]
+        # if principle_row[column_idx] == 0:
+        #     assert 1 == 0
 
         for idx in range(column_idx, len(principle_row)):
             reduction_row[idx] = (
@@ -474,6 +477,7 @@ class GE_RowDeconstruction(ClassicalProcess):
     def valid_column_idx(self) -> bool:
         dims = self.input_data["Matrix"].shape
         return self.input_data["Column Idx"] <= dims[0]
+
     @compute_resources
     def update(self):
         """Updates the given process state.
@@ -578,7 +582,7 @@ class GE_RowReconstruction(ClassicalProcess):
         self.matrix_size = matrix_size
 
         if continue_itr:
-            is_dynamic = True if column_idx < matrix_size - 1 else False
+            is_dynamic = True if column_idx < matrix_size - 2 else False
         else:
             is_dynamic = False
 
@@ -669,6 +673,7 @@ class GE_RowReconstruction(ClassicalProcess):
 
     def valid_matrix_size(self) -> bool:
         return self.input_data["Matrix"].shape[0] == self.matrix_size
+
     @compute_resources
     def update(self):
         """Updates the given process state.
@@ -745,3 +750,16 @@ def generate_GE_network(broker=None):
     )
 
     return network
+
+
+"""ColumnElimination(Network):
+
+-> Initial "Deconstruction" Node: Disassembles (copies) various rows of the original
+matrix to feed into RowReduction(ClassicalProcess) depending on the column idx and matrix dimensions
+    -> e.g. a matrix of dim 5 with column index 2 would send the bottom 3 rows to 3 RowReduction processes
+    -> Original matrix and column index are fed to the "Reconstruction" Node
+-> RowReduction Node: Takes in the principle row, the operating row and operating row index and performs
+row reduction. Returns the reduced operating row and it's index
+-> Final "Reconstruction" Node: Reassembles the final reduced matrix; rows up to the column index remain
+unchanged whereas the remaining rows are replaced by the outputs of RowReduction Nodes
+"""
