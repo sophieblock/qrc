@@ -1,28 +1,50 @@
+"""
 
-from typing import List, Dict, Tuple, Iterable, Union, Sequence, Optional,overload, Any,Optional
-import itertools
+This file contains the class definition for containing
+and describing data. The Data class is a container for
+arbitrary data and their properties which are utilized,
+updated and passed along a problem network.
 
-import builtins
+"""
+from typing import List, Dict, Tuple, Iterable, Union, Sequence, Optional,overload
+
 import numpy as np
-from dataclasses import dataclass
-import torch
+import itertools
+from dataclasses import dataclass, field
+from typing import Optional, Union, Tuple, Dict
 import sympy
-from attrs import field, validators,define
-import re
+from attrs import field, frozen
 
-from .symbolic_shape import ShapeEnv
-from .unification_tools import (ALLOWED_BUILTINS, 
-                            canonicalize_dtype, 
-                            get_nested_shape_and_numeric, 
-                            dim_is_int_or_dyn,
-                            shape_is_tuple,
-                            _extract_element_types,
-                            create_data_type_hint
+import enum
+from torch.fx.experimental.symbolic_shapes import (
+    free_unbacked_symbols,
+    DimDynamic,
+    SymbolicContext
 )
-from .dtypes import *
+import torch
+from torch.fx.experimental.symbolic_shapes import ShapeEnv as TorchShapeEnv
+from torch.fx.experimental.sym_node import method_to_operator, SymNode
+from torch import SymInt, SymBool, SymFloat
+from torch.fx.experimental.symbolic_shapes import StatelessSymbolicContext
+from torch.fx.experimental.recording import record_shapeenv_event
+from torch._guards import ShapeGuard, Source
+
+
+from .data_types import MatrixType,DataType,TensorType, CBit,CAny,QAny
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional, Type
+
+from sympy import Symbol
+
+from collections import defaultdict
+from typing_extensions import TypeGuard
+
 from ...util.log import logging
 logger = logging.getLogger(__name__)
 
+
+SymbolicInt = Union[int, sympy.Expr]
 NEXT_AVAILABLE_DATA_ID = 0
 
 def get_next_data_id():
@@ -34,9 +56,253 @@ def get_next_data_id():
     return str(next_id)
 
 
-SymbolicInt = Union[int, sympy.Expr]
 
-@dataclass 
+
+def create_symtype(cls, pytype, shape_env, arg,source = None, duck=True):
+    from torch._dynamo.source import ConstantSource
+    if source == None:
+        source = ConstantSource(f"{len(shape_env.var_to_val)}")
+        # source = ConstantSource(f"{arg.id}")
+
+
+    symbol = shape_env.create_symbol(
+        arg,
+        source=source,
+        dynamic_dim=DimDynamic.DUCK if duck else DimDynamic.DYNAMIC,
+        constraint_dim=None,
+    )
+    return cls(
+        SymNode(
+            symbol,
+            shape_env,
+            pytype,
+            hint=arg,
+        )
+    )
+
+def create_symint(shape_env, i: int, duck=True):
+    return create_symtype(SymInt, int, shape_env, i, duck=duck)
+
+def create_symbool(shape_env, b: bool):
+    return create_symtype(SymBool, bool, shape_env, b)
+
+def create_symfloat(shape_env, f: float):
+    return create_symtype(SymFloat, float, shape_env, f)
+
+
+def is_symbolic(
+    val: Union[int, SymInt, float, SymFloat, bool, SymBool]
+) -> TypeGuard[Union[SymInt, SymFloat, SymBool]]:
+    if isinstance(val, (int, float, bool)):
+        return False
+    return val.node.is_symbolic()
+
+map_symnode_to_type = {
+    int:SymInt,
+    float:SymFloat,
+    bool:SymBool,
+    
+}
+
+NEXT_AVAILABLE_ENV_ID = 0
+
+def get_next_env_id():
+    global NEXT_AVAILABLE_ENV_ID
+    next_id = NEXT_AVAILABLE_ENV_ID
+    #print(next_id, format(next_id, "X").zfill(7))
+    NEXT_AVAILABLE_ENV_ID+=1
+    #return "D" + format(next_id, "X").zfill(2)
+    return str(next_id)
+
+class ShapeEnv(TorchShapeEnv):
+    def __init__(self, **kwargs):
+        # Initialize the base class
+        kwargs.setdefault('specialize_zero_one', True) 
+        super().__init__(**kwargs)
+        self.custom_constraints = {}
+        self.id = 'ENV_'+get_next_env_id()
+        from torch.fx.experimental.validator import translation_validation_enabled
+        # print(f"translation validation enabled? {translation_validation_enabled()}")
+   
+
+    def create_symbolic_int(self, val, source: Source, symbolic_type: str):
+        """
+        Create a symbolic integer for scalar data types.
+        Uses `make_symbol` with appropriate symbolic type prefixes for custom types.
+        """
+        sym_type = {
+            "bit": fresh_bit,
+            "qbit": fresh_qbit
+        }.get(symbolic_type, fresh_int)
+        
+        symbolic_expr = sympy.Symbol(sym_type())
+        # logger.debug(f"Creating symbolic integer {symbolic_expr} for value {val}, source {source}")
+        # print(self._create_symbol_for_source(source))
+        return self.create_symintnode(symbolic_expr, hint=val, source=source)
+    
+    def _create_symbol_for_source(self, source: Source) -> Optional[sympy.Symbol]:
+
+        srcname = source.name()
+        if source not in self.source_to_symbol:
+            self.source_to_symbol[srcname] = sympy.Symbol(srcname, integer=True)
+        return self.source_to_symbol[srcname]
+    
+    def create_symbolic_size(self, val,dtype, source: Source, dynamic_dim=DimDynamic.STATIC):
+        """Creates a symbolic size value with a specified source and dynamic dimension"""
+        # ex_size = tuple(self._maybe_specialize_sym_int_with_hint(sz) for sz in data.size())
+        # logger.debug(f"Attempting to create symbol for {val}, source= {source}, dtype={dtype}")
+        return create_symtype(map_symnode_to_type[dtype], dtype, self, arg=val, source=source, duck=True)
+    def create_symbolic_sizes(
+        self,
+        shape: Sequence[int],
+        source: Source,
+        constraint_sizes: Optional[SymbolicContext] = None,
+        symbolic_context: Optional[SymbolicContext] = None,
+    ) -> List[sympy.Expr]:
+        # print(self)
+        from torch._dynamo.source import TensorPropertySource, TensorProperty
+
+        if isinstance(shape, tuple):
+            ex_data = torch.empty(*shape, device="meta")
+        else:
+            ex_data = shape
+
+        ex_size = tuple(self._maybe_specialize_sym_int_with_hint(sz) for sz in ex_data.size())
+
+        # Validate and synchronize environments for symbolic integers
+        for sz in ex_size:
+            if isinstance(sz, SymInt) and sz.node.shape_env is not self:
+                try:
+                    sz.node.shape_env.check_equal(self)
+                except AssertionError as e:
+                    raise ValueError(
+                        f"Mismatch between shape environments: {sz.node.shape_env} vs {self}. Details: {e}"
+                    )
+
+        # logger.debug(f"- ShapeEnv.create_symbolic_sizes - ex_size create: {ex_size} from the ex_data {ex_data}")
+        
+        if symbolic_context is None:
+            dim = len(ex_size)
+            dynamic_dims = [DimDynamic.DUCK] * dim
+            constraint_sizes = constraint_sizes if constraint_sizes else [None] * dim
+            symbolic_context = StatelessSymbolicContext(
+                dynamic_sizes=dynamic_dims,
+                constraint_sizes=constraint_sizes,
+            )
+        assert len(ex_size) == len(dynamic_dims), "Shape and dynamic dims length mismatch"
+
+        size: List[sympy.Expr] = self._produce_dyn_sizes_from_int_tuple(ex_size, source, symbolic_context)
+        sym_sizes = [
+            self.create_symintnode(
+                sym,
+                hint=hint,
+                source=TensorPropertySource(source, TensorProperty.SIZE, i),
+            )
+            for i, (sym, hint) in enumerate(zip(size, ex_size))
+        ]
+
+        return tuple(sym_sizes)
+    
+    def create_symbolic_strides(self, strides: Sequence[int], source: Source) -> List[sympy.Expr]:
+        """Generates symbolic strides"""
+        from torch._dynamo.source import TensorPropertySource, TensorProperty
+        
+        return tuple(self.create_symintnode(
+            sympy.Integer(stride),
+            hint=stride,
+            source=TensorPropertySource(source, TensorProperty.STRIDE, i)
+        ) for i, stride in enumerate(strides))
+    
+    def create_symbolic_storage_offset(self, offset: int, source: Source) -> sympy.Expr:
+        """Generates symbolic storage offset"""
+        from torch._dynamo.source import TensorPropertySource, TensorProperty
+        
+        return self.create_symintnode(
+            self.create_symbol(
+                offset,
+                TensorPropertySource(source, TensorProperty.STORAGE_OFFSET),
+                dynamic_dim=DimDynamic.DUCK,
+                constraint_dim=None,
+            ),
+            hint=offset,
+            source=TensorPropertySource(source, TensorProperty.STORAGE_OFFSET)
+        )
+   
+    @record_shapeenv_event()
+    def create_symintnode(
+            self,
+            sym: "sympy.Expr",
+            *,
+            hint: Optional[int],
+            source: Optional[Source] = None,
+    ):
+        """Create a SymInt value from a symbolic expression
+
+        If you know what the current hint value of the SymInt to be created
+        is, pass it into hint.  Otherwise, pass None and we will make our best
+        guess
+
+        """
+        source_name = source.name() if source else None
+        # logger.debug(f" source: {source}, name: {source_name}")
+        if self._translation_validation_enabled and source is not None:
+            # Create a new symbol for this source.
+            symbol = self._create_symbol_for_source(source)
+            assert symbol is not None
+
+            # Create a new FX placeholder and Z3 variable for 'symbol'.
+            fx_node = self._create_fx_placeholder_and_z3var(symbol, int)
+
+            # Add an equality assertion for the newly created symbol and 'sym'.
+            self._add_assertion(sympy.Eq(symbol, sym))
+        else:
+            fx_node = None
+        out: Union[int, SymInt]
+        if isinstance(sym, sympy.Integer):
+            if hint is not None:
+                assert int(sym) == hint
+            out = int(sym)
+        else:
+            # How can this occur? When we mark_unbacked, we end up with a real
+            # tensor that has hints for all sizes, but we MUST NOT create a
+            # SymNode with a hint, because we're hiding the hint from our eyes
+            # with the unbacked Symbol.  And in fact, the hint compute may be
+            # inconsistent with size oblivious tests.
+            if free_unbacked_symbols(sym):
+                hint = None
+            out = SymInt(SymNode(sym, self, int, hint, fx_node=fx_node))
+        return out
+    def add_constraint(self, symbol: Symbol, constraint: sympy.Expr):
+        """Add a custom constraint to the environment """
+        self.custom_constraints[symbol] = constraint
+
+    def enforce_custom_constraints(self):
+        """Validate all custom constraints"""
+        for symbol, constraint in self.custom_constraints.items():
+            if not constraint.subs(self.sym_to_val):
+                raise ValueError(f"Constraint violated for symbol {symbol}: {constraint}")
+
+    def __repr__(self):
+        return f"{self.id}"
+
+
+
+def constrain_unify(a: torch.SymInt, b: torch.SymInt) -> None:
+
+    if not isinstance(a, SymInt):
+        if not isinstance(b, SymInt):
+            assert a == b
+            return
+        else:
+            shape_env = b.node.shape_env
+    else:
+        shape_env = a.node.shape_env
+
+    shape_env._constrain_unify(a, b)
+
+
+
+@dataclass
 class FreshSupply:
     prefix: str
     fresh: int = 0
@@ -54,6 +320,92 @@ fresh_qbit =FreshSupply("q")
 fresh_size = FreshSupply("s")
 
 
+class Flow(enum.Flag):
+    """
+    Denotes LEFT, RIGHT or THRU data.
+
+    LEFT data serve as input lines (input data, that only goes in not out of the task ex. discard data) 
+    to the Process. RIGHT data objs are output lines (date is generated within the Node so 
+    there's only an edge out) from the Process. THRU are both input and output data i.e. flows in, flows out.
+
+    LEFT and RIGHT Data imply data at the 'entering' or 'exiting' a Task/Operation 
+    
+    """
+    LEFT = enum.auto()
+    RIGHT = enum.auto()
+    THRU = LEFT | RIGHT
+
+
+def canonicalize_dtype(value):
+    """
+    Convert legacy or ambiguous dtype specifications to the canonical in‑house type.
+    For example, if value is np.ndarray or a list-of-floats type, return TensorType.
+    Otherwise, return value unmodified.
+    """
+    # If the provided type is a list (or a list of types), pick the first element.
+    if isinstance(value, list):
+        value = value[0]
+    # If the value is the numpy.ndarray type, convert to TensorType.
+    if value is np.ndarray:
+        return TensorType
+    # If the value is list[float] (using PEP 585 notation, for example),
+    # you might check by its __origin__ or __name__ if available.
+    try:
+        # If value has an __origin__ and it is list, then assume TensorType is desired.
+        if hasattr(value, "__origin__") and value.__origin__ == list:
+            return TensorType
+    except Exception:
+        pass
+    return value
+
+from attrs import field,define
+
+@define
+class DataSpec:
+    """
+    Minimal metadata
+    """
+    hint: Optional[str] = None
+    dtype: Optional[Any] = field(default=None, converter=canonicalize_dtype)
+    shape: Optional[tuple] = None
+    # elem_dtype: Optional[Any] = None  # New field for element dtype
+    def __attrs_post_init__(self):
+        if isinstance(self.hint, str):
+            self.hint = self.hint.strip()
+        # Infer element dtype if not explicitly set
+        # if self.dtype and self.elem_dtype is None:
+        #     if isinstance(self.dtype, (list, tuple)):
+        #         self.elem_dtype = promote_element_types(*self.dtype)
+        #     else:
+        #         self.elem_dtype = self.dtype
+    def is_compatible_with(self, other: "DataSpec") -> bool:
+        """
+        Compare this (actual) vs. 'other' (expected).
+        If 'other.hint' is set, we do usage check; same for data_type, ndim.
+        Now also compare 'other.extra' fields => must match exactly.
+        """
+        # 1) usage check
+        if other.hint:
+            if isinstance(other.hint, (tuple, list)):
+                if self.hint not in other.hint:
+                    return False
+            else:
+                if self.hint != other.hint:
+                    return False
+
+        # 2) data_type check
+        if other.dtype:
+            if isinstance(other.dtype, (tuple, list)):
+                if self.dtype not in other.dtype:
+                    return False
+            else:
+                if self.dtype != other.dtype:
+                    return False
+
+
+        return True
+def _is_array_like(obj: Any) -> bool:
+    return isinstance(obj, (list, np.ndarray, torch.Tensor))
 from attrs import define, field
 
 
@@ -118,7 +470,6 @@ def promote_types(
     )
 
     return dtype
-
 def promote_element_types(*dtypes: Union[type, torch.dtype, np.dtype]) -> Union[type, torch.dtype, np.dtype]:
     """
     Given multiple element dtypes, returns the most precise common dtype.
@@ -206,382 +557,218 @@ def promote_element_types(*dtypes: Union[type, torch.dtype, np.dtype]) -> Union[
         else:
             raise TypeError(f"Unsupported dtype in promotion: {dt}")
     return convert_result(result)
-
-def _sanitize_data_hint(hint_str: str) -> str:
-    hint_str = hint_str.strip()  # Remove leading/trailing whitespace first.
-    sanitized = re.sub(r"[^0-9a-zA-Z_]", "_", hint_str)
-    if not sanitized:
-        sanitized = "var"
-    if sanitized[0].isdigit():
-        sanitized = f"_{sanitized}"
-    return sanitized
-
-@define
-class DataSpec:
+def _extract_element_types(val: Any) -> List[Any]:
     """
-    Minimal metadata for a Data object.
-
-    This class captures the expected properties of the underlying data payload,
-    specifically:
-      - **Data Type:** The canonical type (e.g. a TensorType instance) that includes
-        the data’s inherent multi-dimensional layout. We refer to this layout as the "data shape."
-      - **Shape:** The actual shape of the data payload (the "data shape").
-
-    Note: This is distinct from the wire shape used in workflow registers (see RegisterSpec),
-    which defines how many parallel wires or ports the data is split into when flowing
-    through a process.
+    Extracts all possible element types from `val`, handling lists, tensors, matrices, etc.
     """
-    hint: Optional[str] = field(default=None, converter=_sanitize_data_hint)
-    dtype: Optional[Any] = field(default=None, converter=canonicalize_dtype)
-    shape: Optional[tuple] = field(
-        default=tuple(),
-        validator=validators.deep_iterable(
-            member_validator=dim_is_int_or_dyn,
-            iterable_validator=shape_is_tuple
-        )
-    )
-    # elem_dtype: Optional[Any] = None  # New field for element dtype
-    def __attrs_post_init__(self):
-        if isinstance(self.hint, str):
-            self.hint = self.hint.strip()
-            # safe_name = hint.replace(" ", "_")
-            # self.hint = safe_name
-        
-    def is_compatible_with(self, other: "DataSpec") -> bool:
-        """
-        Compare this (actual) vs. 'other' (expected).
-        If 'other.hint' is set, we do usage check; same for data_type, ndim.
-        Now also compare 'other.extra' fields => must match exactly.
-        """
-        # 1) usage check
-        if other.hint:
-            if isinstance(other.hint, (tuple, list)):
-                if self.hint not in other.hint:
-                    return False
-            else:
-                if self.hint != other.hint:
-                    return False
+    if isinstance(val, torch.Tensor):
+        return [val.dtype]
+    if isinstance(val, np.ndarray):
+        return [val.dtype]
+    if isinstance(val, (list, tuple)):
+        elem_types = set()
+        for elem in val:
+            elem_types.add(type(elem))
+        return list(elem_types)
 
-        # 2) data_type check
-        if other.dtype:
-            if isinstance(other.dtype, (tuple, list)):
-                if self.dtype not in other.dtype:
-                    return False
-            else:
-                if self.dtype != other.dtype:
-                    return False
+    return [type(val)]  # Fallback to single type
 
-
-        return True
-def _is_array_like(obj: Any) -> bool:
-    return isinstance(obj, (list, np.ndarray, torch.Tensor))
-def create_type_hint(x):
-    """
-    Produces a type hint for the given argument.
-
-    The :func:`create_type_hint` looks for a type hint compatible with the input argument `x`.
-
-    If `x` is a `list` or `tuple`, it looks for an object in the list whose type is a superclass
-    of the rest, and uses that as `base_type` for the `List` or `Tuple` to be returned.
-    If no such object is found, it defaults to `List[Any]`.
-
-    If `x` is neither a `list` nor a `tuple`, it returns `x`.
-    """
-    import warnings, inspect, typing
-    from typing import Any, Union, List, Tuple
-    
-
-    try:
-        if isinstance(x, (list, tuple)):
-            # todo(chilli): Figure out the right way for mypy to handle this
-            if isinstance(x, list):
-
-                def ret_type(x):
-                    return list[x]  # type: ignore[valid-type]
-
-            else:
-
-                def ret_type(x):
-                    return tuple[x, ...]  # type: ignore[valid-type]
-
-            if len(x) == 0:
-                return ret_type(Any)
-            base_type = x[0]
-            for t in x:
-                if issubclass(t, base_type):
-                    continue
-                elif issubclass(base_type, t):
-                    base_type = t
-                else:
-                    return ret_type(Any)
-            return ret_type(base_type)
-    except Exception:
-        # We tried to create a type hint for list but failed.
-        warnings.warn(
-            f"We were not able to successfully create type hint from the type {x}"
-        )
-    return x
 
 class Data:
-    """
-    Encapsulates a data payload (e.g. a NumPy array, torch.Tensor, or list) along with its metadata.
-
-    **Key Points:**
-      - The **DataSpec** (stored in self.metadata) captures the inherent multi-dimensional layout
-        of the payload, i.e. its "data shape". For example, a 2×3 NumPy array has a data shape of (2, 3).
-      - This underlying data shape is separate from the "wire shape" defined in a workflow's RegisterSpec.
-        When wiring data between processes, you might split the outer dimension of the data (e.g., splitting
-        a (2,3) array into 2 wires, each carrying a 1D vector of length 3). In that case, the RegisterSpec's
-        shape would be (2,) (the wire shape), while the dtype (e.g. TensorType((3,))) carries the inner data shape.
-    """
-    def __init__(
-        self,
-        data: Any,
-        properties: Optional[Dict[str, Any]] = None,
-        id: Optional[str] = None,
-        shape: Optional[tuple] = None,
-        shape_env=None,
-        source = None
-    ):
-        self.id = id or "d" + get_next_data_id()  
+    def __init__(self, 
+                data: Any =1, 
+                properties: Optional[Dict[str, Any]] = None,
+                id: Optional[str] = None,
+                shape: Optional[tuple] = tuple(),
+                flow=Flow.THRU, 
+                shape_env=None, 
+                source = None
+            ):
         self.data = data
+        self.id = id or "d" + get_next_data_id() 
         self.properties = properties or {}
-
-        self._shape = shape if shape else self._infer_shape(data)
-        # logger.debug(f'{self.id}, data {self.data}\n - infered shape: {self._infer_shape(data)}')
         # If no Data Type provided, do a fallback
         
         dtype_in = self.properties.get("Data Type", None)
         if not dtype_in:
-            
-            dtype_in = self._infer_data_type(self.data)
-            self.properties["Data Type"] = dtype_in
-            # logger.debug(f' - infered dtype: {dtype_in}')
-        if _is_array_like(data):
-            element_types = _extract_element_types(data)
-            promoted_elem_dtype = promote_element_types(*element_types) if element_types else None
-            canonical_res = canonicalize_dtype(self.data)
-            # type_hint_res = create_data_type_hint(self.data)
-            logger.debug(f"dtype_in: {dtype_in}. element_types:{element_types}, promoted_elem_dtype: {promoted_elem_dtype}, _shape: {self._shape}")
-       
+            # TODO: THIS IS WHERE THE MISSING OUTPUT EDGE ERROR IS ARISING. 
+            try:
+                dtype_in = self._infer_data_type(self.data)
+                # self.properties["Data Type"] = dtype_in 
+                self.properties["Data Type"] = type(data)
+            except TypeError:
+
+                self.properties["Data Type"] = type(data)
+
+
+        
+        self.flow = flow
+        self.shape_env = shape_env or ShapeEnv()
+        self._shape = shape if shape else self._infer_shape(data)
+        self.source = source
+        self._symbolic_shape = None
+
+        # logger.debug(f'infered shape: {self._infer_shape(data)}')
+        
+
         hint = self.properties.get("Usage", None)
         if not hint:
-            hint = self._default_hint(self.data)
-        # self.properties["Usage"] = _sanitize_data_hint(hint)
+            hint = dtype_in
+            # hint = self._default_hint(self.data)
         self.metadata = DataSpec(
             hint=hint,
             dtype=dtype_in,
             shape=self._shape
         )
-        # logger.debug(f' - Meta: {self.metadata}')
         
-        self.shape_env = shape_env or ShapeEnv()
-
-        self.source = source
-        self._symbolic_shape = None
         self._initialize_shape_env()
-        # logger.debug(f"Created Data('{self.id}', meta={self.metadata})")
-    
-    @property
-    def shape(self):
-        return self._shape
-    @property
-    def sym_shape(self):
-        return self._symbolic_shape
-    @property
-    def ndim(self):
-        return len(self.shape)
-    def _infer_data_type(self, val: Any) -> DataType:
-        """
-        Infer a canonical DataType from the given value.
-        
-        This function infers the type of the input data and returns a canonical DataType object.
-        It uses the following ordering:
-        
-        1. If val is already an instance of DataType, return it directly.
-        2. If val is a bare type (e.g. int, float, str) and is one of ALLOWED_BUILTINS, return it.
-        3. If val is a torch.Tensor, create and return a TensorType instance using its shape and
-        promoted dtype.
-        4. If val is a numpy.ndarray, similarly return a TensorType instance with an inferred element dtype.
-        5. If val is a list or tuple, attempt to infer a type annotation for its elements.
-        6. If val is an instance of int, float, or str (i.e. a scalar value), return the corresponding type.
-        7. Otherwise, raise a TypeError.
-        
-        This ordering ensures that bare types (which are critical for expected input properties)
-        are handled before any conversion that might otherwise misinterpret them.
-        """
-        # 1. If already a DataType instance, return it.
-        if isinstance(val, DataType):
-            return val
 
-        # 2. If val is a bare type (e.g. int, float, str), return it if allowed.
-        if isinstance(val, type):
-            if val in ALLOWED_BUILTINS:
-                return val
-            else:
-                raise TypeError(f"Unsupported bare type: {val}")
-
-        # 3. If val is a torch.Tensor.
-        if isinstance(val, torch.Tensor):
-            shape = self._infer_shape(val)
-            promoted = promote_element_types(val.dtype)
-            return TensorType(shape=shape, element_type=promoted, val=val)
-
-        # 4. If val is a numpy.ndarray.
-        if isinstance(val, np.ndarray):
-            shape = self._infer_shape(val)
-            if val.dtype.kind in ('U', 'S'):
-                elem_dt = str
-            elif val.dtype.kind in ('i',):
-                elem_dt = int
-            elif val.dtype.kind in ('f',):
-                elem_dt = np.float32 if val.dtype == np.float32 else np.float64
-            else:
-                elem_dt = float
-            return TensorType(shape=shape, element_type=elem_dt)
-
-        # 5. If val is a list or tuple.
-        if isinstance(val, (list, tuple)):
-            if len(val) == 0:
-                # Return a generic type: list[Any] or tuple[Any, ...]
-                return list[Any] if isinstance(val, list) else tuple[Any, ...]
-            base_type = type(val[0])
-            for elem in val:
-                if not isinstance(elem, base_type):
-                    base_type = object
-                    break
-            return list[base_type] if isinstance(val, list) else tuple[base_type, ...]
-        
-        # 6. If val is a scalar int, float, or str.
-        if isinstance(val, int):
-            return int
-        if isinstance(val, float):
-            return float
-        if isinstance(val, str):
-            return str
-
-        # 7. Otherwise, we cannot infer the data type.
-        raise TypeError(f"Cannot infer valid data type from input data. val: {val}")
-    def _infer_shape(self, val: Any) -> Tuple[int, ...]:
-        if isinstance(val, np.ndarray):
-            return val.shape
-        if isinstance(val, torch.Tensor):
-
-
-            return tuple(val.shape)
-        if isinstance(val, (list,tuple)):
-            shape,is_numeric = get_nested_shape_and_numeric(val)
-            logger.debug(f"shape: {shape}, is_numeric: {is_numeric}")
-            return (len(val),)
-        if hasattr(self.data, "shape"):
-            return self.data.shape
-        return ()
   
-    def _default_hint(self, val: Any) -> str:
-        """Heuristic to guess usage if user didn't supply it."""
-       
-        if isinstance(val, (torch.Tensor,np.ndarray)):
-            return "tensor"
-        if isinstance(val, int):
-            return "int"
-        if isinstance(val, str):
-            return "str"
-        if isinstance(val, tuple):
-            return "tuple"
-        if isinstance(val, list):
-            return "list"
-        return "any"
+    
     def _initialize_shape_env(self):
         """Initialize symbolic shape for the Data object."""
         # logger.debug(f"Initializing {self.shape_env} with {self}")
         if not self.shape_env:
-            logger.warning(f"Data {self.id} has no shape_env. Skipping symbolic init.")
+            # logger.warning(f"Data {self.id} has no shape_env. Skipping symbolic init.")
             self._symbolic_shape = ()
             return
         from torch._dynamo.source import ConstantSource
         if self.source is None:
             self.source = ConstantSource(self.id)
-        if isinstance(self.metadata.dtype, MatrixType):
-            # self._meta_shape = self.metadata.shape
-           
+        if isinstance(self.data, MatrixType):
+            self._meta_shape = self.data.shape
+            self._shape = self.data.shape
             self._symbolic_shape = self.shape_env.create_symbolic_sizes(
                 self._shape,
                 source=self.source
             )
-        elif isinstance(self.metadata.dtype, TensorType):
-            # self._meta_shape = self.metadata.shape
-            self._symbolic_shape = self.shape_env.create_symbolic_sizes(self.data.shape,source=self.source)
-        elif isinstance(self.metadata.dtype, CUInt):
-       
+        elif isinstance(self.data, TensorType):
+            self._symbolic_shape = self.shape_env.create_symbolic_sizes(self.data.shape)
+        elif isinstance(self.data, CAny):
+            self._shape = tuple()
             self._symbolic_shape = self.shape_env.create_symbolic_int(
                 self.data.num_units,
                 source=self.source,
                 symbolic_type="bit"
             )
-        elif isinstance(self.metadata.dtype, QAny):
+        elif isinstance(self.data, QAny):
             self._symbolic_shape = self.shape_env.create_symbolic_int(self.data.num_units,
                 source=self.source,
                 symbolic_type="qbit"
             )
-   
+            self._shape = tuple()
         else:
-  
+            self._shape = tuple()
             self._symbolic_shape = tuple()
 
     @property
     def bit_length(self):
-        """
-        The Data objs 'number of units'
-
-        For example, if the data is a single scalar value, then bit_length is 1. If
-        the data represents a vector (or wire) of sub-elements, then bit_length 
-        should be equal to the number of sub-elements.
-        """
-        return self.metadata.dtype.num_units
+        return self.data.num_units
     @property
     def bitsize(self) -> int:
+
+        if isinstance(self.data, DataType):
+            return self.data.bitsize
+        elif isinstance(self.data, int):  # Fallback for integers
+            return self.data.bit_length()
+        raise AttributeError(f"Cannot determine bitsize for data type: {type(self.data)}")
+
+    @property
+    def shape(self):
+        return self._shape
+    
+
+    @property
+    def symbolic_shape(self):
+        return self._symbolic_shape
+    # def all_idxs(self):
+    #     """Generate all index tuples based on the node's shape."""
+    #     shape = self.shape
+    #     return itertools.product(*[range(int(dim)) for dim in shape])
+    
+    def __hash__(self):
+        """Hash method for Data to allow inclusion in hash-based collections."""
+        return hash((self.id, self.shape, self.flow))
+    
+    def __eq__(self, other):
+        # Define equality to allow comparison between Data objects
+        if isinstance(other, Data):
+            return self.shape == other.shape and self.properties == other.properties
+        return False
+    def __repr__(self):
+        if isinstance(self.symbolic_shape,tuple) and len(self.symbolic_shape)>0:
+            return f"Data('{self.id}', {self.shape}, {self.flow})"
+        return f"Data('{self.id}',data={self.data}, shape={self.shape} properties={self.properties} {self.flow})"
+    def _infer_shape(self, val: Any) -> Tuple[int, ...]:
+        if isinstance(val, np.ndarray):
+            return val.shape
+        if isinstance(val, torch.Tensor):
+            return tuple(val.shape)
+        if isinstance(val, (list,tuple)):
+            return (len(val),)
+        if hasattr(self.data, "shape"):
+            return self.data.shape
+        return ()
+    def _infer_data_type(self, val: Any) -> DataType:
         """
-        The total number of bits used for one logical element of data, i.e., the intrinsic bit-width
-        of one sub-element multiplied by the bit_length. That is, if one sub-element of a data object
-        is B bits and there are U sub-elemements per "element," then bitsize = B x U
+        Infer a canonical DataType from the given value.
+        If val is a torch.Tensor or np.ndarray, return an instance of TensorType.
+        For other types, fallback to int, str, etc.
         """
 
-        if isinstance(self.metadata.dtype, DataType):
-            # tmp_instance = self.metadata.dtype
-            # print(f'{self} bitlength {self.bit_length}, {builtins.int(self).bit_length()} returning {tmp_instance} bitsize ({tmp_instance.bitsize}) versus {self.metadata.dtype.bitsize}')
-            return self.metadata.dtype.num_elements
-        elif isinstance(self.metadata.dtype, int):  # Fallback for integers
-            # tmp_instance = self.metadata.dtype(self._shape, element_type=float)
-            # print(f'{self} returning {tmp_instance} bitsize ({tmp_instance.bitsize}) versus {self.metadata.dtype.bitsize}')
-            return self.metadata.dtype.bit_length()
-        raise AttributeError(f"Cannot determine bitsize for {self}")
-   
-    def total_bits(self):
-        """
-        Return the total number of bits based on the Data's type.
-        Delegates to metadata.dtype.total_bits() if available; otherwise, if raw data is a torch.Tensor,
-        computes the bits from the tensor; else raises an error.
-        """
-        if hasattr(self.metadata.dtype, "total_bits"):
-            return self.metadata.dtype.total_bits
+        # If already a DataType instance, use it.
+        if isinstance(val, DataType):
+           
+            # logger.debug(f"  User input {self.id} is already a DataType instance.")
+            return val
+        # For torch.Tensor and np.ndarray, instantiate a TensorType with inferred shape and element type.
+        # For torch.Tensor, use the tensor's dtype via promote_element_types.
+        if isinstance(val, torch.Tensor):
+            shape = self._infer_shape(val)
+            promoted = promote_element_types(val.dtype)
+            inferred = TensorType(shape=shape, element_dtype=promoted, val=val)
+            # logger.debug(f"  User input {self.id} -> Inferred TensorType from torch.Tensor: {inferred}")
+            return inferred
         
-        if isinstance(self.data, torch.Tensor):
-            return self.data.nelement() * self.data.element_size() * 8
-        raise AttributeError(f"Data object with meta {self.metadata} ({self.metadata.dtype.num_elements}) does not support total_bits")
-    def all_idxs(self):
-        """Generate all index tuples based on the node's shape."""
-        if hasattr(self.metadata, "all_idxs"):
-            return self.metadata.all_idxs()
-        shape = self.shape
-        return itertools.product(*[range(int(dim)) for dim in shape])
-    # def all_idxs(self):
-    #     """
-    #     Generate all index tuples based on the shape.
-    #     Delegates to metadata.dtype.all_idxs() if available.
-    #     """
-    #     if hasattr(self.metadata, "all_idxs"):
-    #         return self.metadata.all_idxs()
-    #     raise AttributeError("Data object does not support all_idxs")
+        # For np.ndarray, extract the element types and promote them.
+        if isinstance(val, np.ndarray):
+            shape = self._infer_shape(val)
+            elem_types = _extract_element_types(val)  # This returns a list (e.g. [val.dtype])
+            promoted = promote_element_types(*elem_types)
+            
+            inferred = TensorType(shape=shape, element_dtype=promoted, val=val) 
+            # logger.debug(f"  User input {self.id} -> Inferred TensorType from np.ndarray: {inferred}")
+            return inferred
+        # For lists/tuples, you may want to do something similar (this depends on your design)
+        if isinstance(val, (list, tuple)):
+            # logger.debug(f'{val} is a list or tuple')
+            if isinstance(val,list):
+                def ret_type(x):
+                    return list[x]
+            else:
+                def ret_type(x):
+                    return tuple[x, ...]
+                 
+            if len(val) == 0:
+                return ret_type(Any)
+            # base_type = val[0]
+            base_type = type(val[0])
+            for elem in val:
+                if issubclass(type(elem), base_type):
+                    continue
+                elif issubclass(base_type, type(elem)):
+                    base_type = type(elem)
+
+                else:
+                    return ret_type(Any)
+            return ret_type(base_type)
+        if isinstance(val, int):
+            return int
+        if isinstance(val, str):
+            return str
+        if isinstance(val, float):
+            return float
+        raise TypeError(f"Cannot infer valid data type from input data. val: {val}")
     def __repr__(self):
         try:
             return f'Data(`{self.id}`, usage: {self.properties["Usage"]}, meta: {self.metadata})'
@@ -589,12 +776,242 @@ class Data:
         except KeyError:
             return f'Data(`{self.id}`, usage: None , meta: {self.metadata})'
 
-    def __str__(self):
-        try:
-            return f'Data(`{self.id}`, usage: {self.properties["Usage"]}, meta: {self.metadata})'
-  
-        except KeyError:
-            return f'Data(`{self.id}`, usage: None , meta: {self.metadata})'
+
+
+def find_symbol_binding_data(data_list: Iterable[Data]):
+    """
+    Find and map unique symbolic shapes from the list of Data objects
+    into their primary symbols within the ShapeEnv.
+    """
+    symbol_to_data = {}
+    for data in data_list:
+        for sym in data.symbolic_shape:
+            if isinstance(sym, SymInt) and isinstance(sym.node.expr, sympy.Symbol):
+                if sym.node.expr not in symbol_to_data:
+                    symbol_to_data[sym.node.expr] = data
+    return symbol_to_data
+
+class Signature:
+    """An ordered collection of input, output, and thru data registers for a Process."""
+
+    def __init__(self, registers: Iterable[Data]):
+        registers = list(registers)
+        formatted_registers = ",\n    ".join([f"{data}" for data in registers])
+        logger.debug("Initializing Signature with registers:\n    [%s]", formatted_registers)
+        
+        self._registers = tuple(registers)
+        # logger.debug(f"Signature registers: {self._registers}")
+        self._lefts = self._dedupe(
+            (data.id, data) for data in self._registers if data.flow & Flow.LEFT
+        )
+       
+        
+        self._rights = self._dedupe(
+            (data.id, data) for data in self._registers if data.flow & Flow.RIGHT
+        )
+
+        # TODO: The current unification logic using `_constrain_unify` assumes
+        # all SymInt objects reference the same ShapeEnv. The error occurs because
+        # `SymInt` instances from different ShapeEnvs can't be directly unified without 
+        # deeper handling of inter-ShapeEnv constraints. Likely solution: 
+        # Implement an intermediary constraint propagation method that 
+        # synchronizes across environments or creates a shared environment.
+        # self._unify_shape_envs() 
+        
+
+    @staticmethod
+    def _dedupe(kv_iter: Iterable[Tuple[str, Dict]]) -> Dict[str, Dict]:
+        """Construct a dictionary, but check that there are no duplicate keys."""
+        d = {}
+        for k, v in kv_iter:
+            if k in d:
+                # Generate a unique key by appending a number or UUID
+                unique_key = f"{k}_{len(d)+1}"
+                d[unique_key] = v
+                logger.warning(f"Data {k} is specified more than once per side. Renaming to {unique_key}.")
+            else:
+                d[k] = v
+            #logger.debug("Register %s added to the dictionary.", k)
+        return d
+    
+    @classmethod
+    def build(cls, *args, **kwargs) -> 'Signature':
+        """Construct a Signature from either keyword arguments or Data objects."""
+        if args and kwargs:
+            raise TypeError("Cannot mix positional and keyword arguments in Signature.build")
+
+        if args:
+            # Assume args is an iterable of Data
+            if len(args) != 1 or not isinstance(args[0], (list, tuple, set)):
+                raise TypeError("Positional arguments should be a single iterable of Data objects")
+            return cls(args[0])
+
+        # Keyword mode
+        shape_env = ShapeEnv(duck_shape=False)
+        return cls(
+            Data(id=k, data=CBit()) if v == 1 else Data(id=k, data=v, shape_env=shape_env)
+            for k, v in kwargs.items()
+            if v is not None
+        )
+
+    @classmethod
+    def build_from_properties(cls, input_props, output_props) -> 'Signature':
+        """Build a Signature based on a Process's input and output properties.
+        
+        
+        """
+        output_props = output_props or []  # Safely handle None
+        
+        registers = []
+        logger.debug(f"***** Building from props")
+        for i, prop in enumerate(input_props):
+            logger.debug(f"input {i}: {prop}")
+            # Should all be through
+            # registers.append(Data(prop["Data Type"], properties=prop, id = f"{prop["Usage"]+get_next_data_id()}"))
+            registers.append(Data(prop["Data Type"], properties=prop))
+            # logger.debug("  - Added LEFT register: %s", registers[-1])
+        
+        for i, prop in enumerate(output_props):
+            
+            # registers.append(Data(prop["Data Type"],properties=prop, id = f"{str(prop["Usage"])+get_next_data_id()}", flow = Flow.RIGHT))
+            registers.append(Data(prop["Data Type"],properties=prop, flow = Flow.RIGHT))
+            # logger.debug("  - Added RIGHT register: %s", registers[-1])
+
+        signature = cls(registers)
+        # logger.debug("      - Signature built successfully: %s", signature)
+        return signature
+    
+    @classmethod
+    def build_from_data(cls, inputs, output_props=None) -> "Signature":
+        """
+        Build a Signature based on a Process's input data and output properties (if provided).
+
+        - Input data objects are marked as `Flow.LEFT` or `Flow.THRU` depending on whether they are
+        reused in the output.
+        - Outputs not present in the inputs are created as new `Data` objects with `Flow.RIGHT`.
+
+        Args:
+            inputs (list[Data]): Input data objects.
+            output_props (list[dict], optional): List of output properties dictionaries.
+                Each dictionary specifies properties for an output `Data` object.
+
+        Returns:
+            Signature: A Signature object representing the data flow.
+        """
+        registers = []
+
+        # Step 1: Handle input data (Flow.LEFT or Flow.THRU)
+        input_usage_map = {data.properties.get("Usage"): data for data in inputs}
+        for data_in in inputs:
+            registers.append(data_in)  # Add inputs with default flow (LEFT)
+
+        # Step 2: Process outputs based on output properties
+        if output_props:
+            for i, prop in enumerate(output_props):
+                usage = prop.get("Usage")
+
+                # If an input's "Usage" matches an output's "Usage", mark it as THRU
+                if usage in input_usage_map:
+                    input_usage_map[usage].flow = Flow.THRU
+                else:
+                    # Create a new Data object for outputs not in inputs
+                    registers.append(
+                        Data(
+                            data=prop.get("Data Type"),
+                            properties=prop,
+                            flow=Flow.RIGHT,
+                        )
+                    )
+
+        # Build the Signature with updated registers
+        signature = cls(registers)
+        # logger.debug("Signature built successfully: %s", signature)
+        return signature
+
+   
+    def _unify_shape_envs(self):
+        """TODO: Unify ShapeEnv instances among the Data objects in the signature."""
+        shape_envs = set(data.shape_env for data in self._registers if hasattr(data, 'shape_env'))
+        logger.debug(f"{shape_envs}")
+        if len(shape_envs) > 1:
+            logger.info(f"Multiple ShapeEnvs detected: {shape_envs}. Unifying them.")
+            primary_env = next(iter(shape_envs))
+            
+            # Map symbols to their primary data
+            symbol_to_data = find_symbol_binding_data(self._registers)
+            
+            for symbol, data in symbol_to_data.items():
+                for other_data in self._registers:
+                    if other_data.shape_env is not primary_env:
+                        for sym1, sym2 in zip(data.symbolic_shape, other_data.symbolic_shape):
+                            primary_env._constrain_unify(sym1, sym2)
+                    
+                        # Move shape_env of the other_data
+                        other_data.shape_env = primary_env
+                        logger.info(f"Unified Data {other_data.id} into primary ShapeEnv {primary_env.id}.")
+
+    
+    def lefts(self):
+        """Iterable over all registers that appear on the LEFT as input."""
+
+       
+        yield from self._lefts.values()
+
+    def rights(self):
+        """Iterable over all registers that appear on the RIGHT as output."""
+
+        yield from self._rights.values()
+
+    def get_left(self, name: str) -> Dict:
+        """Get a left register by name."""
+        logger.debug("  Fetching LEFT register by name: %s", name)
+        return self._lefts[name]
+
+    def get_right(self, name: str) -> Dict:
+        """Get a right register by name."""
+        logger.debug("  Fetching RIGHT register by name: %s", name)
+        return self._rights[name]
+    
+    def groups(self) -> Iterable[Tuple[str, List[Data]]]:
+        """Iterate over data groups by name.
+
+        Data objects with shared names (but differing `.flow` attributes) can be implicitly grouped.
+        """
+        groups = defaultdict(list)
+        for reg in self._registers:
+            groups[reg.id].append(reg)
+
+        yield from groups.items()
+
+    
+
+    def __repr__(self):
+        return f'Signature({repr(self._registers)})'
+
+    
+
+    def __contains__(self, item):
+        return item in self._registers
+    @overload
+    def __getitem__(self, key: int) -> Data:
+        pass
+
+    @overload
+    def __getitem__(self, key: slice) -> Tuple[Data, ...]:
+        pass
+    def __getitem__(self, key):
+        return self._registers[key]
+    def __iter__(self) -> Iterable[Dict]:
+        yield from self._registers
+
+    def __len__(self) -> int:
+        return len(self._registers)
+
+    def __eq__(self, other) -> bool:
+        return self._registers == other._registers
+    
+
+
 
 class Result:
     def __init__(
