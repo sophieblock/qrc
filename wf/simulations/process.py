@@ -130,7 +130,8 @@ class Process:
                     output_props=self.output_properties,
                 )
         else:
-            logger.debug(f"Accessing cached signature for {self}")
+            pass
+            # logger.debug(f"Accessing cached signature for {self}")
         return self._signature
     
 
