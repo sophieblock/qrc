@@ -1,3 +1,83 @@
+# -*- mode: python; coding: utf-8 -*-
+import os
+import importlib
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.building.build_main import Analysis, PYZ, EXE
+
+block_cipher = None
+
+# 1) list every top-level package you need bundled
+packages = [
+    'shiny',     'pyvis',    'jsonpickle',  'quimb',
+    'toolz',     'autoray',  'cotengra',     'qiskit',
+    'symengine', 'rustworkx','stevedore',   'attrs',
+    'attr',      'visast',   'EoN',         'openfermion',
+    'h5py',      'cirq',     'duet',         'mpl_toolkits',
+    'pennylane', 'autograd', 'toml',         'cachetools',
+]
+
+# 2) collect everything under those packages
+datas = []
+hiddenimports = ['shiny._launchbrowser']
+binaries = []
+
+for pkg in packages:
+    # ensure module is importable
+    importlib.import_module(pkg)
+
+    # collect any data files (e.g. non-py files)
+    datas += collect_data_files(pkg)
+
+    # collect all submodules so nothing is missed
+    hiddenimports += collect_submodules(pkg)
+
+# 3) add your own application files
+datas += [
+    ('./app/run_app.py', '.'),    # your entrypoint
+    ('./workflow',    'workflow'),
+    ('./app/app.py',  'app'),
+]
+
+# 4) now build
+a = Analysis(
+    ['app/run_app.py'],
+    pathex=[os.path.abspath('.')],  # include current dir on sys.path
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name='qrew_app',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
 # -*- mode: python ; coding: utf-8 -*-
 
 
