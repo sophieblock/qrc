@@ -1,12 +1,16 @@
 # -*- mode: python; coding: utf-8 -*-
-import os
+mport os
+import sys
 import importlib
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 from PyInstaller.building.build_main import Analysis, PYZ, EXE
 
+
+WORKFLOW_PATH = "/Users/sophieblock/qrew"
+sys.path.insert(0, WORKFLOW_PATH)
 block_cipher = None
 
-# 1) list every top-level package you need bundled
+
 packages = [
     'shiny',     'pyvis',    'jsonpickle',  'quimb',
     'toolz',     'autoray',  'cotengra',     'qiskit',
@@ -14,34 +18,30 @@ packages = [
     'attr',      'visast',   'EoN',         'openfermion',
     'h5py',      'cirq',     'duet',         'mpl_toolkits',
     'pennylane', 'autograd', 'toml',         'cachetools',
+    'faicons', 'qualtran',
 ]
 
-# 2) collect everything under those packages
+
 datas = []
 hiddenimports = ['shiny._launchbrowser']
 binaries = []
 
-for pkg in packages:
-    # ensure module is importable
+for pkg in packages + ['qrew']:  # include 'qrew' here
     importlib.import_module(pkg)
-
-    # collect any data files (e.g. non-py files)
     datas += collect_data_files(pkg)
-
-    # collect all submodules so nothing is missed
     hiddenimports += collect_submodules(pkg)
 
-# 3) add your own application files
 datas += [
     ('./app/run_app.py', '.'),    # your entrypoint
-    ('./workflow',    'workflow'),
-    ('./app/app.py',  'app'),
+    ('./app/app.py',  '.'),
 ]
 
-# 4) now build
 a = Analysis(
-    ['app/run_app.py'],
-    pathex=[os.path.abspath('.')],  # include current dir on sys.path
+    ['app/run_app.py', 'app/app.py'],  # scan both files for imports
+    pathex=[
+        os.path.abspath('.'),  # your web-interface folder
+        WORKFLOW_PATH,         # external qrew repo root
+    ],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
