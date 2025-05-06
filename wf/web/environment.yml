@@ -1,0 +1,42 @@
+name: web_wf
+channels:
+  - Conda-Forge
+dependencies:
+  # Base Python
+  - python=3.12
+
+  # Graphviz C library + Python bindings
+  - graphviz
+  - pygraphviz
+
+  # Core data-science / test / utility libs available via Conda
+  - numpy
+  - matplotlib
+  - pandas
+  - scikit-learn
+  - pytest
+  - rich
+
+  # Quantum / ML / specialized libs that Conda-forge carries
+  - pytorch        # conda name for torch
+  
+
+  # Let pip install anything else (or pinned PyPI versions)
+  - pip
+
+  # “pip:” block for all the rest of your requirements.txt
+  - pip:
+    - copier
+    - faicons
+    - shiny
+    - shinyswatch
+    - shinywidgets
+    - streamlit
+    - pyvis
+    - qiskit==1.2.4
+    - qualtran
+    - visast
+    - pennylane
+    - openfermion
+    - quimb
+    - z3-solver>=4.13.3.0
