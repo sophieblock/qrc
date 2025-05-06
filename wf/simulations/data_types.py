@@ -320,7 +320,7 @@ class NumericType(CType, metaclass=abc.ABCMeta):
     """
     pass
 # Classical Bit
-@define
+@frozen
 class CBit(NumericType):
     """ Represents a single classical bit (0 or 1).
 
@@ -405,7 +405,7 @@ class CInt(NumericType):
         return f"CInt({self.bit_width})"
 
 
-@define
+@frozen
 class CUInt(NumericType):
     """
     Classical unsigned integer of a given bit width (bitsize)
@@ -665,7 +665,7 @@ class CFloat(NumericType):
     def __repr__(self):
         return f'CFloat({self.bit_width})'
 
-@define
+@frozen
 class TensorType(NumericType):
     """
     Represents a rank-N generalized tensor with specified dimensions and element data type ( A base class for N-dimensional data types (matrices, tensors, etc.).)
@@ -860,7 +860,7 @@ class TensorType(NumericType):
         return len(self.shape)
     def __hash__(self) -> int:
         return hash((self.__class__, self.shape, self.element_type))
-@define
+@frozen
 class MatrixType(TensorType):
     """
     Legacy type. We will be moving away from this, but for now, the helper will unify it with TensorType to
@@ -1053,7 +1053,7 @@ class QType(DataType, metaclass=abc.ABCMeta):
         """Returns the classical value that these bits represent, if any."""
    
 
-@define
+@frozen
 class QBit(QType):
     """Quantum bit (qubit) type.
     
@@ -1084,7 +1084,7 @@ class QBit(QType):
         return bits[0]
     def __str__(self):
         return 'QBit()'
-@define
+@frozen
 class QAny(QType):
     """Opaque bag-of-qubits type."""
     num_qubits: SymbolicInt
@@ -1159,7 +1159,7 @@ class QAny(QType):
     def assert_valid_classical_val_array(self, val_array, debug_str: str = 'val'):
         pass
 
-@define
+@frozen
 class QInt(QType):
     """Signed Integer of a given width bitsize.
 
@@ -1218,7 +1218,7 @@ class QInt(QType):
     def __str__(self):
         return f"QInt({self.data_width})"
     
-@define
+@frozen
 class QUInt(QType):
     """Unsigned integer of a given width bitsize which wraps around upon overflow.
 
@@ -1313,7 +1313,7 @@ class QUInt(QType):
         return f'QUInt({self.num_qubits})'
     
 
-@define
+@frozen
 class BQUInt(QType):
     """Unsigned integer whose values are bounded within a range.
 
@@ -1380,7 +1380,7 @@ class BQUInt(QType):
 
 
 
-@define
+@frozen
 class QFxp(QType):
     """Fixed point type to represent real numbers in a quantum register.
 
