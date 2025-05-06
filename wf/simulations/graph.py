@@ -1031,10 +1031,58 @@ class Network:
 
         return dataframe
 
-    def visualize(self, show_edge_labels=False):
+    def to_networkx(self):
         G = nx.DiGraph()
         edge_labels = {}
         mapping = {}
+
+        G.add_node("Output", network_type=Node.OUTPUT)
+
+        if self.execution_order == []:
+            show_edge_labels = False
+            for node in self.nodes:
+                mapping[node] = str(node)
+
+            for node in self.nodes:
+                G.add_node(mapping[node], network_type=node.network_type)
+                if node.network_type == Node.OUTPUT:
+                    G.add_edge(mapping[node], "Output")
+                else:
+                    for output_node in node.output_nodes:
+                        G.add_edge(
+                            mapping[node],
+                            mapping[output_node],
+                        )
+        else:
+            idx = 0
+            for node in self.execution_order:
+                mapping[node] = str(idx) + ": " + node.process.__class__.__name__
+                idx = idx + 1
+
+            for node in self.nodes:
+                G.add_node(mapping[node], network_type=node.network_type)
+                for edge in node.output_edges:
+                    if edge.dest_nodes == []:
+                        G.add_edge(mapping[edge.source_node], "Output")
+                    for dest_node in edge.dest_nodes:
+                        G.add_edge(
+                            mapping[edge.source_node],
+                            mapping[dest_node],
+                            dtype=edge.data[0].properties["Data Type"],
+                        )
+                        edge_labels[(mapping[edge.source_node], mapping[dest_node])] = (
+                            edge.data[0].properties["Usage"]
+                        )
+        
+        return G, mapping
+
+    def visualize(self, show_edge_labels=False, show=False, ax=None):
+        G = nx.DiGraph()
+        edge_labels = {}
+        mapping = {}
+
+        if ax is None:
+            fig, ax = plt.subplots()
 
         if self.execution_order == []:
             show_edge_labels = False
@@ -1083,11 +1131,14 @@ class Network:
                 color_map.append("blue")
 
         nx.draw(
-            G, pos, with_labels=True, node_size=200, font_size=8, node_color=color_map
+            G, pos, with_labels=True, node_size=200, font_size=8, node_color=color_map, ax=ax,
         )
         if show_edge_labels:
-            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
-        plt.show()
+            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax)
+        
+        if show:
+            plt.show()
+    
 
     def combine(self, other, network_name=None):
         """Combines two networks under a single larger network such that
