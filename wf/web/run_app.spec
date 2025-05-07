@@ -1,15 +1,18 @@
-# -*- mode: python; coding: utf-8 -*-
-mport os
+# -*- mode: python ; coding: utf-8 -*-
+import os
 import sys
 import importlib
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 from PyInstaller.building.build_main import Analysis, PYZ, EXE
 
 
-WORKFLOW_PATH = "/Users/sophieblock/qrew"
-sys.path.insert(0, WORKFLOW_PATH)
-block_cipher = None
 
+
+binaries = [
+    ("/Users/so714f/opt/anaconda3/envs/wf_env/lib/python3.12/site-packages/z3/lib/libz3.dylib", "libz3.dylib")
+]
+
+block_cipher = None
 
 packages = [
     'shiny',     'pyvis',    'jsonpickle',  'quimb',
@@ -18,31 +21,32 @@ packages = [
     'attr',      'visast',   'EoN',         'openfermion',
     'h5py',      'cirq',     'duet',         'mpl_toolkits',
     'pennylane', 'autograd', 'toml',         'cachetools',
-    'faicons', 'qualtran',
+    'faicons', 'olsq', 'fxpmath'
 ]
-
-
 datas = []
 hiddenimports = ['shiny._launchbrowser']
-binaries = []
 
-for pkg in packages + ['qrew']:  # include 'qrew' here
-    importlib.import_module(pkg)
+for pkg in packages:
+    # importlib.import_module(pkg)
     datas += collect_data_files(pkg)
     hiddenimports += collect_submodules(pkg)
 
+
+WORKFLOW_PATH = os.environ.get("WORKFLOW_PATH", "/Users/so714f/Documents/code/workflow")
+
+
+
 datas += [
-    ('./app/run_app.py', '.'),    # your entrypoint
-    ('./app/app.py',  '.'),
+    ('./app/run_app.py', './'),
+    ('./app/app.py', './'),
+    (WORKFLOW_PATH, './'),  # Reference the workflow directory directly
 ]
 
+# Analysis
 a = Analysis(
-    ['app/run_app.py', 'app/app.py'],  # scan both files for imports
-    pathex=[
-        os.path.abspath('.'),  # your web-interface folder
-        WORKFLOW_PATH,         # external qrew repo root
-    ],
-    binaries=binaries,
+    ['app/run_app.py'],
+    pathex=[os.path.abspath('.'), WORKFLOW_PATH],  # Include the workflow path
+    binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -53,6 +57,7 @@ a = Analysis(
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
+    debug=True,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
