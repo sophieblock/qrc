@@ -8,7 +8,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 from qiskit import *
-from jax import numpy as np
+
 import sympy
 import matplotlib.pyplot as plt
 import base64
@@ -19,7 +19,9 @@ from datetime import datetime
  # Using pennylane's wrapped numpy
 from sympy import symbols, MatrixSymbol, lambdify, Matrix, pprint
 import jax
-import numpy as old_np
+import numpy as np
+
+
 from jax import random
 import scipy
 import pickle
@@ -121,7 +123,7 @@ def generate_dataset(
 
     y = [np.array(circuit(gate, x, qubits), dtype=jnp.complex128) for x in X]
 
-    return np.asarray(X), np.asarray(y)
+    return jnp.asarray(X), jnp.asarray(y)
 def get_init_params(N_ctrl, N_reserv, time_steps, bath, num_bath, key):
    
 
@@ -151,14 +153,14 @@ def create_initial_state(num_qubits, base_state):
     """
     Create an initial state for a given number of qubits.
     """
-    state = np.zeros(2**num_qubits)
+    state = jnp.zeros(2**num_qubits)
 
     if base_state == 'basis_state':
         state = state.at[0].set(1)
 
     elif base_state == 'GHZ_state':
-        state = state.at[0].set(1 / np.sqrt(2))
-        state = state.at[-1].set(1 / np.sqrt(2))
+        state = state.at[0].set(1 / jnp.sqrt(2))
+        state = state.at[-1].set(1 / jnp.sqrt(2))
 
     return state
 
@@ -305,15 +307,15 @@ class Sim_QuantumReservoir:
 
 
 def array(a,dtype):
-    return np.asarray(a, dtype=np.float32)
+    return jnp.asarray(a, dtype=np.float32)
 def Array(a,dtype):
-    return np.asarray(a, dtype=np.float32)
+    return jnp.asarray(a, dtype=np.float32)
 
 def calculate_iqr(data, x,y):
     """
     Calculate the Interquartile Range (IQR) of the input data.
     """
-    iqr = np.percentile(data, x) - np.percentile(data, y)
+    iqr = jnp.percentile(data, x) - jnp.percentile(data, y)
 
    
     return iqr
@@ -361,11 +363,11 @@ def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_d
         taus = params[:time_steps]
         qml.StatePrep(state_input, wires=[*ctrl_wires])
         for idx, tau in enumerate(taus):
-            hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
-            hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
-            hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
+            hx_array = jnp.array([params[time_steps]])  # Convert hx to a 1D array
+            hy_array = jnp.array([params[time_steps + 1]])  # Convert hy to a 1D array
+            hz_array = jnp.array([params[time_steps + 2]])  # Convert hz to a 1D array
             J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
-            current_step = np.concatenate([J_values, hx_array, hy_array, hz_array])
+            current_step = jnp.concatenate([J_values, hx_array, hy_array, hz_array])
             qml.evolve(parameterized_ham)(current_step, t=tau)
         return qml.density_matrix(wires=[*ctrl_wires])
 
@@ -412,7 +414,7 @@ def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_d
     grad_norms_normalized,grad_norms = [], []
     min_var_grad_means,max_var_grad_means = [],[]
     mean_normalized_var_grads = []
-    min_var_grad_norm = np.inf
+    min_var_grad_norm = jnp.inf
     max_var_grad_norm = 0.0
     normalized_variance_gradients = []
     mean_gradients_normalized,mean_gradients = [],[]
@@ -517,8 +519,8 @@ def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_d
         # variance_of_variance_normalized_gradient = jnp.var(normalized_variance_gradient) # Varia
         # mean_of_variance_normalized_gradient = jnp.abs(normalized_variance_gradient).mean()
 
-        average_of_mean_gradients_abs = np.abs(mean_gradient).mean()
-        average_of_mean_gradients_normalized_abs = np.abs(mean_gradient_normalized).mean()
+        average_of_mean_gradients_abs = jnp.abs(mean_gradient).mean()
+        average_of_mean_gradients_normalized_abs = jnp.abs(mean_gradient_normalized).mean()
         variance_of_mean_gradients = jnp.var(mean_gradient,ddof=1)
         variance_of_mean_gradients_normalized = jnp.var(mean_gradient_normalized)
         min_grad = min(np.abs(mean_gradient))
@@ -549,13 +551,13 @@ def optimize_traingset(gate, N_ctrl, N_reserv, time_steps, params, init_params_d
         
         # Replacement score favors stable gradients with moderate variance
         replacement_score = (
-            mean_variance_of_gradient * np.exp(-beta * (grad_norm_normalized - 1) ** 2) 
+            mean_variance_of_gradient * jnp.exp(-beta * (grad_norm_normalized - 1) ** 2) 
         )
        
-        # initial_Score =  normalized_mean_variance_of_gradient * np.exp(-alpha * (normalized_grad_norm_score - 1) ** 2)
+        # initial_Score =  normalized_mean_variance_of_gradient * jnp.exp(-alpha * (normalized_grad_norm_score - 1) ** 2)
        
         # replacement_score = (
-        #     normalized_mean_variance_of_gradient * np.exp(-beta * (normalized_grad_norm_score - 1) ** 2) 
+        #     normalized_mean_variance_of_gradient * jnp.exp(-beta * (normalized_grad_norm_score - 1) ** 2) 
         # )
 
 
@@ -711,7 +713,7 @@ def get_initial_lr_per_param_original(grads, base_step=0.01, min_lr=1e-5, max_lr
     # print(f"lr_tree: {lr_tree}")
     lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, min_lr, max_lr), lr_tree)
     return lr_tree
-def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max_lr=0.25,debug=True):
+def get_initial_lr_per_param2(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max_lr=0.25,debug=True):
      # print(f"grads: {grads}")
     
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
@@ -753,87 +755,157 @@ def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max
         print(f"Final lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, med={float(jnp.median(lr_tree))}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
         print(lr_tree)
     return lr_tree
-def improved_get_initial_lr_per_param(grads, base_step=0.005, min_lr=1e-4, max_lr=0.2,
-                                      outlier_clip=1.0, fudge_factor=None,debug=True):
-    """
-    Compute per-parameter learning rates robustly based on the gradient magnitudes.
+def get_initial_lr_per_param(grads, base_step=0.01,raw_lr=None, min_lr=1e-4, max_lr=0.25,debug=True):
+     # print(f"grads: {grads}")
+    D = grads.shape[0]
+    idx = jnp.arange(D)
+
+    mask_tau = idx < time_steps
+    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
+    mask_J   = idx >= time_steps + 3
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    global_norm = jnp.linalg.norm(grad_magnitudes)
+    # a,b,c=get_base_learning_rate(grads)
+    # print(get_initial_lr_per_param_original(grads,max_lr=a))
+    N_params = grad_magnitudes.shape[0]
+    median_grad = jnp.quantile(grad_magnitudes, 0.5)  # For debugging
+    MAD = jnp.median(jnp.abs(grad_magnitudes - median_grad))
     
-    Method:
-      1. Flatten the gradient PyTree and compute the absolute gradients.
-      2. Concatenate all absolute values to obtain a vector all_abs.
-      3. Optionally clip extreme values in all_abs (using outlier_clip) to obtain clipped_abs.
-      4. Compute a robust scale “r”:
-             median_val = median(clipped_abs)
-             MAD = median(|clipped_abs - median_val|)
-             r = median_val + MAD  (if r is zero, fall back to median_val)
-      5. Define the fudge factor:
-             fudge = fudge_factor, if provided;
-                     otherwise, fudge = 0.1 * r
-      6. For each parameter (with gradient g), compute the raw learning rate:
-             lr_raw = base_step * (r / (|g| + fudge))
-      7. Clamp lr_raw to the range [min_lr, max_lr].
-      8. Restore the original PyTree structure.
     
-    This procedure ensures that:
-      - Parameters with gradient magnitudes much below r receive higher learning rates.
-      - Parameters with high gradients receive lower learning rates.
-      - The fudge term is derived from the data via robust statistics rather than from max_lr.
-    
-    Arguments:
-      grads        : A PyTree of gradients (e.g., nested dicts/lists of jax.numpy arrays).
-      base_step    : Baseline step; if |grad| ≈ r, then lr ≈ base_step.
-      min_lr       : Minimum allowed learning rate.
-      max_lr       : Maximum allowed learning rate.
-      outlier_clip : Quantile (between 0 and 1) used to clip extreme gradient magnitudes before computing robust statistics.
-      fudge_factor : If provided, use this value as the fudge term; otherwise, set fudge = 0.1 * r.
-    
-    Returns:
-      A PyTree of learning rates matching the structure of grads.
-    """
-    # Step 1: Flatten the gradient tree.
-    grad_leaves, tree_def = jax.tree_util.tree_flatten(grads)
-    if not grad_leaves:
-        raise ValueError("grads is empty; no gradients provided.")
-    
-    # Step 2: Compute the absolute gradients for each leaf.
-    abs_leaves = [jnp.abs(g) + 1e-12 for g in grad_leaves]  # add a tiny epsilon to avoid division by zero
-    all_abs = jnp.concatenate([jnp.ravel(g) for g in abs_leaves])
-    
-    # Step 3: Optionally clip extreme values in all_abs.
-    if outlier_clip is not None and 0 < outlier_clip < 1:
-        clip_val = jnp.quantile(all_abs, outlier_clip)
-        clipped_abs = jnp.clip(all_abs, 0, clip_val)
-    else:
-        clipped_abs = all_abs
-    
-    # Step 4: Compute robust statistics.
-    median_val = jnp.quantile(clipped_abs, 0.5)
-    MAD = jnp.quantile(jnp.abs(clipped_abs - median_val), 0.5)
-    r = median_val + MAD
-    r = jnp.where(r == 0, median_val, r)
-    
-    # Step 5: Define the fudge factor.
-    fudge = fudge_factor if fudge_factor is not None else 0.1 * r
-    # fudge = fudge_factor if fudge_factor is not None else 0.1 * r
-    
-    # Step 6: Compute raw learning rates for each parameter.
-    # NOTE: Iterate over grad_leaves (not grads) to preserve the PyTree structure.
-    # lr_leaves = [(base_step / (jnp.abs(g) + fudge)) for g in grad_leaves]
-    lr_leaves = [base_step * (r / (jnp.abs(g) + fudge)) for g in grad_leaves]
-    
-    # Step 7: Clamp each learning rate to [min_lr, max_lr].
-    lr_leaves = [jnp.clip(lr, a_min=min_lr, a_max=max_lr) for lr in lr_leaves]
-    
-    # Step 8: Reassemble the learning rate tree.
-    lr_tree = jax.tree_util.tree_unflatten(tree_def, lr_leaves)
+    norm_factor = global_norm / jnp.sqrt(N_params)
+    print(f"global_norm: {global_norm:.5f}, norm factor= {norm_factor:.5f}")
+    normalized_abs = grad_magnitudes / (norm_factor + 1e-8)
+    median_norm = jnp.quantile(normalized_abs, 0.5)
+   
+    MAD_norm = jnp.quantile(jnp.abs(normalized_abs - median_norm), 0.5)
+  
+    #     r = (MAD+median_grad) /2
+    r = MAD+median_grad
+    # r = 0.1* (MAD+median_grad)/2
+
+    # print(f"grad_magnitudes: {grad_magnitudes}")
+    lr_tree2 = jax.tree_util.tree_map(lambda g: max_lr * (r/ (g + r )), grad_magnitudes)
+    min2 = float(jnp.min(lr_tree2))
+    max2 = float(jnp.max(lr_tree2))
+    med2 = float(jnp.median(lr_tree2))
+    lr_tree = jax.tree_util.tree_map(lambda g: base_step / g, grad_magnitudes)
+    # print(f"og: {lr_tree}")
+    # print(f"lr_tree2 (min={min2:.2e}, max={max2:.3e}, med2={med2:.3e}): {lr_tree2}")
+
+    lr_tree = jax.tree_util.tree_map(lambda lr: jnp.clip(lr, med2/2, max_lr), lr_tree2)
     if debug:
-        print(f"fudge: {fudge:.3e}")
-        print(f"median_val: {median_val:.3e}")
-        print(f"MAD: {MAD}")
-        print(f"r: {r}")
-        print(f"Final lr_tree: min = {float(jnp.min(jnp.abs(lr_tree))):.2e}, max = {float(jnp.max(jnp.abs(lr_tree))):.2e}, med={float(jnp.median(lr_tree))}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
-    print(lr_tree)
+        print("=== normal learning‐rate stats ===")
+        print(f"Median: {median_grad:.3e}")
+        print(f"MAD: {MAD:.3e}")
+        print(f"MAD+Med: {MAD+median_grad:.3e}, r: {r:.3e}")
+        print(f"Final lr_tree: min = {float(jnp.min(lr_tree)):.2e}, max = {float(jnp.max(lr_tree)):.2e}, med={float(jnp.median(lr_tree))}, mean = {float(jnp.mean(lr_tree)):.2e}, var = {float(jnp.var(lr_tree)):.3e}")
+
+        lr_tau = lr_tree[mask_tau]
+        lr_h   = lr_tree[mask_h]
+        lr_J   = lr_tree[mask_J]
+
+        # Print mean / min / max for each group
+        
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e}, "
+            f"min={float(jnp.min(lr_tau)):.3e}, max={float(jnp.max(lr_tau)):.3e}")
+        print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e}, "
+            f"min={float(jnp.min(lr_h)):.3e}, max={float(jnp.max(lr_h)):.3e}")
+        print(f" J‐group: mean={float(jnp.mean(lr_J)):.3e}, "
+            f"min={float(jnp.min(lr_J)):.3e}, max={float(jnp.max(lr_J)):.3e}")
+
+
+        # print(lr_tree)
     return lr_tree
+def get_groupwise_lr_trees(
+    grads: jnp.ndarray,
+    max_lr: float,
+    time_steps: int,
+    debug: bool = False,
+) -> jnp.ndarray:
+    """
+    grads:        [D,] gradient magnitudes at the initial params
+    max_lr:       scalar upper bound on any lr
+    time_steps:   T
+    debug:        if True, prints medians, MADs, r’s and a few sample lrs
+    returns:      lr_tree of shape [D,], where each index
+                  has its own lr_i taken from its group.
+    """
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    D = grad_magnitudes.shape[0]
+    idx = jnp.arange(D)
+
+    # 1) masks
+    mask_tau = idx < time_steps
+    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
+    mask_J   = idx >= time_steps + 3
+
+    # 2) extract groups
+    g_tau = grad_magnitudes[mask_tau]
+    g_h   = grad_magnitudes[mask_h]
+    g_J   = grad_magnitudes[mask_J]
+
+    # 3) medians & MADs
+    def med_mad(x):
+        med = jnp.median(x)
+        mad = jnp.median(jnp.abs(x - med))
+        return med, mad
+
+    med_tau, mad_tau = med_mad(g_tau)
+    med_h,   mad_h   = med_mad(g_h)
+    med_J,   mad_J   = med_mad(g_J)
+
+    # 4) r = med + mad
+    r_tau = med_tau + mad_tau
+    r_h   = med_h   + mad_h
+    r_J   = med_J   + mad_J
+
+    # 5) per‐group rule
+    lr_tau = r_tau * max_lr / (g_tau + r_tau + 1e-12)
+    lr_h   = r_h   * max_lr / (g_h   + r_h   + 1e-12)
+    lr_J   = r_J   * max_lr / (g_J   + r_J   + 1e-12)
+
+    # 6) scatter back
+    lr_tree = jnp.zeros_like(grad_magnitudes)
+    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
+    lr_tree = lr_tree.at[mask_h].set(lr_h)
+    lr_tree = lr_tree.at[mask_J].set(lr_J)
+
+    if debug:
+        # pull a few scalars out for printing
+        print(f"\n--- groupwise‐LR debug ---")
+        print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
+        print(f" medians:      τ={float(med_tau):.3e}, h={float(med_h):.3e}, J={float(med_J):.3e}")
+        print(f" MADs:         τ={float(mad_tau):.3e}, h={float(mad_h):.3e}, J={float(mad_J):.3e}")
+        print(f" r = med+mad:  τ={float(r_tau):.3e}, h={float(r_h):.3e}, J={float(r_J):.3e}")
+        # show a handful of per‐param picks
+        ex = min(5, D)
+        print(f" sample grads: {grad_magnitudes[:ex].tolist()}")
+        print(f" sample lrs:   {lr_tree[:ex].tolist()}")
+        print(f" variances:    τ={float(jnp.var(lr_tau)):.3e}, h={float(jnp.var(lr_h)):.3e}, J={float(jnp.var(lr_J)):.3e}")
+        print(f"---------------------------\n")
+    # Assert that no elements in lr_tree are less than min_lr
+    min_lr = 1e-6
+    # Assert that no elements in lr_tree are less than min_lr
+    below_min_lr_tau = jnp.where(mask_tau)[0][lr_tree[mask_tau] < min_lr]
+    below_min_lr_h = jnp.where(mask_h)[0][lr_tree[mask_h] < min_lr]
+    below_min_lr_J = jnp.where(mask_J)[0][lr_tree[mask_J] < min_lr]
+
+    assert jnp.all(lr_tree >= min_lr), (
+        f"Assertion failed: Some learning rates are less than {min_lr:.3e}. "
+        f"Indices and values in mask_tau: {list(zip(below_min_lr_tau.tolist(), (lr_tree[mask_tau][lr_tree[mask_tau] < min_lr]).tolist()))}, "
+        f"Indices and values in mask_h: {list(zip(below_min_lr_h.tolist(), (lr_tree[mask_h][lr_tree[mask_h] < min_lr]).tolist()))}, "
+        f"Indices and values in mask_J: {list(zip(below_min_lr_J.tolist(), (lr_tree[mask_J][lr_tree[mask_J] < min_lr]).tolist()))}"
+    )
+
+    # assert jnp.all(lr_tree >= min_lr), (
+    #     f"Assertion failed: Some learning rates are less than {min_lr:.1e}. "
+    #     f"Indices in mask_tau: {jnp.where(mask_tau)[0][lr_tree[mask_tau] < min_lr]}, "
+    #     f"Indices in mask_h: {jnp.where(mask_h)[0][lr_tree[mask_h] < min_lr]}, "
+    #     f"Indices in mask_J: {jnp.where(mask_J)[0][lr_tree[mask_J] < min_lr]}"
+    # ) 
+    return lr_tree, mask_tau, mask_h, mask_J
+
+
 def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key):
     float32=''
     opt_lr = None
@@ -854,7 +926,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 1
+    k = 2
    
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
@@ -900,13 +972,13 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
         for idx, tau in enumerate(taus):
            
-            hx_array = np.array([params[time_steps]])  # Convert hx to a 1D array
-            hy_array = np.array([params[time_steps + 1]])  # Convert hy to a 1D array
-            hz_array = np.array([params[time_steps + 2]])  # Convert hz to a 1D array
+            hx_array = jnp.array([params[time_steps]])  # Convert hx to a 1D array
+            hy_array = jnp.array([params[time_steps + 1]])  # Convert hy to a 1D array
+            hz_array = jnp.array([params[time_steps + 2]])  # Convert hz to a 1D array
             J_values = params[time_steps + 3 + idx * num_J : time_steps + 3 + (idx + 1) * num_J]
 
             # Concatenate hx_array with J_values
-            current_step = np.concatenate([J_values,hx_array,hy_array,hz_array])
+            current_step = jnp.concatenate([J_values,hx_array,hy_array,hz_array])
             
             qml.evolve(parameterized_ham)(current_step, t=tau)
             
@@ -949,7 +1021,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         batched_output_states = vcircuit(params, X)
 
         fidelities = jax.vmap(qml.math.fidelity)(batched_output_states, y)
-        fidelities = jnp.clip(fidelities, 0.0, 1.0)
+        # fidelities = jnp.clip(fidelities, 0.0, 1.0)
 
         return fidelities
  
@@ -964,28 +1036,34 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         e = time.time()
         dt = e - s
         raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
-        if raw_lr>0.25:
-            max_lr = 0.25
-        elif raw_lr < 0.2:
-            max_lr=0.2
-        else:
-            max_lr = raw_lr
-        print(f"max_lr: {max_lr:.3e}")
+        flat_grads = jnp.ravel(init_grads)
+        # after you’ve computed your flat_grads …
+        max_grad = float(jnp.max(flat_grads))
+        # choose a “target” maximum update size, e.g. 10% of a typical parameter
+        target_update = 0.1
+        # then set max_lr so that max_lr * max_grad ≈ target_update
+        max_lr = target_update / (max_grad + 1e-12)
+        print(f"raw_lr: {raw_lr:.3e}, max_lr: {max_lr:.3e}")
+        if max_lr>0.2:
+            max_lr = 0.2
+        elif max_lr < 0.01:
+            max_lr=0.01
+        
+        opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees(
+            flat_grads, max_lr=max_lr, time_steps=time_steps, debug=False
+        )
+        # print(f"opt_lr_tree: {opt_lr_tree}")
+
         opt_lr = get_initial_lr_per_param(
             init_grads,
             # base_step=max_lr,
             # raw_lr=raw_lr,
             # base_step=
             max_lr=max_lr,
-            debug=False
+            debug=True
 
         )
-        # opt_lr = improved_get_initial_lr_per_param(
-        #     init_grads,
-        #     base_step=max_lr,
-        #     max_lr=0.2,
-
-        # )
+       
        
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
         cost = init_loss
@@ -1005,7 +1083,45 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     #     optax.adam(learning_rate=1.0, b1=0.99, b2=0.999, eps=1e-7)  # Use a "neutral" global LR
     # )
     # opt = optax.adam(learning_rate=opt_lr, b1=0.99, b2=0.999, eps=1e-7)
+    debug = True
     
+    if debug:
+        # Compute group‐wise subsets
+        lr_tau = opt_lr_tree[mask_tau]
+        lr_h   = opt_lr_tree[mask_h]
+        lr_J   = opt_lr_tree[mask_J]
+
+        # Print mean / min / max for each group
+        print("\n=== group-wise learning‐rate stats ===")
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e}, "
+            f"min={float(jnp.min(lr_tau)):.3e}, max={float(jnp.max(lr_tau)):.3e}")
+        print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e}, "
+            f"min={float(jnp.min(lr_h)):.3e}, max={float(jnp.max(lr_h)):.3e}")
+        print(f" J‐group: mean={float(jnp.mean(lr_J)):.3e}, "
+            f"min={float(jnp.min(lr_J)):.3e}, max={float(jnp.max(lr_J)):.3e}")
+
+       
+        print("\n=== per‐time‐step learning‐rates ===")
+        reserv_qubits = sim_qr.reserv_qubits.tolist()  # List of reservoir qubit indices
+        ctrl_qubits = sim_qr.ctrl_qubits.tolist()      # List of control qubit indices
+        print(f'global h-vec lrs: hx={opt_lr_tree[time_steps]:.2e} hy={opt_lr_tree[time_steps+1]:.2e} hz={opt_lr_tree[time_steps+2]:.2e} ')
+        for t in range(time_steps):
+            tau_lr = float(opt_lr_tree[t])
+            # J‐block for step t lives at indices [time_steps+3 + t*num_J : time_steps+3 + (t+1)*num_J]
+            start = time_steps + 3 + t * num_J
+            end   = start + num_J
+            J_block = opt_lr_tree[start:end]
+            avg_J   = float(jnp.mean(J_block))
+            # Print each J element in the specified order using the qubit indices
+            J_elements = []
+            for i, r in enumerate(reserv_qubits):
+                for j, c in enumerate(ctrl_qubits):
+                    # J_index = f"J_{{{r},{c}}}={J_block[i * len(ctrl_qubits) + j]:.2e}"  # Access the element by index
+                    J_index = f"J({r},{c})={J_block[i * len(ctrl_qubits) + j]:.2e}"  # Access the element by index
+                    J_elements.append(J_index)
+            
+            print(f" step {t:2d}: t_lr={tau_lr:.2e},  avg(J_lr)={avg_J:.2e},  " + ", ".join(J_elements))
+
     opt_descr = 'per param'
     opt = optax.chain(
         optax.clip_by_global_norm(1.0),
@@ -1209,14 +1325,14 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         else:
             learning_rates.append('fixed')
         if epoch > 1:
-            var_grad = np.var(grad,ddof=1)
-            mean_grad = np.mean(jnp.abs(grad))
+            var_grad = jnp.var(grad,ddof=1)
+            mean_grad = jnp.mean(jnp.abs(grad))
             if epoch >5:
                 threshold_cond1.append(np.abs(mean_grad))
                 threshold_cond2.append(var_grad)
             if epoch == 15:
-                initial_meangrad = np.mean(np.array(threshold_cond1))
-                initial_vargrad = np.mean(np.array(threshold_cond2))
+                initial_meangrad = jnp.mean(np.array(threshold_cond1))
+                initial_vargrad = jnp.mean(np.array(threshold_cond2))
                 cond1  = initial_meangrad * 1e-1
                 # print(f"    - setting cond1: initial mean(grad) {initial_meangrad:2e}, threshold: {cond1:2e}")
                 cond2 = initial_vargrad * 1e-2
@@ -1224,8 +1340,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             
             acceleration = get_rate_of_improvement(cost,prev_cost,second_prev_cost)
             if epoch >= 25 and not a_condition_set and acceleration < 0.0:
-                average_roc = np.mean(np.array(rocs[10:]))
-                a_marked = np.abs(average_roc)
+                average_roc = jnp.mean(np.array(rocs[10:]))
+                a_marked = jnp.abs(average_roc)
                 a_threshold = max(a_marked * 1e-3, 1e-7)
                 # a_threshold = a_marked*1e-3 if a_marked*1e-3 > 9e-7 else a_marked*1e-2
                 
@@ -1243,8 +1359,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         # Logging
         max_abs_grad = jnp.max(jnp.abs(grad))
         if epoch == 0 or (epoch + 1) % 250 == 0:
-            var_grad = np.var(grad,ddof=1)
-            mean_grad = np.mean(jnp.abs(grad))
+            var_grad = jnp.var(grad,ddof=1)
+            mean_grad = jnp.mean(jnp.abs(grad))
             e = time.time()
             # avg_value = plateau_state.avg_value
             # has_improved = jnp.where(
@@ -1284,7 +1400,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             # current_cost_check = cost
             current_cost_check = cost_func(params, input_states,target_states)
             backup_cost_check = cost_func(backup_params, input_states,target_states)
-            if np.abs(backup_cost_check-backup_cost) > 1e-6:
+            if jnp.abs(backup_cost_check-backup_cost) > 1e-6:
                 print(f"Back up cost different then its check. diff: {backup_cost_check-backup_cost:.3e}\nbackup params: {backup_params}")
             if current_cost_check < backup_cost:
                 # print(f"Epoch {epoch}: Valid improvement found. Updating backup params: {backup_cost:.2e} > {current_cost_check:.2e}")
@@ -1314,7 +1430,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         for i in range(time_steps):
             if params[i] < 0:
                 params = params.at[i].set(np.abs(params[i]))
-        var_condition= np.var(grad,ddof=1) < 1e-14
+        var_condition= jnp.var(grad,ddof=1) < 1e-14
         gradient_condition= max(jnp.abs(grad)) < 1e-8
         epoch_cond = epoch >= 2*num_epochs
         # plateau_state = opt_state[-1]
@@ -1342,13 +1458,20 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
     epoch_time = full_e - full_s
     print(f"Time optimizing: {epoch_time}")
-    # filename = os.path.join(folder_gate, f'{min_var_indices}.pickle')
-   
+  
     testing_results = final_test(params,test_in, test_targ)
     
     f64 = np.array(testing_results, dtype=np.float64)
     infids = 1.0 - f64
    
+    avg_fidelity = np.mean(f64)
+    if 1.-avg_fidelity <1e-4:
+        print(f'Avg Fidelity: {avg_fidelity:.8e}, Err: {float(np.log10(infids).mean()):.5f}')
+    else: 
+        print(f'Avg Fidelity: {avg_fidelity:.5f}')
+     
+  
+
     print("\nAverage Final Fidelity: ", f64.mean())
     data = {'Gate':base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
             'opt_description': opt_descr,
@@ -1381,6 +1504,10 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 'training_states': input_states,
                 'opt_params': params,
                 'opt_lr': opt_lr,
+                'group_opt_lr_tree':opt_lr_tree,
+                'lr_tau':opt_lr_tree[mask_tau],
+                'lr_h':opt_lr_tree[mask_h],
+                'lr_J':opt_lr_tree[mask_J],
                 'grads_per_epoch':grads_per_epoch,
                 'bath': bath,
                 'num_bath':num_bath,
@@ -1425,12 +1552,12 @@ if __name__ == '__main__':
     trots = [30,35,40]
     # trots = [1,2,3,4,5,6,8]
     trots = [8,12,20,24]
-    # trots = [24]
+    trots = [12]
     # trots = [1,2,3,4,5]
 
     # res = [1, 2, 3]
     # res = [2]
-    res = [1,2]
+    res = [1]
   
 
     
@@ -1440,13 +1567,14 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 15
+    N_train = 20
     add=0
     # if N_ctrl ==4:
     #     add = 5_optimized_by_cost3
     
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
-    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_experimental/'
+    # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_grouped/'
+    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_experimental2/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param4_opt/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
@@ -1466,7 +1594,7 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        # if not gate_idx in [2]:
+        # if not gate_idx in [10]:
         #     continue
         # if not gate_idx in [19]:
         #     continue
@@ -1487,26 +1615,26 @@ if __name__ == '__main__':
                 
                 #folder = f'./param_initialization/Nc{N_ctrl}_Nr{N_reserv}_dt{time_steps}/fixed_params4/test7/'
                 for num_bath,bath in zip(num_baths,baths):
-                                folder = os.path.join(base_folder, f"{num_bath}_num_baths/")
-                                params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
-                                params_key = jax.random.PRNGKey(params_key_seed)
-                                dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
-                                dataset_key = jax.random.PRNGKey(dataset_seed)
-                                main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
-                                # print(f"main_params: {main_params}")
-                                params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
-                                
-                                
-                                time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
-                                K_half = jax.random.uniform(params_subkey1, (N, N))
-                                K = (K_half + K_half.T) / 2  # making the matrix symmetric
-                                K = 2. * K - 1.
-                                init_params_dict = {'K_coef': jnp.asarray(K)}
-                            
+                   
+                    params_key_seed = gate_idx*121 * N_reserv + 12345 * time_steps *N_reserv
+                    params_key = jax.random.PRNGKey(params_key_seed)
+                    dataset_seed = N_ctrl * gate_idx + gate_idx**2 + N_ctrl
+                    dataset_key = jax.random.PRNGKey(dataset_seed)
+                    main_params = jax.random.uniform(params_key, shape=(3 + (N_ctrl * N_reserv) * time_steps,), minval=-np.pi, maxval=np.pi)
+                    # print(f"main_params: {main_params}")
+                    params_key, params_subkey1, params_subkey2 = jax.random.split(params_key, 3)
+                    
+                    
+                    time_step_params = jax.random.uniform(params_key, shape=(time_steps,), minval=0, maxval=np.pi)
+                    K_half = jax.random.uniform(params_subkey1, (N, N))
+                    K = (K_half + K_half.T) / 2  # making the matrix symmetric
+                    K = 2. * K - 1.
+                    init_params_dict = {'K_coef': jnp.asarray(K)}
+                
 
 
-                                # Combine the two parts
-                                params = jnp.concatenate([time_step_params, main_params])
+                    # Combine the two parts
+                    params = jnp.concatenate([time_step_params, main_params])
                          # print(params)
                   
 
