@@ -66,7 +66,7 @@ from pennylane.operation import AnyWires, Operation
 from jax.experimental.ode import odeint
 from pennylane.devices.qubit.apply_operation import _evolve_state_vector_under_parametrized_evolution,apply_parametrized_evolution
 has_jax = True
-diable_jit = False
+diable_jit = True
 config.update('jax_disable_jit', diable_jit)
 #config.parse_flags_with_absl()
 config.update("jax_enable_x64", True)
@@ -481,15 +481,15 @@ def get_groupwise_lr_trees(
     if debug:
         # pull a few scalars out for printing
         print(f"\n--- groupwise‐LR debug ---")
-        print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
-        print(f" medians:      τ={float(med_tau):.3e}, h={float(med_h):.3e}, J={float(med_J):.3e}")
-        print(f" MADs:         τ={float(mad_tau):.3e}, h={float(mad_h):.3e}, J={float(mad_J):.3e}")
-        print(f" r = med+mad:  τ={float(r_tau):.3e}, h={float(r_h):.3e}, J={float(r_J):.3e}")
+        print(f" group sizes:  t={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
+        print(f" medians:      t={float(med_tau):.3e}, h={float(med_h):.3e}, J={float(med_J):.3e}")
+        print(f" MADs:         t={float(mad_tau):.3e}, h={float(mad_h):.3e}, J={float(mad_J):.3e}")
+        print(f" r = med+mad:  t={float(r_tau):.3e}, h={float(r_h):.3e}, J={float(r_J):.3e}")
         # show a handful of per‐param picks
         ex = min(5, D)
         print(f" sample grads: {grads[:ex].tolist()}")
         print(f" sample lrs:   {lr_tree[:ex].tolist()}")
-        print(f" variances:    τ={float(jnp.var(lr_tau)):.3e}, h={float(jnp.var(lr_h)):.3e}, J={float(jnp.var(lr_J)):.3e}")
+        print(f" variances:    t={float(jnp.var(lr_tau)):.3e}, h={float(jnp.var(lr_h)):.3e}, J={float(jnp.var(lr_J)):.3e}")
         print(f"---------------------------\n")
 
     return lr_tree, mask_tau, mask_h, mask_J
@@ -627,9 +627,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         return 1. - average_fidelity  # Minimizing infidelity
     @jit
     def cost_func(params,X, y):
-        params = jnp.asarray(params, dtype=jnp.float64)
-        X = jnp.asarray(X, dtype=jnp.complex128)
-        y = jnp.asarray(y, dtype=jnp.complex128)
+        params = np.asarray(params, dtype=jnp.float64)
+        X = np.asarray(X, dtype=jnp.complex128)
+        y = np.asarray(y, dtype=jnp.complex128)
         # Process the batch of states
         loss = batched_cost_helper(params, X, y)
         loss = jnp.maximum(loss, 0.0)  # Apply the cutoff to avoid negative costs
@@ -675,22 +675,39 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees(
             flat_grads, max_lr=max_lr, time_steps=time_steps, debug=True
         )
+        opt_lr = {
+            "t": opt_lr_tree[:time_steps],
+            "h": opt_lr_tree[time_steps:time_steps + 3],
+            "J": opt_lr_tree[time_steps + 3:]
+        }
+
+        print(f"opt_lr_tree: {opt_lr_tree}")
 
        
-        # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
+    # Option 1
+    # opt_descr = 'group per param adam'
+    # opt = optax.chain(
+    #     optax.clip_by_global_norm(1.0),
+    #     optax.adam(learning_rate=1.0),          # one Adam over the whole vector
+    #     scale_by_per_param_lr(opt_lr_tree),     # THEN scale each coordinate by your lr-tree
+    # )
+    # Option 2
+    opt_descr = 'masked per group adam'
+    # Assuming params is a flat vector and time_steps is defined
+    params = {
+        "t": params[:time_steps],
+        "h": params[time_steps:time_steps + 3],
+        "J": params[time_steps + 3:]
+    }
+
     opt = optax.chain(
         optax.clip_by_global_norm(1.0),
-        optax.adam(learning_rate=1.0,b1=0.99,b2=0.999,eps=1e-8),          # one Adam over the whole vector
-        scale_by_per_param_lr(opt_lr_tree),     # THEN scale each coordinate by your lr-tree
+        optax.masked(optax.adam(opt_lr["t"]), mask={"t": True, "h": False, "J": False}),
+        optax.masked(optax.adam(opt_lr["h"]), mask={"t": False, "h": True, "J": False}),
+        optax.masked(optax.adam(opt_lr["J"]), mask={"t": False, "h": False, "J": True})
     )
 
-    # opt = optax.chain(
-    #         optax.clip_by_global_norm(1.0),
-    #         optax.masked(optax.adam(learning_rate=1.0), mask_tau),  # lr=1.0 because we'll scale next
-    #         optax.masked(optax.adam(learning_rate=1.0), mask_h),
-    #         optax.masked(optax.adam(learning_rate=1.0), mask_J),
-    #         scale_by_per_param_lr(opt_lr_tree),
-    #     )
+
     debug = True
     
     if debug:
@@ -701,7 +718,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
 
         # Print mean / min / max for each group
         print("=== per‐group learning‐rate stats ===")
-        print(f" τ‐group: mean={float(jnp.mean(lr_tau)):.3e}, "
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e}, "
             f"min={float(jnp.min(lr_tau)):.3e}, max={float(jnp.max(lr_tau)):.3e}")
         print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e}, "
             f"min={float(jnp.min(lr_h)):.3e}, max={float(jnp.max(lr_h)):.3e}")
@@ -717,17 +734,26 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             end   = start + num_J
             J_block = opt_lr_tree[start:end]
             avg_J   = float(jnp.mean(J_block))
-            print(f" step {t:2d}: τ_lr={tau_lr:.3e},  avg(J_lr)={avg_J:.3e}")
+            print(f" step {t:2d}: t_lr={tau_lr:.3e},  avg(J_lr)={avg_J:.3e}")
 
 
     # Define the optimization update function
     @jit
-    def update(params, opt_state, X, y, value):
-        """Update all parameters including tau."""
-        loss, grads = jax.value_and_grad(cost_func)(params, X, y)
-        updates, opt_state = opt.update(grads, opt_state, params)
+    def update(params, opt_state, X, y):
+        params_flat = jnp.concatenate([params["t"], params["h"], params["J"]])
+        loss, grads_flat = jax.value_and_grad(cost_func)(params_flat, X, y)
+
+        grads_pytree = {
+            "t": grads_flat[:time_steps],
+            "h": grads_flat[time_steps:time_steps + 3],
+            "J": grads_flat[time_steps + 3:]
+        }
+
+        updates, opt_state = opt.update(grads_pytree, opt_state, params)
         new_params = optax.apply_updates(params, updates)
-        return new_params, opt_state, loss,grads
+
+        return new_params, opt_state, loss, grads_flat
+
     var = float(jnp.var(opt_lr_tree))
     mean = float(jnp.mean(opt_lr_tree))
     
@@ -775,9 +801,10 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     scale_reduction_epochs,learning_rates = [],[]  # Track epochs where scale is reduced
     scales_per_epoch = []  # Store scale values per epoch
     new_scale = 1.0  # Initial scale value
+    backup_cost_check = cost
     while epoch < num_epochs or improvement:
        
-        params, opt_state, cost, grad = update(params, opt_state, input_states, target_states,value=cost)
+        params, opt_state, cost, grad = update(params, opt_state, input_states, target_states)
       
         learning_rates.append('fixed')
         if epoch > 1:
@@ -834,8 +861,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             improvement = True
             consecutive_improvement_count += 1
             # current_cost_check = cost
-            current_cost_check = cost_func(params, input_states,target_states)
-            backup_cost_check = cost_func(backup_params, input_states,target_states)
+            params_flat = jnp.concatenate([params["t"], params["h"], params["J"]])
+            current_cost_check = cost_func(params_flat, input_states, target_states)
+
             if np.abs(backup_cost_check-backup_cost) > 1e-6:
                 print(f"Back up cost different then its check. diff: {backup_cost_check-backup_cost:.3e}\nbackup params: {backup_params}")
             if current_cost_check < backup_cost:
@@ -886,7 +914,8 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         print(f"backup cost (epoch: {backup_epoch}) is better with: {backup_cost:.2e} <  {cost:.2e}: {backup_cost < cost}")
        
         params = backup_params
-
+    else:
+        print(f'Final cost: {cost:.3e}')
     full_e = time.time()
 
     epoch_time = full_e - full_s
@@ -902,8 +931,6 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         print(f'Avg Fidelity: {avg_fidelity:.8e}, Err: {float(np.log10(infids).mean()):.5f}')
     else: 
         print(f'Avg Fidelity: {avg_fidelity:.5f}')
-     
-  
     data = {'Gate':base64.b64encode(pickle.dumps(gate)).decode('utf-8'),
             'opt_description': opt_descr,
             'specs':specs,
@@ -972,9 +999,9 @@ if __name__ == '__main__':
    
 
     trots = [1,15,20,25,30,35,40]
-    trots = [30,35,40]
-    trots = [4,5,6,7,8,10,16,20]
-    trots = [1,2,3,4,5,6]
+    trots = [2,10]
+    # trots = [4,5,6,7,8,10,16,20]
+    # trots = [1,2,3,4,5,6]
 
     # res = [1, 2, 3]
     res = [1]
@@ -987,12 +1014,12 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 20
+    N_train = 2
     add=0
   
     
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
-    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_by_group/'
+    folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_by_groupB/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
     gates_random = []
@@ -1011,8 +1038,8 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        if not gate_idx in [3]:
-            continue
+        # if not gate_idx in [3]:
+        #     continue
 
 
         for time_steps in trots:
