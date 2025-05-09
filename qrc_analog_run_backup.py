@@ -553,11 +553,10 @@ def get_groupwise_lr_trees(
     # ) 
     return lr_tree, mask_tau, mask_h, mask_J
 
-# 1) Use inject_hyperparams so each group’s lr-array is treated per-parameter
 def make_groupwise_plateau_optimizer(
     opt_lr: dict[str, jnp.ndarray],
     *,
-    b1=0.99, b2=0.999, eps=1e-8,
+    b1=0.9, b2=0.999, eps=1e-8,
     factor=0.9, patience=50, rtol=1e-4, min_scale=0.1,
 ):
     def one_group(rate):
@@ -725,6 +724,9 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             "h": opt_lr_tree[time_steps:time_steps + 3],
             "J": opt_lr_tree[time_steps + 3:]
         }
+        print(f"opt_lr: {opt_lr}")
+
+
 
        
         # print(f"Adjusted initial learning rate: {opt_lr:.2e}. Grad_norm: {1/grad_norm},Grad_norm: {grad_norm:.2e}")
@@ -797,7 +799,15 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     # )
 
     opt_descr = 'masked per group adam'
-    opt = make_groupwise_plateau_optimizer(opt_lr)
+    PATIENCE = 50
+    COOLDOWN = 0
+    FACTOR = 0.9
+    RTOL = 1e-4
+    # ACCUMULATION_SIZE = 10
+    MIN_SCALE = 0.1
+    new_scales = {'t': 1.0, 'h': 1.0, 'J': 1.0}
+
+    opt = make_groupwise_plateau_optimizer(opt_lr, factor=FACTOR, patience=PATIENCE, rtol=RTOL, min_scale=MIN_SCALE,)
 
     params = {
         "t": params[:time_steps],
@@ -888,35 +898,55 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     new_scale = 1.0  # Initial scale value
     backup_cost_check = cost
     while epoch < num_epochs or improvement:
-        if opt_descr in ['case 3']:
-            plateau_state = opt_state[-1]
-            scale,best_val,plateau_count,cooldown_count,*_ = plateau_state
-
-            current_avg = plateau_state.avg_value
-        params, opt_state, cost, grad = update(params, opt_state, input_states, target_states)
-        if opt_descr in ['case 3']:
-            plateau_state = opt_state[-1]
-            plateau_scale = plateau_state.scale
-            adjusted_lr = opt_lr * plateau_scale
-            learning_rates.append(adjusted_lr)
-            scales_per_epoch.append(plateau_scale)
+        if opt_descr in ['masked per group adam']:
             
-            # Check if plateau should have triggered
-            if (
-                plateau_state.avg_value >= plateau_state.best_value * (1 - RTOL) + RTOL
-                and plateau_state.plateau_count >= PATIENCE
-            ):
-                print(f"ReduceLROnPlateau *should* have triggered at Epoch {epoch + 1}!")
-            # Verify if scale is reducing
-            if plateau_state.scale < new_scale:
-                print(f"Reduced scale at epoch {epoch}: \n - current_avg: {current_avg:.2e},\n - best: {plateau_state.best_value:.2e},\n - res: {plateau_state.best_value * (1 - RTOL) + RTOL:.2e}")
-                # print(f"Reduced scale at epoch {epoch}: {plateau_state.scale:.5f}. \n - current_avg: {current_avg:.2e},\n - best: {plateau_state.best_value:.2e},\n - res: {plateau_state.best_value * (1 - RTOL) + RTOL:.2e}")
-                scale_reduction_epochs.append(epoch + 1)
-                new_scale = plateau_state.scale
-        # elif 'learning_rate' in opt_state[1].hyperparams:
-        #     plateau_scale = 1.0
-        #     learning_rate = opt_state[1].hyperparams['learning_rate']
-        #     learning_rates.append(learning_rate)
+            _, mask_t_state, mask_h_state, mask_J_state = opt_state
+            # print(f"mask_t_state: {mask_t_state}\nmask_t_state.inner_state[1]: {mask_t_state.inner_state[1]}")
+            plateau_states = {
+                't': mask_t_state.inner_state[1],
+                'h': mask_h_state.inner_state[1],
+                'J': mask_J_state.inner_state[1],
+            }
+            # capture averages before update
+            current_avgs = {g: ps.avg_value for g, ps in plateau_states.items()}
+
+        params, opt_state, cost, grad = update(params, opt_state, input_states, target_states)
+        if opt_descr in ['masked per group adam']:
+            for group, ps in plateau_states.items():
+                scale     = ps.scale
+                best      = ps.best_value
+                count     = ps.plateau_count
+                avg_val   = ps.avg_value
+
+                # compute adjusted per-group learning rate
+                adj_lr = opt_lr[group] * scale
+                learning_rates.append({group: float(jnp.mean(adj_lr))})
+                scales_per_epoch.append((group, float(scale)))
+
+                # “should have triggered” check
+                if avg_val >= best * (1 - RTOL) + RTOL and count >= PATIENCE:
+                    print(f"{group}: ReduceLROnPlateau *should* have triggered at Epoch {epoch1}!")
+
+                # detect actual reduction
+                if scale < new_scales[group]:
+                    lrs     = opt_lr[group] * scale
+                    lr_min  = float(jnp.min(lrs))
+                    lr_max  = float(jnp.max(lrs))
+                    lr_mean = float(jnp.mean(lrs))
+                    lr_var  = float(jnp.var(lrs))
+
+                    print(
+                        f"{group}: Reduced scale to {scale} at epoch {epoch}:\n"
+                        # f"  - current_avg: {float(current_avgs[group]):.2e},\n"
+                        # f"  - best:        {float(best):.2e},\n"
+                        f"  - threshold:   {float(best * (1 - RTOL) + RTOL):.2e}"
+                        f"  -> new LR stats: min={lr_min:.2e}, max={lr_max:.2e}, "
+                        f"mean={lr_mean:.2e}, var={lr_var:.2e}"
+                    )
+                    scale_reduction_epochs.append((group, epoch+1))
+                    new_scales[group] = scale
+            
+
         else:
             learning_rates.append('fixed')
         if epoch > 1:
@@ -1190,7 +1220,7 @@ if __name__ == '__main__':
    
 
     trots = [1,15,20,25,30,35,40]
-    trots = [2,3,4,5]
+    trots = [2]
     # trots = [4,5,6,7,8,10,16,20]
     # trots = [1,2,3,4,5,6]
 
@@ -1205,7 +1235,7 @@ if __name__ == '__main__':
 
 
     num_epochs = 1500
-    N_train = 20
+    N_train = 10
     add=0
   
     
