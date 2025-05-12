@@ -157,7 +157,7 @@ def test_allocate_normal():
     allocation = device.allocate(quantum_resource)
     allocated_qubit_idxs = allocation.allocated_qubit_idxs
     assert device.max_available_connections == 1
-    assert sorted(device.available_qubits + allocated_qubit_idxs) == sorted(
+    assert sorted(device.available_qubits + list(allocated_qubit_idxs)) == sorted(
         available_qubits
     )
     assert all(qubit_idx in available_qubits for qubit_idx in allocated_qubit_idxs)
