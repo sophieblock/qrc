@@ -192,7 +192,7 @@ class LayoutSynthesizer:
         quantum_circuit: QuantumCircuit,
         device: "QuantumDevice",
         transition_based=True,
-        hard_island = True,
+        hard_island = False,
         epsilon=0.3,
         objective="depth",
     ):
@@ -590,20 +590,31 @@ class LayoutSynthesizer:
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
 
-        physical_qubit_idxs = []
-        for logical_qubit_idx in range(self.circuit.qubit_count):
-            physical_qubit_idxs.append(pi[logical_qubit_idx][0])
+        # physical_qubit_idxs = []
+        # for logical_qubit_idx in range(self.circuit.qubit_count):
+        #     physical_qubit_idxs.append(pi[logical_qubit_idx][0])
+
+        # for timestep in range(self.circuit_depth - 1):
+        #     for edge in self.available_connectivity.edges:
+        #         implies_condition = Or(edge[0] not in physical_qubit_idxs,
+        #                                 edge[1] not in physical_qubit_idxs)
+        #         self.solver.add(
+        #             Implies(
+        #                 implies_condition,
+        #                 sigma[edge[0]][edge[1]][timestep] == False
+        #             )
+        #         )      
+
+        P0 = [pi[q][0] for q in range(self.circuit.qubit_count)]
 
         for timestep in range(self.circuit_depth - 1):
-            for edge in self.available_connectivity.edges:
-                implies_condition = Or(edge[0] not in physical_qubit_idxs,
-                                        edge[1] not in physical_qubit_idxs)
+            for (i, j) in self.available_connectivity.edges:
+                # symbolic “i ∉ P0  ∨  j ∉ P0”
+                i_out = And([i != p for p in P0])
+                j_out = And([j != p for p in P0])
                 self.solver.add(
-                    Implies(
-                        implies_condition,
-                        sigma[edge[0]][edge[1]][timestep] == False
-                    )
-                )          
+                    Implies( Or(i_out, j_out),  sigma[i][j][timestep] == False )
+                )    
 
     def add_optimization_objective(self):
         """Adds the optimization objective to the solver. This
@@ -647,7 +658,7 @@ class LayoutSynthesizer:
 
         logger.debug(f"Initial qubit mapping: {initial_qubit_map}")
         logger.debug(f"Final qubit mapping: {final_qubit_map}")
-        logger.debug(f"Objective result: {objective_result}")
+        logger.debug(f"Objective result: {objective_result}, SWAP count: {swaps}, time: {time}")
 
         del self.results
         return result_circuit, initial_qubit_map, final_qubit_map, objective_result, {'depth':objective_result,'time':time,'swaps':swaps}
@@ -795,6 +806,11 @@ class LayoutSynthesizer:
     ):
         for physical_qubit_indices, timestep in self.results["SWAPs"]:
             print("SWAP", physical_qubit_indices, timestep)
+            result_circuit_instructions[timestep].append(
+                QuantumInstruction(
+                    gate=SWAP(), qubit_indices=tuple(physical_qubit_indices)
+                )
+            )
 
     def build_circuit_result(
         self, result_circuit_instructions: List[List[QuantumInstruction]]

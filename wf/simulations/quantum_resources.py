@@ -47,22 +47,24 @@ class QuantumResource(Resource):
     def __init__(
         self,
         quantum_circuit: QuantumCircuit = None,
-        LS_parameters={"transition based": True, "epsilon": 0.3, "objective": "depth"},
+        LS_parameters={"transition based": True, "epsilon": 0.3, "objective": "depth", "hard_island": False},
     ):
         super().__init__(resource_type="QUANTUM")
         self.circuit = quantum_circuit
         self.LS_parameters = LS_parameters
-
+  
 
 class QuantumDevice(Device):
     def __init__(
         self,
         device_name,
         connectivity,
+        compiler=None,
         gate_set=None,
     ):
         self.name: str = device_name
         self.connectivity: nx.Graph = connectivity
+        self.compiler = compiler
         self.gate_set: Tuple[QuantumGate] = gate_set
         
         
@@ -82,8 +84,7 @@ class QuantumDevice(Device):
     def get_transpiled_swap(self):
         qc = QiskitQuantumCircuit(2, 0)
         qc.swap(0, 1)
-        # qc = transpile(qc, basis_gates=[gate.name.lower() for gate in self.gate_set])
-        # logger.info(f"qiskit version: {qiskit.__version__}")
+        
         logger.debug(f"Attempting to get {self}'s transpiled swap for gates: {self.gate_set}")
         qc = transpile(
             qc, 
@@ -140,17 +141,33 @@ class QuantumDevice(Device):
         all_qubits = {idx
                       for instr in optimized_circuit.instructions
                       for idx in instr.gate_indices}
-
-        assert all_qubits.issubset(set(init_qubit_map)), (
-            f"Compiled circuit touches extra qubits {all_qubits - set(init_qubit_map)} "
-            f"that were not part of the initial island {init_qubit_map}"
-        )
+        if hard_island:
+            # • relay-paths forbidden ⇒ “extra” qubits are a bug
+            assert all_qubits.issubset(set(init_qubit_map)), (
+                f"Compiled circuit touches extra qubits {all_qubits - set(init_qubit_map)} "
+                f"which are outside the initial island {init_qubit_map}"
+            )
+        else:
+            # • relay-paths allowed ⇒ only warn (helps during debugging)
+            extra = all_qubits - set(init_qubit_map)
+            if extra:
+                logger.debug(
+                    "Relay qubits introduced outside the initial island: %s", sorted(extra)
+                )
         
-        logger.debug("Marking qubits %s as unavailable on device '%s'", init_qubit_map, self.name)
+        
+        # ---------------------------------------------------------
+        # ❷  Reserve every qubit that actually appears in the circuit
+        #     (whether island or relay) so that the global scheduler
+        #     will not hand them to another job.
+        # ---------------------------------------------------------
+        logger.debug("Marking qubits %s as unavailable on device '%s'",
+                     sorted(all_qubits), self.name)
 
         for q in all_qubits:
             self.connectivity.nodes[q]["Available"] = False
         self.update_available_qubits()
+
 
 
         logger.debug("Available qubits after allocation: %s", self.available_qubits)
