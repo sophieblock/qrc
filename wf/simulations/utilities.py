@@ -1,48 +1,92 @@
-import matplotlib.pyplot as plt
-import pandas as pd
 import networkx as nx
-from typing import List, Tuple
+import matplotlib.pyplot as plt
+from typing import Tuple, List
+import numpy as np
+import pandas as pd
 import time
 import tracemalloc
-
 
 class InitError(Exception):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
 NEXT_AVAILABLE_ID = 0
-
 
 def get_next_id():
     global NEXT_AVAILABLE_ID
     next_id = NEXT_AVAILABLE_ID
-    NEXT_AVAILABLE_ID += 1
-    # return "N" + format(next_id, "X").zfill(5)
-    return f"N{NEXT_AVAILABLE_ID}"
-
-
-def convert_to_iterable(input):
-    if isinstance(input, str):
-        return (input,)
-
+    NEXT_AVAILABLE_ID +=1
+    # return 'N' + format(next_id,"X").zfill(7)
+    return f'N{NEXT_AVAILABLE_ID}'
+def convert_to_iterable(val):
+    """
+    Converts the input to an iterable.
+    - If the input is a string, returns a tuple containing the string.
+    - If the input is a NumPy array, returns a tuple of its flattened elements.
+    - Otherwise, attempts to convert the input to a tuple.
+    """
+    if isinstance(val, str):
+        return (val,)
+    if isinstance(val, np.ndarray):
+        # Flatten the array and convert to a tuple
+        return tuple(val.flatten().tolist())
     try:
-        result = tuple(input)
+        result = tuple(val)
     except TypeError:
-        result = (input,)
+        result = (val,)
     return result
 
 
 def all_dict1_vals_in_dict2_vals(dict1_val, dict2_val) -> bool:
+    """
+    Checks that every element in dict1_val (converted to an iterable) is found
+    in dict2_val (also converted to an iterable).
+
+    If any element is a NumPy array, it is converted via convert_to_iterable so that
+    membership tests work without ambiguity.
+    """
     dict1_val_itr = convert_to_iterable(dict1_val)
     dict2_val_itr = convert_to_iterable(dict2_val)
-    return all(val in dict2_val_itr for val in dict1_val_itr)
+    for val in dict1_val_itr:
+        found = False
+        for candidate in dict2_val_itr:
+            # If both values are numpy arrays, use array_equal for a proper comparison.
+            if isinstance(val, np.ndarray) and isinstance(candidate, np.ndarray):
+                if np.array_equal(val, candidate):
+                    found = True
+                    break
+            else:
+                try:
+                    if val == candidate:
+                        found = True
+                        break
+                except Exception:
+                    pass
+        if not found:
+            return False
+    return True
+# def convert_to_iterable(input):
+#     if isinstance(input, str):
+#         return (input,)
+
+#     try:
+#         result = tuple(input)
+#     except TypeError:
+#         result = (input,)
+#     return result
+
+
+# def all_dict1_vals_in_dict2_vals(dict1_val, dict2_val) -> bool:
+#     dict1_val_itr = convert_to_iterable(dict1_val)
+#     dict2_val_itr = convert_to_iterable(dict2_val)
+#     return all(val in dict2_val_itr for val in dict1_val_itr)
 
 
 def any_dict1_vals_in_dict2_vals(dict1_val, dict2_val) -> bool:
     dict1_val_itr = convert_to_iterable(dict1_val)
     dict2_val_itr = convert_to_iterable(dict2_val)
     return any(val in dict2_val_itr for val in dict1_val_itr)
-
+from collections.abc import Iterable
+import numpy as np
 
 def adjacent_edges_from_edge(nxGraph: nx.Graph, vertex1, vertex2) -> List[Tuple]:
     adjacent_sorted_edges = []
@@ -125,6 +169,9 @@ def publish_gantt(
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
 
     assert all(
         col in dataframe.columns
@@ -133,7 +180,7 @@ def publish_gantt(
             "Process",
             "Start Time [s]",
             "End Time [s]",
-            "Memory Cost [B]",
+            "Memory [B]",
         ]
     ), "Ensure the DataFrame has the necessary columns"
 
@@ -142,9 +189,9 @@ def publish_gantt(
     # apply a colormap to the processes based on the Memory Cost (untested)
     if cmap:
         norm = plt.Normalize(
-            dataframe["Memory Cost [B]"].min(), dataframe["Memory Cost [B]"].max()
+            dataframe["Memory [B]"].min(), dataframe["Memory [B]"].max()
         )
-        colors = plt.cm.get_cmap(cmap)(norm(dataframe["Memory Cost [B]"]))
+        colors = plt.cm.get_cmap(cmap)(norm(dataframe["Memory [B]"]))
     else:
         colors = "skyblue"
 
@@ -165,7 +212,14 @@ def publish_gantt(
         ax.spines["right"].set_visible(False)
 
     ax.set_xlabel('Time [s]')
-
+    
+    title_fs = ax.title.get_fontsize()
+    ax.xaxis.label.set_size(round(title_fs * 0.9))
+    tick_labels_fs = round(title_fs * 0.75)
+    for tick in ax.get_yticklabels():
+        tick.set_fontsize(tick_labels_fs)
+    for tick in ax.get_xticklabels():
+        tick.set_fontsize(tick_labels_fs)
     if save:
         plt.savefig(save)
     if show and not save:
@@ -190,9 +244,11 @@ def publish_gantt2(
     Creates a Gantt plot from the given DataFrame tabulating results from <Network>.run
 
     """
-
+    # print(type(ax))
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
 
     assert all(
         col in dataframe.columns
@@ -201,7 +257,7 @@ def publish_gantt2(
             "Process",
             "Start Time [s]",
             "End Time [s]",
-            "Memory Cost [B]",
+            "Memory [B]",
         ]
     ), "Ensure the DataFrame has the necessary columns"
 
@@ -236,7 +292,13 @@ def publish_gantt2(
         ax.spines["right"].set_visible(False)
 
     ax.set_xlabel(key)
-
+    title_fs = ax.title.get_fontsize()
+    ax.xaxis.label.set_size(round(title_fs * 0.9))
+    tick_labels_fs = round(title_fs * 0.75)
+    for tick in ax.get_yticklabels():
+        tick.set_fontsize(tick_labels_fs)
+    for tick in ax.get_xticklabels():
+        tick.set_fontsize(tick_labels_fs)
     if save:
         plt.savefig(save)
     if show and not save:
