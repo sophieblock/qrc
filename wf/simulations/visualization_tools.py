@@ -1,9 +1,13 @@
-
+from typing import TYPE_CHECKING
 from .simulation.refactor.data import Data, DataSpec
-from .simulation.refactor.register import Signature, Flow
+from .simulation.refactor.schema import Signature, Flow
 from .simulation.refactor.builder import DanglingT,LeftDangle,RightDangle,Connection, Port,ProcessInstance
-from .simulation.refactor.dtypes import QBit,CBit,TensorType,MatrixType, check_dtypes_consistent
-# from .simulation.refactor.graph import DirectedEdge,Network
+if TYPE_CHECKING:
+    from .simulation.refactor.data import Data, DataSpec
+    from .simulation.refactor.schema import Signature, Flow
+    from .simulation.refactor.builder import DanglingT,LeftDangle,RightDangle,Connection, Port,ProcessInstance
+    from .simulation.refactor.data_types import QBit,CBit,TensorType,MatrixType, check_dtypes_consistent
+    # from .simulation.refactor.graph import DirectedEdge,Network
 
 import itertools
 from numpy import inf as INFINITY
@@ -29,6 +33,113 @@ import subprocess
 import platform
 from IPython.display import Image, display
 from IPython.display import display as display_fig
+import cirq
+
+
+_BASE_GATES = {
+    # 1-qubit, no parameter
+    "H":   cirq.H,
+    "X":   cirq.X,
+    "Y":   cirq.Y,
+    "Z":   cirq.Z,
+    "S":   cirq.S,
+    "T":   cirq.T,
+    "Tdg": cirq.T**-1,          # dagger of T
+
+    # 1-qubit, parameter
+    "RX":  cirq.rx,             # factories
+    "RY":  cirq.ry,
+    "RZ":  cirq.rz,
+
+    # 2-qubit, no parameter
+    "CX":  cirq.CNOT,
+    "CZ":  cirq.CZ,
+    "SWAP": cirq.SWAP,
+
+    # 2-qubit, parameter
+    "CZPow": cirq.CZPowGate,    # will be called with exponent
+    # Add more as needed…
+}
+
+
+def _cirq_gate_from_instruction(instr):
+    """
+    Return the Cirq gate/operation corresponding to *instr* (QuantumInstruction).
+
+    For 1-qubit parameterised gates we call the factory with the angle.
+    For CZPow we instantiate with exponent=instr.gate.param.
+    """
+    name = instr.gate.name
+
+    if name in {"RX", "RY", "RZ"}:
+        theta = getattr(instr.gate, "param")
+        return _BASE_GATES[name](theta)
+
+    if name == "CZPow":
+        exponent = getattr(instr.gate, "param")
+        return _BASE_GATES[name](exponent=exponent)
+
+    if name not in _BASE_GATES:
+        raise ValueError(f"Gate '{name}' not (yet) supported by translate_c_to_cirq")
+
+    return _BASE_GATES[name]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2.  Main translation routine
+# ────────────────────────────────────────────────────────────────────────────
+def translate_c_to_cirq(
+    qc,
+    *,
+    noise_model=None,
+    save_measurements=False,
+    include_idle_identity=True,
+):
+
+    n_qubits = qc.qubit_count
+    qubits   = cirq.LineQubit.range(n_qubits)
+
+    ops = []
+
+    if include_idle_identity and n_qubits:
+        ops.append(cirq.Moment(cirq.I.on_each(*qubits)))
+
+    meas_count = 0
+
+    for instr in qc.instructions:
+        gate_name = instr.gate.name
+
+        # 0.  Resolve the Cirq gate or factory
+        if gate_name == "MEASURE":
+            key = str(meas_count) if save_measurements else None
+            ops.append(cirq.measure(qubits[instr.gate_indices[0]], key=key))
+            meas_count += 1
+            continue
+
+        cirq_gate = _cirq_gate_from_instruction(instr)
+
+        # 1-qubit vs 2-qubit dispatch
+        if len(instr.gate_indices) == 1:
+            q0 = qubits[instr.gate_indices[0]]
+            ops.append(cirq_gate(q0) if callable(cirq_gate) else cirq_gate.on(q0))
+
+        elif len(instr.gate_indices) == 2:
+            q0, q1 = (qubits[i] for i in instr.gate_indices)
+            # Cirq convention: for CX the first is *control*, second *target*
+            if callable(cirq_gate):
+                ops.append(cirq_gate(q0, q1))
+            else:
+                ops.append(cirq_gate.on(q0, q1))
+        else:
+            raise NotImplementedError(
+                f"Gates on >2 qubits not supported (instruction={instr})"
+            )
+
+        # (Optional) insert noise here in future — parity with Tangelo stub.
+        if noise_model and gate_name in noise_model.noisy_gates:
+            raise NotImplementedError("Noise model insertion not implemented yet")
+
+    return cirq.Circuit(ops)
 
 
 def _assign_ids_to_nodes_and_edges(process_instances, all_ports):
@@ -169,7 +280,7 @@ class ModuleDrawer:
             f'{html.escape(thru.pretty())}</TD></TR>\n'
         )
     def get_port_label(self,port: Port):
-        from workflow.simulation.refactor.builder import Split, Join
+        from qrew.simulation.refactor.builder import Split, Join
         if not self.show_bookkeeping:
             if isinstance(port.process_instance, ProcessInstance) and isinstance(port.process_instance.process, (Split, Join)):
                 # logger.debug(f'No port label for {port.process_instance}')
@@ -234,7 +345,7 @@ class ModuleDrawer:
         tr_code += '</TR>\n'
         return tr_code
     def get_pinst_header_text(self, pinst: ProcessInstance):
-        from workflow.simulation.refactor.builder import Split, Join
+        from qrew.simulation.refactor.builder import Split, Join
         if not self.show_bookkeeping:
             if isinstance(pinst.process, (Split, Join)):
                 return ''

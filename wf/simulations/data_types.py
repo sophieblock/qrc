@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import overload,Iterable, Any, Union, List, Sequence, Optional, Tuple
 import itertools
 import numpy as np
@@ -294,6 +296,270 @@ def _to_symbolic_int(v):
         return sympy.symbols(v, positive=True, integer=True)
     return v
 
+from enum import Enum
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Light-weight VALUE helper – orthogonal to the dtype hierarchy
+# ──────────────────────────────────────────────────────────────────────────────
+class BitNumbering(Enum):
+    MSB = 0          # bit-0 is most-significant (big-endian bit order)
+    LSB = 1         # bit-0 is least-significant (little-endian bit order)
+
+
+from attrs import define,field, validate, validators, converters,Factory,setters
+
+
+
+def validate_dtype(instance,attribute, value):
+    instance.assert_valid_classical_val(instance.integer, "BitStringView.integer")
+def _post_setattr(instance, attribute, value):
+    """
+    on_setattr hook: keep nbits in sync and validate dtype whenever integer or dtype changes.
+    """
+    name = attribute.name
+    if name == "integer":
+        # grow nbits based on new integer
+        new_bits = value.bit_length() or 1
+        if instance.nbits is None:
+            object.__setattr__(instance, "nbits", new_bits)
+        else:
+            object.__setattr__(instance, "nbits", max(instance.nbits, new_bits))
+    elif name == "dtype":
+        # validate and grow nbits based on dtype
+        if value is not None:
+            value.assert_valid_classical_val(instance.integer, "BitStringView.integer")
+            object.__setattr__(instance, "nbits", max(instance.nbits or 0, value.data_width))
+    return value
+
+# possibly add order = True which adds  __lt__, __le__, __gt__, and __ge__ methods that behave like __eq__  and allow instances to be ordered
+@define(
+    slots=True,
+    kw_only=True,
+    on_setattr=[setters.convert, setters.validate, _post_setattr],
+)
+class BitStringView:
+    integer: int = field(
+        default=0,
+        converter=int,
+        validator=validators.instance_of(int),
+    )
+
+    nbits: Optional[int] = field(
+        default=None,
+        validator=validators.optional(validators.instance_of(int)),
+    )
+
+    numbering: BitNumbering = field(
+        default=BitNumbering.MSB,
+        validator=validators.instance_of(BitNumbering),
+    )
+
+    dtype: Optional["DataType"] = field(
+        default=None,
+    )
+
+    def __attrs_post_init__(self):
+        # initialize nbits if not provided
+        if self.nbits is None:
+            object.__setattr__(self, "nbits", self.integer.bit_length() or 1)
+        # enforce dtype if given
+        if self.dtype is not None:
+            self.dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
+            object.__setattr__(self, "nbits", max(self.nbits, self.dtype.data_width))
+
+    def binary(self) -> str:
+        bits = format(self.integer, f"0{self.nbits}b")
+        return bits[::-1] if self.numbering is BitNumbering.LSB else bits
+
+    def bits(self) -> list[int]:
+        return [int(b) for b in self.binary()]
+
+    def array(self) -> list[int]:
+        return self.bits()
+    
+    @classmethod
+    def from_int(
+        cls,
+        integer: int,
+        *,
+        nbits: Optional[int] = None,
+        numbering: BitNumbering = BitNumbering.MSB,
+        dtype: Optional["DataType"] = None,
+    ) -> "BitStringView":
+        if isinstance(integer, cls):
+            # preserve existing bits and dtype if not overridden
+            return cls.from_bitstring(
+                other=integer,
+                nbits=nbits or integer.nbits,
+                numbering=numbering,
+                dtype=dtype or integer.dtype,
+            )
+        return cls(
+            integer=integer,
+            nbits=nbits,
+            numbering=numbering,
+            dtype=dtype,
+        )
+
+    @classmethod
+    def from_binary(
+        cls,
+        binary: str | "BitStringView",
+        *,
+        nbits: Optional[int] = None,
+        numbering: BitNumbering = BitNumbering.MSB,
+    ) -> "BitStringView":
+        if isinstance(binary, cls):
+            return cls.from_int(
+                integer=binary.integer,
+                nbits=nbits or binary.nbits,
+                numbering=binary.numbering,
+                dtype=binary.dtype,
+            )
+        b = binary[2:] if binary.startswith("0b") else binary
+        width = max(nbits or 0, len(b))
+        inst = cls(integer=0, nbits=width, numbering=numbering)
+        inst.integer = int(
+            b[::-1] if numbering is BitNumbering.LSB else b,
+            2,
+        )
+        return inst
+
+    @classmethod
+    def from_array(
+        cls,
+        array: Sequence[int] | "BitStringView",
+        *,
+        nbits: Optional[int] = None,
+        numbering: BitNumbering = BitNumbering.MSB,
+        dtype: Optional["DataType"] = None,
+    ) -> "BitStringView":
+        if isinstance(array, cls):
+            return cls.from_int(
+                integer=array.integer,
+                nbits=nbits or array.nbits,
+                numbering=array.numbering,
+                dtype=array.dtype,
+            )
+        seq = list(array)
+        width = max(nbits or 0, len(seq))
+        inst = cls(integer=0, nbits=width, numbering=numbering, dtype=dtype)
+        if numbering is BitNumbering.LSB:
+            seq = seq[::-1]
+        inst.integer = int("".join(str(b) for b in seq), 2)
+        return inst
+
+    @classmethod
+    def from_bitstring(
+        cls,
+        other: "BitStringView",
+        *,
+        nbits: Optional[int] = None,
+        numbering: BitNumbering | None = None,
+        dtype: Optional["DataType"] = None,
+    ) -> "BitStringView":
+        width = max(nbits or 0, other.nbits)
+        return cls(
+            integer=other.integer,
+            nbits=width,
+            numbering=numbering if numbering is not None else other.numbering,
+            dtype=dtype if dtype is not None else other.dtype,
+        )
+
+    @classmethod
+    def msb(
+        cls,
+        integer: int | "BitStringView",
+        *,
+        nbits: Optional[int] = None,
+        dtype: Optional["DataType"] = None,
+    ) -> "BitStringView":
+        return cls.from_int(
+            integer=integer,
+            nbits=nbits,
+            numbering=BitNumbering.MSB,
+            dtype=dtype,
+        )
+
+    @classmethod
+    def lsb(
+        cls,
+        integer: int | "BitStringView",
+        *,
+        nbits: Optional[int] = None,
+        dtype: Optional["DataType"] = None,
+    ) -> "BitStringView":
+        return cls.from_int(
+            integer=integer,
+            nbits=nbits,
+            numbering=BitNumbering.LSB,
+            dtype=dtype,
+        )
+    def with_numbering(self, numbering: BitNumbering) -> "BitStringView":
+        """
+        Return a new BitStringView with the same integer, nbits and dtype
+        but a different bit-ordering.
+        """
+        return type(self).from_bitstring(
+            other=self,
+            nbits=self.nbits,
+            numbering=numbering,
+            dtype=self.dtype,
+        )
+
+
+    def widen_to_dtype(self, dtype: "DataType") -> "BitStringView":
+        dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
+        object.__setattr__(self, "nbits", max(self.nbits, dtype.data_width))
+        return self
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, BitStringView):
+            return (
+                self.integer,
+                self.nbits,
+                self.numbering,
+            ) == (
+                other.integer,
+                other.nbits,
+                other.numbering,
+            )
+        if isinstance(other, int):
+            return self.integer == other
+        if isinstance(other, str):
+            return self.binary() == other.lstrip("0b")
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash((self.integer, self.nbits, self.numbering))
+
+    def __add__(
+        self,
+        other: "BitStringView",
+    ) -> "BitStringView":
+        if not isinstance(other, BitStringView):
+            raise TypeError(f"Cannot add {type(other)} to BitStringView")
+        return BitStringView.from_int(
+            integer=self.integer + other.integer,
+            nbits=max(self.nbits, other.nbits),
+            numbering=self.numbering,
+        )
+
+    def __len__(self) -> int:
+        return self.nbits
+
+    def __int__(self) -> int:
+        return self.integer
+
+    def __repr__(self) -> str:
+        return (
+            f"BitStringView({self.integer}, "
+            f"nbits={self.nbits}, order={self.numbering.name})"
+        )
+
+
+
+
 class CType(DataType, metaclass=abc.ABCMeta):
     """Parent for purely classical data types.
     - element_size (in bytes) = data_width / 8.
@@ -311,14 +577,38 @@ class CType(DataType, metaclass=abc.ABCMeta):
     def nbytes(self):
         """total bytes"""
         self.data_width // 8
+    
+    def to_bitstring(
+        self,
+        value: int | Sequence[int] | "BitStringView" = 0,
+        *,
+        numbering: BitNumbering = BitNumbering.MSB,
+    ) -> "BitStringView":
+        """
+        Return a BitStringView initialised with *value* and widened
+        to *this* dtype.  Works for every classical subtype.
+        """
+        if isinstance(value, BitStringView):
+            return value.widen_to_dtype(self)
+
+        if isinstance(value, (int, np.integer)):
+            bs = BitStringView.from_int(value, numbering=numbering)
+        else:  # assume list/ndarray of bits
+            bs = BitStringView.from_array(value, numbering=numbering)
+
+        return bs.widen_to_dtype(self)
+
+
     def __str__(self):
         return f"{self.__class__.__name__}({self.data_width})"
+@define
 class NumericType(CType, metaclass=abc.ABCMeta):
     """
     Marker base for *numeric* classical types (integers, floats, fixed‐point, bits).
     Non-numeric classical types (String, Struct) remain direct subclasses of CType.
     """
-    pass
+    def to_bitstring(self, value=0, *, numbering=BitNumbering.MSB):
+        return CType.to_bitstring(self, value, numbering=numbering)
 # Classical Bit
 @frozen
 class CBit(NumericType):
@@ -393,7 +683,7 @@ class CInt(NumericType):
             inverted = ''.join('1' if b == '0' else '0' for b in bit_string)
             return - (int(inverted, 2) + 1)
     
-
+    
     def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
         if not isinstance(val, (int, np.integer)):
             raise ValueError(f"{debug_str} must be an integer.")
@@ -860,172 +1150,6 @@ class TensorType(NumericType):
         return len(self.shape)
     def __hash__(self) -> int:
         return hash((self.__class__, self.shape, self.element_type))
-@frozen
-class MatrixType(TensorType):
-    """
-    Legacy type. We will be moving away from this, but for now, the helper will unify it with TensorType to
-    pass tests ritten with just MatrixType: unification_tools.is_consistant_data_type(dtypeA, dtypeB).
-    """
-    def __init__(
-        self,
-        rows_or_shape: Union[int, Tuple[int, int]] = SymInt,
-        cols: int = SymInt,
-        element_type: Any = float,
-    ):
-        # If rows_or_shape is already a 2D tuple, use that as the shape directly
-        if isinstance(rows_or_shape, tuple):
-            if len(rows_or_shape) != 2:
-                raise ValueError(
-                    f"MatrixType expects a 2D shape, got {rows_or_shape}"
-                )
-            shape = rows_or_shape
-        else:
-            # Otherwise, treat `rows_or_shape` as the `rows` integer
-            shape = (rows_or_shape, cols)
-
-        # Now call the parent initializer with the final shape
-        super().__init__(shape=shape, element_type=element_type)
-
-
-    @property
-    def rows(self) -> int:
-        return self.shape[0]
-
-    @property
-    def cols(self) -> int:
-        return self.shape[1]
-
-    def multiply(self, other: "MatrixType") -> "MatrixType":
-        """Matrix multiplication shape logic (rows x cols)."""
-        if self.cols != other.rows:
-            raise ValueError(
-                f"Matrix multiply dimension mismatch: {self.rows}x{self.cols} vs {other.rows}x{other.cols}"
-            )
-        # Return a new MatrixType with shape (self.rows, other.cols)
-        return MatrixType(self.rows, other.cols, element_type=self.element_type)
-
-    def __str__(self):
-        # dtype_name = self.element_type.__name__ if isinstance(self.element_type, type) else str(self.element_type)
-        # return f"Matrix(({self.rows}, {self.cols}), dtype={dtype_name})"
-        return f"Matrix({self.rows}, {self.cols})"
-    def __repr__(self):
-        dtype_name = self.element_type.__name__ if isinstance(self.element_type, type) else str(self.element_type)
-        return f"Matrix(({self.rows}, {self.cols}), dtype={dtype_name})"
-
-
-@frozen
-class String(CType):
-    max_length: int
-
-    def __attrs_post_init__(self):
-        if self.max_length < 0:
-            raise ValueError("max_length cannot be negative.")
-    @property
-    def data_width(self) -> int:
-        return 8 * self.max_length
-    @property
-    def nbytes(self) -> int:       
-        return self.max_length
-    def to_bits(self, value: str) -> List[int]:
-        if len(value) > self.max_length:
-            raise ValueError("String exceeds max_length")
-        s = value.ljust(self.max_length, '\x00')
-        bits = []
-        for ch in s:
-            byte = ord(ch) & 0xFF
-            for i in range(8):
-                bits.append((byte >> i) & 1)
-        return bits
-
-    def from_bits(self, bits: List[int]) -> str:
-        if len(bits) != 8 * self.max_length:
-            raise ValueError(f"CString expects {8 * self.max_length} bits")
-        chars = []
-        for i in range(0, len(bits), 8):
-            byte = 0
-            for j in range(8):
-                byte |= (bits[i+j] & 1) << j
-            chars.append(chr(byte))
-        s = "".join(chars)
-        return s.rstrip("\x00")
-
-    def get_classical_domain(self) -> Iterable[Any]:
-        # Potentially all strings of length <= max_length, which is huge. Return empty or partial.
-        return []
-
-    def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
-        if not isinstance(val, str):
-            raise ValueError(f"{debug_str} must be a string for {self}")
-@frozen
-class Struct(CType):
-    """
-    Struct is a classical composite type akin to a C/struct record.
-    """
-    fields: dict[str, DataType, CType]
-
-    def __attrs_post_init__(self):
-        # validate fields
-        for k, v in self.fields.items():
-            if not isinstance(v, DataType):
-                raise TypeError(f"Field {k!r} is not a DataType")
-        object.__setattr__(self, "field_order", list(self.fields.keys()))
-
-    @property
-    def data_width(self) -> int:
-        # sum of each field's data_width
-        return sum(ft.data_width for ft in self.fields.values())
-    @property
-    def nbytes(self) -> int:                      # <── NEW
-        return sum(
-            getattr(ft, "nbytes", ft.data_width // 8)
-            for ft in self.fields.values()
-        )
-    @property
-    def total_bits(self) -> int:                         # new
-        """Recursive bit count (matches TensorType.total_bits)."""
-        return sum(
-            getattr(ft, "total_bits", ft.data_width)     # field may be composite
-            for ft in self.fields.values()
-        )
-    @property
-    def bit_width(self) -> int:
-        # alias for compatibility with check_dtypes_consistent
-        return self.data_width
-
-    def to_bits(self, value: dict[str, Any]) -> List[int]:
-        bits: List[int] = []
-        for name in self.field_order:
-            field_type = self.fields[name]
-            field_val  = value[name]
-            bits.extend(field_type.to_bits(field_val))
-        return bits
-
-    def from_bits(self, bits: List[int]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        idx = 0
-        for name in self.field_order:
-            field_type = self.fields[name]
-            w = field_type.data_width
-            chunk = bits[idx : idx + w]
-            if len(chunk) < w:
-                raise ValueError("Bit list too short for struct fields")
-            result[name] = field_type.from_bits(chunk)
-            idx += w
-        return result
-
-    def get_classical_domain(self) -> Iterable[Any]:
-        # not used for consistency checks
-        return []
-
-    def assert_valid_classical_val(self, val: Any, debug_str: str = "val"):
-        if not isinstance(val, dict):
-            raise ValueError(f"{debug_str} must be a dict")
-        for name in self.field_order:
-            if name not in val:
-                raise ValueError(f"Missing field '{name}' in {debug_str}")
-            self.fields[name].assert_valid_classical_val(val[name], f"{debug_str}.{name}")
-
-
 
 # ----------------------------------------------------------------
 # Quantum Data Type Implementations
@@ -1052,6 +1176,19 @@ class QType(DataType, metaclass=abc.ABCMeta):
     def from_bits(self, bits: list[int]):
         """Returns the classical value that these bits represent, if any."""
    
+    def to_bitstring(
+        self,
+        value: int | "BitStringView" = 0,
+        *,
+        numbering: BitNumbering = BitNumbering.MSB,
+    ) -> "BitStringView":
+        if numbering is BitNumbering.LSB:
+            raise ValueError("LSB order not yet meaningful for qubit registers")
+
+        if isinstance(value, BitStringView):
+            return value.widen_to_dtype(self)
+
+        return BitStringView.from_int(value, nbits=self.data_width, dtype=self)
 
 @frozen
 class QBit(QType):
@@ -1490,6 +1627,173 @@ class QFxp(QType):
         if self.signed:
             return f"QFxp({self.num_qubits}, {self.num_frac}, True)"
         return f"QFxp({self.num_qubits}, {self.num_frac})"
+
+
+# ----------------------------------------------------------------
+# More classical data types
+@frozen
+class MatrixType(TensorType):
+    """
+    Legacy type. We will be moving away from this, but for now, the helper will unify it with TensorType to
+    pass tests ritten with just MatrixType: unification_tools.is_consistant_data_type(dtypeA, dtypeB).
+    """
+    def __init__(
+        self,
+        rows_or_shape: Union[int, Tuple[int, int]] = SymInt,
+        cols: int = SymInt,
+        element_type: Any = float,
+    ):
+        # If rows_or_shape is already a 2D tuple, use that as the shape directly
+        if isinstance(rows_or_shape, tuple):
+            if len(rows_or_shape) != 2:
+                raise ValueError(
+                    f"MatrixType expects a 2D shape, got {rows_or_shape}"
+                )
+            shape = rows_or_shape
+        else:
+            # Otherwise, treat `rows_or_shape` as the `rows` integer
+            shape = (rows_or_shape, cols)
+
+        # Now call the parent initializer with the final shape
+        super().__init__(shape=shape, element_type=element_type)
+
+
+    @property
+    def rows(self) -> int:
+        return self.shape[0]
+
+    @property
+    def cols(self) -> int:
+        return self.shape[1]
+
+    def multiply(self, other: "MatrixType") -> "MatrixType":
+        """Matrix multiplication shape logic (rows x cols)."""
+        if self.cols != other.rows:
+            raise ValueError(
+                f"Matrix multiply dimension mismatch: {self.rows}x{self.cols} vs {other.rows}x{other.cols}"
+            )
+        # Return a new MatrixType with shape (self.rows, other.cols)
+        return MatrixType(self.rows, other.cols, element_type=self.element_type)
+
+    def __str__(self):
+        # dtype_name = self.element_type.__name__ if isinstance(self.element_type, type) else str(self.element_type)
+        # return f"Matrix(({self.rows}, {self.cols}), dtype={dtype_name})"
+        return f"Matrix({self.rows}, {self.cols})"
+    def __repr__(self):
+        dtype_name = self.element_type.__name__ if isinstance(self.element_type, type) else str(self.element_type)
+        return f"Matrix(({self.rows}, {self.cols}), dtype={dtype_name})"
+
+@frozen
+class String(CType):
+    max_length: int
+
+    def __attrs_post_init__(self):
+        if self.max_length < 0:
+            raise ValueError("max_length cannot be negative.")
+    @property
+    def data_width(self) -> int:
+        return 8 * self.max_length
+    @property
+    def nbytes(self) -> int:       
+        return self.max_length
+    def to_bits(self, value: str) -> List[int]:
+        if len(value) > self.max_length:
+            raise ValueError("String exceeds max_length")
+        s = value.ljust(self.max_length, '\x00')
+        bits = []
+        for ch in s:
+            byte = ord(ch) & 0xFF
+            for i in range(8):
+                bits.append((byte >> i) & 1)
+        return bits
+
+    def from_bits(self, bits: List[int]) -> str:
+        if len(bits) != 8 * self.max_length:
+            raise ValueError(f"CString expects {8 * self.max_length} bits")
+        chars = []
+        for i in range(0, len(bits), 8):
+            byte = 0
+            for j in range(8):
+                byte |= (bits[i+j] & 1) << j
+            chars.append(chr(byte))
+        s = "".join(chars)
+        return s.rstrip("\x00")
+
+    def get_classical_domain(self) -> Iterable[Any]:
+        # Potentially all strings of length <= max_length, which is huge. Return empty or partial.
+        return []
+
+    def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
+        if not isinstance(val, str):
+            raise ValueError(f"{debug_str} must be a string for {self}")
+@frozen
+class Struct(CType):
+    """
+    Struct is a classical composite type akin to a C/struct record.
+    """
+    fields: dict[str, DataType, CType]
+
+    def __attrs_post_init__(self):
+        # validate fields
+        for k, v in self.fields.items():
+            if not isinstance(v, DataType):
+                raise TypeError(f"Field {k!r} is not a DataType")
+        object.__setattr__(self, "field_order", list(self.fields.keys()))
+
+    @property
+    def data_width(self) -> int:
+        # sum of each field's data_width
+        return sum(ft.data_width for ft in self.fields.values())
+    @property
+    def nbytes(self) -> int:                      # <── NEW
+        return sum(
+            getattr(ft, "nbytes", ft.data_width // 8)
+            for ft in self.fields.values()
+        )
+    @property
+    def total_bits(self) -> int:                         # new
+        """Recursive bit count (matches TensorType.total_bits)."""
+        return sum(
+            getattr(ft, "total_bits", ft.data_width)     # field may be composite
+            for ft in self.fields.values()
+        )
+    @property
+    def bit_width(self) -> int:
+        # alias for compatibility with check_dtypes_consistent
+        return self.data_width
+
+    def to_bits(self, value: dict[str, Any]) -> List[int]:
+        bits: List[int] = []
+        for name in self.field_order:
+            field_type = self.fields[name]
+            field_val  = value[name]
+            bits.extend(field_type.to_bits(field_val))
+        return bits
+
+    def from_bits(self, bits: List[int]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        idx = 0
+        for name in self.field_order:
+            field_type = self.fields[name]
+            w = field_type.data_width
+            chunk = bits[idx : idx + w]
+            if len(chunk) < w:
+                raise ValueError("Bit list too short for struct fields")
+            result[name] = field_type.from_bits(chunk)
+            idx += w
+        return result
+
+    def get_classical_domain(self) -> Iterable[Any]:
+        # not used for consistency checks
+        return []
+
+    def assert_valid_classical_val(self, val: Any, debug_str: str = "val"):
+        if not isinstance(val, dict):
+            raise ValueError(f"{debug_str} must be a dict")
+        for name in self.field_order:
+            if name not in val:
+                raise ValueError(f"Missing field '{name}' in {debug_str}")
+            self.fields[name].assert_valid_classical_val(val[name], f"{debug_str}.{name}")
 
 
 
