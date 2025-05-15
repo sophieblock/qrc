@@ -10,9 +10,21 @@ from ..quantum import (
 )
 from .resources import Allocation, Device, Resource
 from qiskit import QuantumCircuit as QiskitQuantumCircuit
-from qiskit import transpile
 
+from packaging.version import parse as v
 import qiskit
+
+# Qiskit ≥ 0.24 has Target / CouplingMap / InstructionProperties
+if v(qiskit.__version__) >= v("0.24.0"):
+    from qiskit.transpiler import Target, CouplingMap, InstructionProperties
+    from qiskit.circuit.library import standard_gates
+    from qiskit import transpile
+else:
+    from qiskit import transpile
+    from qiskit.transpiler import Target, CouplingMap, InstructionProperties
+    from qiskit.circuit.library.standard_gates import standard_gates
+    
+
 from ....util.log import logging
 logger = logging.getLogger(__name__)
 
@@ -52,25 +64,26 @@ class QuantumDevice(Device):
         self.name: str = device_name
         self.connectivity: nx.Graph = connectivity
         self.gate_set: Tuple[QuantumGate] = gate_set
-        self.transpiled_swap_circuit: QiskitQuantumCircuit = self.get_transpiled_swap()
-        self.swap_duration: int = self.transpiled_swap_circuit.depth()
+        
+        
         self.available_qubits: List[int] = [node for node in self.connectivity.nodes]
 
         for node in self.connectivity.nodes:
             self.connectivity.nodes[node]["Available"] = True
-
+        self.transpiled_swap_circuit: QiskitQuantumCircuit = self.get_transpiled_swap()
+        self.swap_duration: int = self.transpiled_swap_circuit.depth()
         self.set_max_connections(self.connectivity)
 
         if isinstance(connectivity, nx.Graph):
             assert all(
                 qubit1 != qubit2 for qubit1, qubit2 in self.connectivity.edges
             ), f"Connectivity graph for device {self.name} contains self edges"
-
+        self.describe(log=True)
     def get_transpiled_swap(self):
         qc = QiskitQuantumCircuit(2, 0)
         qc.swap(0, 1)
         # qc = transpile(qc, basis_gates=[gate.name.lower() for gate in self.gate_set])
-        logger.info(f"qiskit version: {qiskit.__version__}")
+        # logger.info(f"qiskit version: {qiskit.__version__}")
         logger.debug(f"Attempting to get {self}'s transpiled swap for gates: {self.gate_set}")
         qc = transpile(
             qc, 
@@ -85,43 +98,7 @@ class QuantumDevice(Device):
         if self.max_available_connections >= required_connections:
             return True
         return False
-    # def allocate(self, resource: QuantumResource):
-    #     quantum_circuit = resource.circuit
-    #     transition_based = resource.LS_parameters["transition based"]
-    #     epsilon = resource.LS_parameters["epsilon"]
-    #     objective = resource.LS_parameters["objective"]
 
-    #     # Validate gate support
-    #     missing_gates = [g for g in quantum_circuit.gate_set if g not in self.gate_set]
-    #     if missing_gates:
-    #         msg = f"Device {self.name} does not support one or more gates: {missing_gates}. Supported: {self.gate_set}"
-    #         logger.error(msg)
-    #         raise AssertionError(msg)
-
-    #     # Check device capacity
-    #     if not self.check_if_available(resource):
-    #         msg = f"Device {self.name} does not have sufficient available qubits to run {quantum_circuit}"
-    #         logger.error(msg)
-    #         raise AssertionError(msg)
-
-    #     logger.info("Running layout synthesis on device=%s, objective=%s", self.name, objective)
-    #     optimized_circuit, qubit_mapping, _, _ = self.layout_synthesis(
-    #         quantum_circuit, transition_based, epsilon, objective
-    #     )
-
-    #     # Mark mapped qubits as unavailable
-    #     for qubit_idx in qubit_mapping:
-    #         self.connectivity.nodes[qubit_idx]["Available"] = False
-    #     self.update_available_qubits()
-
-    #     allocation = QuantumAllocation(
-    #         device_name=self.name,
-    #         allocated_qubit_idxs=qubit_mapping,
-    #         transpiled_circuit=optimized_circuit,
-    #         qubit_connectivity=self.connectivity,
-    #     )
-    #     logger.debug("Allocation completed: %s", allocation)
-    #     return allocation
     def allocate(self, resource: QuantumResource):
         """Transpile, map, and allocate a quantum circuit on this device.
 
@@ -134,12 +111,12 @@ class QuantumDevice(Device):
         """
         # 1) Transpile the logical circuit to this device’s basis
         quantum_circuit = self.__transpile(resource.circuit)
-
+        logger.debug(f"resource.LS_parameters: {resource.LS_parameters}")
         # 2) Find an optimal layout / (re)ordering
         transition_based = resource.LS_parameters["transition based"]
+        hard_island      = resource.LS_parameters.get("hard_island", False)
         epsilon          = resource.LS_parameters["epsilon"]
         objective        = resource.LS_parameters["objective"]
-
         assert all(
             gate in self.gate_set for gate in quantum_circuit.gate_set
         ), (
@@ -151,39 +128,41 @@ class QuantumDevice(Device):
             "Starting layout synthesis (objective=%s, transition_based=%s, epsilon=%s)",
             objective, transition_based, epsilon
         )
-        optimized_circuit, qubit_mapping, _, _ = self.layout_synthesis(
+        optimized_circuit, init_qubit_map, _, _,results_dict = self.layout_synthesis(
             quantum_circuit,
             transition_based=transition_based,
+            hard_island=hard_island,
             epsilon=epsilon,
             objective=objective,
         )
-
-        # 3) Figure out *which* physical qubits the compiled circuit touches
-        touched_qubits = {
-            idx
-            for instr in optimized_circuit.instructions
-            for idx in instr.gate_indices
-        }
-        sorted_touched = tuple(sorted(touched_qubits))
-
-        logger.debug("Touched qubits by optimized circuit: %s", sorted_touched)
         logger.debug("Available qubits before allocation: %s", self.available_qubits)
+        # 3) Figure out *which* physical qubits the compiled circuit touches
+        all_qubits = {idx
+                      for instr in optimized_circuit.instructions
+                      for idx in instr.gate_indices}
 
-        # 4) Mark them unavailable on the device
-        logger.debug("Marking qubits %s as unavailable on device '%s'", sorted_touched, self.name)
-        for q in sorted_touched:
+        assert all_qubits.issubset(set(init_qubit_map)), (
+            f"Compiled circuit touches extra qubits {all_qubits - set(init_qubit_map)} "
+            f"that were not part of the initial island {init_qubit_map}"
+        )
+        
+        logger.debug("Marking qubits %s as unavailable on device '%s'", init_qubit_map, self.name)
+
+        for q in all_qubits:
             self.connectivity.nodes[q]["Available"] = False
         self.update_available_qubits()
+
 
         logger.debug("Available qubits after allocation: %s", self.available_qubits)
 
         allocation = QuantumAllocation(
             device_name=self.name,
-            allocated_qubit_idxs=qubit_mapping,
+            allocated_qubit_idxs=list(all_qubits),
             transpiled_circuit=optimized_circuit,
             qubit_connectivity=self.connectivity,
         )
         logger.debug("Allocation completed: %s", allocation)
+        self.describe(log=True)
 
         return allocation
 
@@ -255,6 +234,7 @@ class QuantumDevice(Device):
         self,
         quantum_circuit: QuantumCircuit,
         transition_based=True,
+        hard_island=False,
         epsilon=0.3,
         objective="depth",
     ):
@@ -266,6 +246,7 @@ class QuantumDevice(Device):
             quantum_circuit=quantum_circuit,
             device=self,
             transition_based=transition_based,
+            hard_island=hard_island,
             epsilon=epsilon,
             objective=objective,
         )
@@ -275,27 +256,29 @@ class QuantumDevice(Device):
             initial_qubit_mapping,
             final_qubit_mapping,
             objective_result,
+            results_dict
         ) = layout_synthesizer.find_optimal_layout()
-        # 2) If transition-based, override with the actual circuit depth
-        # if transition_based and objective == "depth":
-        #     true_depth = optimized_circuit.depth()
-        #     logger.debug(
-        #         "Overriding transition‐based reported depth %d with true depth %d",
-        #         objective_result,
-        #         true_depth,
-        #     )
-        #     objective_result = true_depth
-
-        # logger.info(
-        #     "Layout synthesis complete on device=%s (transition_based=%s). "
-        #     "Objective result=%d",
-        #     self.name,
-        #     transition_based,
-        #     objective_result,
-        # )
+        
         return (
             optimized_circuit,
             initial_qubit_mapping,
             final_qubit_mapping,
             objective_result,
+            results_dict
         )
+    # @property
+    def describe(self,log=False):
+        description = (
+            f"Quantum Device: {self.name}\n"
+            # f" - Native gates: {self.gate_set}\n"
+            f" - Available Qubits: {self.available_qubits}\n"
+            f" - connectivity: {self.connectivity}\n"
+            # f" - Output Edges: {[str(edge) for edge in self.output_edges]}\n"
+            # f" - Allocation: {self.allocation}\n"
+        )
+
+        if log:
+            logger.debug(description)
+
+    def __repr__(self):
+        return f'QDevice({self.name},num qubits={len(self.available_qubits)})'
