@@ -1,145 +1,288 @@
+from shiny import App, render, ui, reactive, Inputs, Outputs, Session
+import matplotlib.pyplot as mpl
+import numpy as np
+import asyncio
+import datetime as dict
+import os
+import faicons as fa
+from io import BytesIO
+from pyvis.network import Network as PyvisNetwork
+from typing import Iterable
+import builtins
+import sys
 
+# import logging
+# logging.basicConfig(level=logging.DEBUG)
+# builtins.Z3_LIB_DIRS = ["/Users/so714f/opt/anaconda3/envs/wf_env/lib/python3.12/site-packages/z3/lib"]
+# os.environ['Z3_LIBRARY_PATH'] = "/Users/so714f/opt/anaconda3/envs/wf_env/lib/python3.12/site-packages/z3/lib"
+
+try:
+    from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat
+except ImportError:
+    print("Warning: z3 is not available. Some features may be disabled.")
+
+from qiskit.transpiler.preset_passmanagers.plugin import passmanager_stage_plugins,list_stage_plugins
+routing_plugins = passmanager_stage_plugins('routing')
+if not routing_plugins:
+    raise RuntimeError(f"No routing plugins found. Please check your Qiskit installation.")
+
+# Set up directories
+DIR = os.path.dirname(os.path.abspath(__file__))
+WWW = os.path.join(DIR, "www")
+
+if not os.path.exists(WWW):
+    os.makedirs(WWW)
+
+# Import Resource Estimation package...
+print("Importing resource estimation package...")
+base_dir = os.path.dirname(os.path.abspath(__file__))
+WORKFLOW_IMPORT_PATH = r'/Users/sophieblock/torch_wf/'
+# WORKFLOW_TEST_IMPORT_PATH = r'/Users/sophieblock/torch_wf/test'
+# WORKFLOW_IMPORT_PATH = r'/Users/sophieblock/qrew/'
+# WORKFLOW_TEST_IMPORT_PATH = r'/Users/sophieblock/qrew/test'
+sys.path.append(WORKFLOW_IMPORT_PATH)
+# sys.path.append(WORKFLOW_TEST_IMPORT_PATH)
+print("Current sys.path:", sys.path)
+print("Base directory:", base_dir)
+print("Looking for workflow in:", WORKFLOW_IMPORT_PATH)
+print(f"WWW: {WWW}")
+# import log from qrew
+# from qrew.util.log import
+from qrew.simulation.refactor.graph import Network, Node, DirectedEdge
+from qrew.simulation.refactor.process import Process
+from qrew.simulation.refactor.resources.classical_resources import ClassicalDevice
+from qrew.simulation.refactor.broker import Broker
+from qrew.ast_dag.AstDagConverter import AstDagConverter
+# from test_GE import generate_Gaussian_elimination_network_random_demo
+# from test_chemistry_network import generate_electronic_energy_network,generate_electronic_energy_network2
+
+from qrew.app.network_samples import generate_Gaussian_elimination_network_random_demo,generate_electronic_energy_network,generate_electronic_energy_network2
+
+
+from qrew.results import (
+    visualize_graph_from_nx,
+    publish_resource_usage_history
+)
+from qrew.simulation.refactor.devices.quantum_devices import *
+VERSION = "1.1"
+PYVIS_OUTPUT_ID = 'pyvis'
+purplesmap = mpl.colormaps['Purples']
+bluesmap = mpl.colormaps['Blues']
+cmap = bluesmap
+# Example network setup
+n1 = Node(id=None, process_model=None, network_type=Node.INPUT)
+n2 = Node(id=None, process_model=None, network_type=Node.INPUT)
+out1 = Node(id=None, process_model=None, network_type=Node.OUTPUT)
+
+p1 = Node(id=None, process_model=None, inputs=[n1], outputs=[out1])
+p2 = Node(id=None, process_model=None, inputs=[n2], outputs=[out1])
+p3 = Node(id=None, process_model=None, inputs=[p1, p2], outputs=[out1])
+
+device = ClassicalDevice(
+    device_name="Supercomputer",
+    processor_type="CPU",
+    RAM=100 * 10**9,
+    properties={"Cores": 20, "Clock Speed": 3 * 10**9}
+)
+broker = Broker(classical_devices=[device])
+net = Network("Test", nodes=[p1, p2, p3], input_nodes=[n1, n2], output_nodes=[out1], broker=broker)
+
+# Set matplotlib parameters
+mpl.rcParams["font.family"] = "Arial"
+mpl.rcParams["font.size"] = 11
+
+# AST/DAG test
 def get_astdag_network(path, filename=True):
-    """Reads a Python script, builds an AST, and returns the networkx graph."""
+    """
+    Reads a Python script, builds an AST, and returns the networkx graph.
+    """
     cvt = AstDagConverter(path, filename=filename)
-    #cvt.visualize_ast()
-    #gg = cvt.to_networkx()
+    # cvt.visualize_ast()
+    # gg = cvt.to_networkx()
     return cvt
-    
+
 def get_pyvis_from_networkx(nxg):
-    """Returns a PyVis graph from the networkx graph."""
-    g = PyvisNetwork(height='600px',
-                     width='100%',
-                     directed=True,
-                     notebook=False,
-                     neighborhood_highlight=False,
-                     select_menu=False,
-                     filter_menu=False,
-                     bgcolor='#ffffff',
-                     font_color=False,
-                     layout=None,
-                     heading='',
-                     cdn_resources='local',
-                     )
-    #g.toggle_hide_edges_on_drag(True)
+    """
+    Returns a PyVis graph from the networkx graph.
+    """
+    from pyvis.network import Network as PyvisNetwork
+
+    g = PyvisNetwork(
+        height='600px',
+        width='100%',
+        directed=True,
+        notebook=False,
+        neighborhood_highlight=False,
+        select_menu=False,
+        filter_menu=False,
+        bgcolor='#ffffff',
+        font_color=False,
+        layout=None,
+        heading='',
+        cdn_resources='local'
+    )
+    # g.toggle_hide_edges_on_drag(True)
     g.barnes_hut()
-    #g.from_nx(net.to_networkx())
     g.from_nx(nxg)
-    #g.save_graph(".tmp.html")
-    #g.from_nx(nx.davis_southern_women_graph())
-    #d3html = g.generate_html()
-    #return d3html
+    # g.save_graph("./tmp.html")
+    # g.from_nx(nx.davis_southern_women_graph())
+    # d3html = g.generate_html()
+    # return d3html
     return g
 
 def get_dag_ge(matrix_size, broker, simulate=True):
-    #return generate_Gaussian_elimination_network(matrix_size=matrix_size, broker=broker)
+    # return generate_Gaussian_elimination_network(matrix_size=matrix_size, broker=broker)
     return generate_Gaussian_elimination_network_random_demo(matrix_size, matrix_size, simulate=simulate)
 
 def get_dag_chem(molname, broker, simulate=True):
     if molname == 'H2':
         symbols = ['H', 'H']
         coords = [[0, 0, 0], [0.74, 0, 0]]
-        charge=0
+        charge = 0
     elif molname == 'H4':
         symbols = ['H', 'H', 'H', 'H']
-        coords = [[0.7071, 0.0, 0.0],[0.0, 0.7071, 0.0],[-1.0071, 0.0, 0.0],[0.0, -1.0071, 0.0]]
-        charge=0
+        coords = [
+            [0.7071, 0.0, 0.0],
+            [0.0, 0.7071, 0.0],
+            [-1.0071, 0.0, 0.0],
+            [0.0, -1.0071, 0.0]
+        ]
+        charge = 0
     elif molname == 'CH':
         symbols = ['C', 'H']
         coords = [[0, 0, 0], [1.09, 0, 0]]
-        charge=0
+        charge = 0
     elif molname == 'CH4':
         symbols = ['C', 'H', 'H', 'H', 'H']
-        coords = [[0, 0, 0], [1.09, 0, 0], [0, 1.09, 0], [-1.09, 0, 0], [0, -1.09, 0]]
-        charge=0
+        coords = [
+            [0, 0, 0],
+            [1.09, 0, 0],
+            [0, 1.09, 0],
+            [-1.09, 0, 0],
+            [0, -1.09, 0]
+        ]
+        charge = 0
     elif molname == 'O2':
         symbols = ['O', 'O']
-        coords = [[0, 0, 0], [1.30, 0, 0], [0, 0, 2]]
-        charge = [0, 0, 0]
+        coords = [
+            [0, 0, 0],
+            [1.30, 0, 0],
+            [0, 0, 2]  # as shown in the screenshot
+        ]
+        charge = 0
     elif molname == 'CO':
         symbols = ['C', 'O']
         coords = [[0, 0, 0], [1.16, 0, 0]]
-        charge=0
+        charge = 0
     elif molname == 'CO2':
         symbols = ['C', 'O', 'O']
-        coords = [[0, 0, 0], [-1.2, 0, 0], [1.2, 0, 0]]
-        charge=0
-    return generate_electronic_energy_network(symbols, coords, charge, broker, simulate=simulate)
+        coords = [
+            [0, 0, 0],
+            [-1.2, 0, 0],
+            [1.2, 0, 0]
+        ]
+        charge = 0
+    return generate_electronic_energy_network(
+        symbols,
+        coords,
+        charge,
+        broker,
+        simulate=simulate
+    )
 
-def get_dag_chem_vqe(molname, 
+def get_dag_chem_vqe(molname,
                      basis,
                      charge,
                      qubitmapping,
                      ansatz,
                      ansatzparams,
                      broker,
-                     simulate=True,
-                     ):
+                     simulate=True):
     if molname == 'H2':
         symbols = ['H', 'H']
         coords = [[0, 0, 0], [0.74, 0, 0]]
         charge = int(charge)
     elif molname == 'H4':
         symbols = ['H', 'H', 'H', 'H']
-        coords = [[0.7071, 0.0, 0.0],[0.0, 0.7071, 0.0],[-1.0071, 0.0, 0.0],[0.0, -1.0071, 0.0]]
+        coords = [
+            [0.7071, 0.0, 0.0],
+            [0.0, 0.7071, 0.0],
+            [-1.0071, 0.0, 0.0],
+            [0.0, -1.0071, 0.0]
+        ]
         charge = int(charge)
     elif molname == 'CH':
         symbols = ['C', 'H']
         coords = [[0, 0, 0], [1.09, 0, 0]]
+        charge = int(charge)
     elif molname == 'CH4':
         symbols = ['C', 'H', 'H', 'H', 'H']
-        coords = [[0, 0, 0], [1.09, 0, 0], [0, 1.09, 0], [-1.09, 0, 0], [0, -1.09, 0]]
+        coords = [
+            [0, 0, 0],
+            [1.09, 0, 0],
+            [0, 1.09, 0],
+            [-1.09, 0, 0],
+            [0, -1.09, 0]
+        ]
+        charge = int(charge)
     elif molname == 'O2':
         symbols = ['O', 'O']
-        coords = [[0, 0, 0], [1.30, 0, 0], [0, 0, 2]]
-        charge = [0, 0, 0]
+        coords = [
+            [0, 0, 0],
+            [1.30, 0, 0],
+            [0, 0, 2]
+        ]
+        charge = int(charge)
     elif molname == 'CO':
         symbols = ['C', 'O']
         coords = [[0, 0, 0], [1.16, 0, 0]]
+        charge = int(charge)
     elif molname == 'CO2':
         symbols = ['C', 'O', 'O']
-        coords = [[0, 0, 0], [-1.2, 0, 0], [1.2, 0, 0]]
-    
-    return generate_electronic_energy_network2(symbols = symbols,
-                                               coordinates=coords,
-                                               basis=basis,
-                                               charge=charge,
-                                               geometry_model='RHF',
-                                               qubit_mapping=qubitmapping,
-                                               ansatz=ansatz,
-                                               ansatz_params=ansatzparams,
-                                               broker=broker,
-                                               simulate=simulate,
-                                               )
+        coords = [
+            [0, 0, 0],
+            [-1.2, 0, 0],
+            [1.2, 0, 0]
+        ]
+        charge = int(charge)
 
-def generate_broker(ram=8., 
-                    ncores=20, 
-                    freq=3., 
-                    ibm_brisbane=False, 
-                    ibm_brussels=False, 
-                    ibm_fez=False, 
-                    ibm_kyiv=False, 
-                    ibm_nazca=False, 
-                    ibm_sherbrooke=False,
-                    ):
+    return generate_electronic_energy_network2(
+        symbols=symbols,
+        coordinates=coords,
+        basis=basis,
+        charge=charge,
+        geometry_model='RHF',
+        qubit_mapping=qubitmapping,
+        ansatz=ansatz,
+        ansatz_params=ansatzparams,
+        broker=broker,
+        simulate=simulate
+    )
+
+def generate_broker(ram=8.,
+                    ncores=20,
+                    freq=3.,
+                    ibm_brisbane=False,
+                    ibm_brussels=False,
+                    ibm_fez=False,
+                    ibm_kyiv=False,
+                    ibm_nazca=False,
+                    ibm_sherbrooke=False):
     supercomputer = ClassicalDevice(
         device_name="Supercomputer",
         processor_type="CPU",
         RAM=int(ram * 10**9),
-        properties={"Cores": ncores, "Clock Speed": int(freq * 10**9)},
+        properties={
+            "Cores": ncores,
+            "Clock Speed": int(freq * 10**9)
+        }
     )
-
     qdevices = []
     if ibm_brisbane:
         qdevices.append(IBM_Brisbane)
-    if ibm_brussels:
-        qdevices.append(IBM_Brussels)
-    if ibm_fez:
-        qdevices.append(IBM_Fez)
     if ibm_kyiv:
         qdevices.append(IBM_Kyiv)
-    if ibm_nazca:
-        qdevices.append(IBM_Nazca)
+
     if ibm_sherbrooke:
         qdevices.append(IBM_Sherbrooke)
 
@@ -148,17 +291,8 @@ def generate_broker(ram=8.,
         quantum_devices=qdevices,
     )
     return broker
-    #return gen_broker()
-    # supercomputer = ClassicalDevice(
-        # device_name="Generic Supercomputer",
-        # processor_type="CPU",
-        # RAM=100 * 10**9,
-        # properties={"Cores": 20, "Clock Speed": 3 * 10**9},
-    # )
 
-    # broker = Broker(classical_devices=[supercomputer])
-    # return broker
-
+# Global references possibly used in a GUI or notebook
 selected_ast_network = None
 selected_dag_network = None
 selected_df = None
@@ -166,23 +300,28 @@ pyvis_needs_updating = False
 last_saved_pyvis = None
 uses_quantum = False
 
-# Network test
-
+# Network test (commented out examples)
 # g = PyvisNetwork()
-# #g.toggle_hide_edges_on_drag(True)
+# g.toggle_hide_edges_on_drag(True)
 # g.barnes_hut()
-# #g.from_nx(net.to_networkx())
-# g.from_nx(gg)
-# #g.from_nx(nx.davis_southern_women_graph())
+# g.from_nx(net.to_networkx())
+# g.save_graph("./tmp.html")
+# g.from_nx(nx.davis_southern_women_graph())
 # d3html = g.generate_html()
 
 # --- Icons ---
-
+# https://icons.getbootstrap.com/icons/question-circle-fill/
+# question_circle_fill = """
+# <!-- question_circle_fill = ui.HTML('
+# <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-question-circle-fill mb-1" viewBox="0 0 16 16">
+#   <path d="M..."/>
+# </svg>
+# ') -->
+# """
 # https://icons.getbootstrap.com/icons/question-circle-fill/
 question_circle_fill = ui.HTML(
     '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-question-circle-fill mb-1" viewBox="0 0 16 16"><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM5.496 6.033h.825c.138 0 .248-.113.266-.25.09-.656.54-1.134 1.342-1.134.686 0 1.314.343 1.314 1.168 0 .635-.374.927-.965 1.371-.673.489-1.206 1.06-1.168 1.987l.003.217a.25.25 0 0 0 .25.246h.811a.25.25 0 0 0 .25-.25v-.105c0-.718.273-.927 1.01-1.486.609-.463 1.244-.977 1.244-2.056 0-1.511-1.276-2.241-2.673-2.241-1.267 0-2.655.59-2.75 2.286a.237.237 0 0 0 .241.247zm2.325 6.443c.61 0 1.029-.394 1.029-.927 0-.552-.42-.94-1.029-.94-.584 0-1.009.388-1.009.94 0 .533.425.927 1.01.927z"/></svg>'
 )
-
 ICONS = {
     "user": fa.icon_svg("user", "regular"),
     "wallet": fa.icon_svg("wallet"),
@@ -194,23 +333,29 @@ ICONS = {
     "corr-curr-dens": fa.icon_svg("bolt", "solid"),
     "corr-confidence": fa.icon_svg("bullseye", "solid"),
 }
-
-# --- General help HTML ---
-
-GENERAL_HELP_HTML = f"Version {VERSION}<br><br>This tool facilitates estimating the amount of classical and quantum resources are needed to solve a given computational problem, and estimates the total duration needed to complete such a calculation."
+# --- General help HTML (example placeholders) ---
+GENERAL_HELP_HTML = f"""
+<b>Version {{VERSION}}</b><br><br>
+This tool facilitates estimating the amount of classical and quantum resources...
+"""
+RESET_HELP_HTML = """
+<b>Resource Estimation</b> tab allows estimating the total number of resources...
+"""
 RESEST_HELP_HTML = 'The <b>Resource Estimation</b> tab allows estimating the total number of resources (RAM, qubits, gates, processor time, etc.) required to complete a particular calculation.'
-SIMULATION_HELP_HTML = 'The <b>Simulation</b> tab allows a user to set up and run a simulation of a workflow. This lets a user select a problem type and provide some parameters regarding the problem size, and the simulation generates a virtual profile of resource usage required to solve the resulting computational problem.'
-OPTIMIZATION_HELP_HTML = 'The <b>Optimization</b> tab allows a user to solve to find a best workflow across many possible workflows for solving the same problem.'
-CREDITS_HELP_HTML = 'Boeing Workflow/Resource Estimation Tool Team<br>Boeing Disruptive Computing, Networks, and Sensors<br><br>This tool is a data product of the Boeing Disruptive Computing, Networks, and Sensors team.<br><br>Contacts:<ul><li>Joel Thompson (<a href="mailto:richard.j.thompson3@boeing.com">richard.j.thompson3@boeing.com</a>)<li>Sophie Block (<a href="mailto:Sophie.Block@boeing.com">sophie.block@boeing.com</a>)<li>Michael Yue (<a href="mailto:wenyue.yu@boeing.com">wenyue.yu@boeing.com</a>)<li>Marna Kagele (<a href="mailto:marna.m.kagele@boeing.com">marna.m.kagele@boeing.com</a>)</ul>'
+
+SIMULATION_HELP_HTML = """
+<b>Simulation</b> tab allows a user to set up and run a simulation of a workflow...
+"""
+OPTIMIZATION_HELP_HTML = """
+<b>Optimization</b> tab allows a user to solve to find a best workflow...
+"""
 
 HELP_HTML = {"General Overview": GENERAL_HELP_HTML,
              "Resource Estimation": RESEST_HELP_HTML,
              "Simulation": SIMULATION_HELP_HTML,
              "Workflow optimization": OPTIMIZATION_HELP_HTML,
-             "Credits/Contact": CREDITS_HELP_HTML,
+             
             }
-
-# --- Parameters ---
 
 warning_banner_message: str = """
 This computational tool is still in preliminary beta, and should be considered experimental. 
@@ -218,7 +363,6 @@ The tool may continue to change and improve over time. While hopefully this tool
 and modeling of resource estimation, please be cautious with results predicted by 
 this tool, and treat all calculations as non-production.
 """
-
 # --- Catching information ---
 
 last_resource_estimation_run = None
@@ -236,8 +380,7 @@ app_ui = ui.page_bootstrap(
     # Web page banner, title, and Boeing logo:
     ui.markdown("<br>"),
     ui.HTML('<div style="display: grid; align-items: center; grid-template-columns: 1fr 1fr;">'),
-    ui.HTML('<div><h1><b>Boeing Quantum Resource Estimation Tool</b></h1></div>'),
-    ui.output_image("boeing_logo_image", inline=True),
+    ui.HTML('<div><h1><b>Quantum Resource Estimation Tool</b></h1></div>'),
     ui.HTML("</div>"),
     ui.HTML(f'<div style="border:1px solid black;"><p style="text-align: center; color: red; font-weight: bold;">{warning_banner_message}</p></div>'),
     ui.markdown("<br>"),
@@ -294,10 +437,10 @@ app_ui = ui.page_bootstrap(
                     ui.input_select('vizopts_style', "Styling:", ['None', 'Visualize time required', 'Visualize memory and type required']),
                     ui.input_action_button("selectnetwork_sidebar_update", label="Update Network"),
                     ui.h4('Resources'),
-                    ui.input_switch('res_use_boeinghpc', 'Boeing HPC'),
-                    ui.input_numeric('res_use_boeinghpc_cores', 'Cores', 20),
-                    ui.input_numeric('res_use_boeinghpc_ram', 'Memory (GB)', 8),
-                    ui.input_slider('res_use_boeinghpc_freq', 'Clock Speed (GHz)', value=2.1, min=1.0, max=5.0, ticks=True),
+                    ui.input_switch('res_use_hpc', 'Boeing HPC'),
+                    ui.input_numeric('res_use_hpc_cores', 'Cores', 20),
+                    ui.input_numeric('res_use_hpc_ram', 'Memory (GB)', 8),
+                    ui.input_slider('res_use_hpc_freq', 'Clock Speed (GHz)', value=2.1, min=1.0, max=5.0, ticks=True),
                     #ui.accordion(
                     #    ui.accordion_panel('IBM Brisbane',
                             ui.input_switch('res_use_ibmbrisbane', 'Include IBM Brisbane'),
@@ -305,20 +448,8 @@ app_ui = ui.page_bootstrap(
                     #    ),
                     #    open=False,
                     #),
-                    #ui.accordion(
-                    #    ui.accordion_panel('IBM Brussels',
-                            ui.input_switch('res_use_ibmbrussels', 'Include IBM Brussels'),
-                            ui.markdown(f'| Property | Value |\n|-------|-------|\n| Gate set: | {str(IBM_Brussels.gate_set)} |\n| Connectivity: | {str(IBM_Brussels.connectivity)} |\n| Qubits: | {str(len(IBM_Brussels.available_qubits))} |'),
-                    #    ),
-                    #    open=False,
-                    #),
-                    #ui.accordion(
-                    #    ui.accordion_panel('IBM Fez',
-                            ui.input_switch('res_use_ibmfez', 'Include IBM Fez'),
-                            ui.markdown(f'| Property | Value |\n|-------|-------|\n| Gate set: | {str(IBM_Fez.gate_set)} |\n| Connectivity: | {str(IBM_Fez.connectivity)} |\n| Qubits: | {str(len(IBM_Fez.available_qubits))} |'),
-                    #    ),
-                    #    open=False,
-                    #),
+         
+                   
                     #ui.accordion(
                     #    ui.accordion_panel('IBM Kyiv',
                             ui.input_switch('res_use_ibmkyiv', 'Include IBM Kyiv'),
@@ -326,13 +457,7 @@ app_ui = ui.page_bootstrap(
                     #    ),
                     #    open=False,
                     #),
-                    #ui.accordion(
-                    #    ui.accordion_panel('IBM Nazca',
-                            ui.input_switch('res_use_ibmnazca', 'Include IBM Nazca'),
-                            ui.markdown(f'| Property | Value |\n|-------|-------|\n| Gate set: | {str(IBM_Nazca.gate_set)} |\n| Connectivity: | {str(IBM_Nazca.connectivity)} |\n| Qubits: | {str(len(IBM_Nazca.available_qubits))} |'),
-                    #    ),
-                    #    open=False,
-                    #),
+                   
                     #ui.accordion(
                     #    ui.accordion_panel('IBM Sherbrooke',
                             ui.input_switch('res_use_ibmsherbrooke', 'Include IBM Sherbrooke'),
@@ -436,52 +561,18 @@ app_ui = ui.page_bootstrap(
     ),
 )
 
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-# ================================================================================================================================================================================
-
-
-# --- Server definition ---
-
-last_units: str = "°F"
+#  --- Server Definition ---
+last_units: str ="°F"
 last_calculated_corrosion: float = None
 
-LINEAR_WORKFLOWS = ["Classical: Gaussian Elimination",
-                    "Classical: Congugate-Gradient (CG)",
-                    "Hybrid: VQLS",
-                    "Quantum: HHL",
-                   ]
+LINEAR_WORKFLOWS =[
+    "Classical: Gaussian Elimination",
+    "Classical: Congugate-Gradient",
+    "Hybrid: VQLS",
+    "Quantum: HHL"
+]
 
-def server(input: Inputs, output: Outputs, session: Session):
-    """Create the Shiny server function.
-    
-    This function defines the server reactivity and event
-    handling for the BCT user interface.
-    
-    Args:
-        input (`Inputs`): The server inputs.
-        output (`Outputs`): The server outputs.
-        session (`Session`): The server session.
-    
-    Authors:
-        Joel Thompson (richard.j.thompson3@boeing.com)
-    
-    """
-
-    # Create a warning banner regarding this being a beta product.
+def server(input: Inputs, output: Outputs, session:Session):
     beta_warning_banner = ui.modal(
                           warning_banner_message,
                           title="This product is still in beta",
@@ -490,18 +581,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Immediately cause the beta warning banner to pop up on the server startup.
     ui.modal_show(beta_warning_banner)
-
-    # Add Boeing logo image.
     
-    @render.image
-    def boeing_logo_image():
-        """Returns the Boeing logo image for display."""
-        img_src = "img/boeing_logo.png"
-        img_width = "110px"
-        return { "src": img_src, "width": img_width, "align": "right" }
-
-    # Welcome/instructions controls
-
     @render.ui
     def welcome_sidebar_controls():
         return ui.TagList(
@@ -669,18 +749,18 @@ def server(input: Inputs, output: Outputs, session: Session):
     @render.ui
     @reactive.event(input.selectnetwork_sidebar_update)
     def _():
-    
+        print("🍺  network update handler fired!")
+        
         global selected_ast_network, selected_dag_network, selected_df, selected_broker, uses_quantum
         
         # Create the new broker.
-        broker = generate_broker(ram=input.res_use_boeinghpc_ram(), 
-                                 ncores=int(input.res_use_boeinghpc_cores()), 
-                                 freq=input.res_use_boeinghpc_freq(), 
+        broker = generate_broker(ram=input.res_use_hpc_ram(), 
+                                 ncores=int(input.res_use_hpc_cores()), 
+                                 freq=input.res_use_hpc_freq(), 
                                  ibm_brisbane=input.res_use_ibmbrisbane(),
                                  ibm_brussels=input.res_use_ibmbrussels(),
-                                 ibm_fez=input.res_use_ibmfez(),
+                               
                                  ibm_kyiv=input.res_use_ibmkyiv(),
-                                 ibm_nazca=input.res_use_ibmnazca(),
                                  ibm_sherbrooke=input.res_use_ibmsherbrooke(),
                                  )
         
@@ -767,6 +847,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                                          )
 
             html = pg.generate_html(local=False)
+            # html = pg.generate_html(cdn_resources="inlined")
             f = os.path.join(WWW, PYVIS_OUTPUT_ID + ".html")
             #f = PYVIS_OUTPUT_ID + ".html"
             with open(f, "w") as f:
@@ -872,6 +953,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                                          )
 
             html = pg.generate_html(local=False)
+            # html = pg.generate_html(cdn_resources="inlined")
             f = os.path.join(WWW, PYVIS_OUTPUT_ID + ".html")
             #f = PYVIS_OUTPUT_ID + ".html"
             with open(f, "w") as f:
@@ -992,6 +1074,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                                          )
 
             html = pg.generate_html(local=False)
+            # html = pg.generate_html(cdn_resources="inlined")
             f = os.path.join(WWW, PYVIS_OUTPUT_ID + ".html")
             #f = PYVIS_OUTPUT_ID + ".html"
             with open(f, "w") as f:
@@ -1124,6 +1207,7 @@ def server(input: Inputs, output: Outputs, session: Session):
                                              # )
                 
                 html = pg.generate_html(local=False)
+                # html = pg.generate_html(cdn_resources="inlined")
                 f = os.path.join(WWW, PYVIS_OUTPUT_ID + ".html")
                 #f = PYVIS_OUTPUT_ID + ".html"
                 with open(f, "w") as f:
@@ -1558,7 +1642,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     # def pds_scan_comparison_plot():
        
     # TODO FIXME: deprecated @session.download; replace with @render.download
-    @session.download(
+    @render.download(
         filename="Corrosion Rate Comparison.csv"
     )
     def download_csv():
@@ -1576,7 +1660,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         #    yield row
 
     # TODO FIXME: deprecated @session.download; replace with @render.download
-    @session.download(
+    @render.download(
         filename="./tmp.xlsx"
     )
     # async def download_excel():
