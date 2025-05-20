@@ -1,62 +1,95 @@
-from shiny import App, render, ui, reactive, Inputs, Outputs, Session
-import matplotlib.pyplot as mpl
-import numpy as np
-import asyncio
-import datetime as dict
-import os
-import faicons as fa
-from io import BytesIO
-from pyvis.network import Network as PyvisNetwork
-from typing import Iterable
-import builtins
-import sys
+VERSION = "1.1"
+PYVIS_OUTPUT_ID = 'pyvis'
 
-# import logging
-# logging.basicConfig(level=logging.DEBUG)
-# builtins.Z3_LIB_DIRS = ["/Users/so714f/opt/anaconda3/envs/wf_env/lib/python3.12/site-packages/z3/lib"]
-# os.environ['Z3_LIBRARY_PATH'] = "/Users/so714f/opt/anaconda3/envs/wf_env/lib/python3.12/site-packages/z3/lib"
+import os
+import sys
+import logging
+import asyncio
+import datetime as dt
+from typing import List
+
+import numpy as np
+import matplotlib.pyplot as mpl
+from matplotlib.colors import rgb2hex
+
+from shiny import App, render, ui, reactive, Inputs, Outputs, Session
+import faicons as fa
+from pyvis.network import Network as PyvisNetwork
+
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)-8s %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 
 try:
     from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat
+    Z3_AVAILABLE = True
+    logger.debug("z3 imported successfully.")
 except ImportError:
-    print("Warning: z3 is not available. Some features may be disabled.")
+    Z3_AVAILABLE = False
+    logger.warning("z3-solver not available; some features will be disabled.")
 
-from qiskit.transpiler.preset_passmanagers.plugin import passmanager_stage_plugins,list_stage_plugins
-routing_plugins = passmanager_stage_plugins('routing')
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Qiskit routing-plugin check
+# ─────────────────────────────────────────────────────────────────────────────
+from qiskit.transpiler.preset_passmanagers.plugin import passmanager_stage_plugins
+
+routing_plugins = passmanager_stage_plugins("routing")
 if not routing_plugins:
-    raise RuntimeError(f"No routing plugins found. Please check your Qiskit installation.")
+    raise RuntimeError("No routing plugins found. Please check your Qiskit installation.")
+logger.debug("Found Qiskit routing plugins: %s", routing_plugins)
+
+
 
 # Set up directories
 DIR = os.path.dirname(os.path.abspath(__file__))
 WWW = os.path.join(DIR, "www")
 
-if not os.path.exists(WWW):
-    os.makedirs(WWW)
+os.makedirs(WWW, exist_ok=True)
+logger.debug("Static assets directory: %s", WWW)
+
+
+WORKFLOW_IMPORT_PATH = os.environ.get("WORKFLOW_IMPORT_PATH", "/Users/sophieblock/torch_wf")
+if WORKFLOW_IMPORT_PATH not in sys.path:
+    sys.path.insert(0, WORKFLOW_IMPORT_PATH)
+    logger.debug("Added workflow path to sys.path: %s", WORKFLOW_IMPORT_PATH)
+ 
+WORKFLOW_TEST_IMPORT_PATH  = os.environ.get("WORKFLOW_TEST_IMPORT_PATH", '/Users/sophieblock/torch_wf/test')
+if WORKFLOW_TEST_IMPORT_PATH not in sys.path:
+    sys.path.insert(0, WORKFLOW_TEST_IMPORT_PATH)
+    logger.debug("Added workflow test path to sys.path: %s", WORKFLOW_TEST_IMPORT_PATH)
+base_dir = os.path.dirname(os.path.abspath(__file__))
+
 
 # Import Resource Estimation package...
 print("Importing resource estimation package...")
-base_dir = os.path.dirname(os.path.abspath(__file__))
-WORKFLOW_IMPORT_PATH = r'/Users/sophieblock/torch_wf/'
-# WORKFLOW_TEST_IMPORT_PATH = r'/Users/sophieblock/torch_wf/test'
-# WORKFLOW_IMPORT_PATH = r'/Users/sophieblock/qrew/'
-# WORKFLOW_TEST_IMPORT_PATH = r'/Users/sophieblock/qrew/test'
-sys.path.append(WORKFLOW_IMPORT_PATH)
-# sys.path.append(WORKFLOW_TEST_IMPORT_PATH)
+
 print("Current sys.path:", sys.path)
 print("Base directory:", base_dir)
 print("Looking for workflow in:", WORKFLOW_IMPORT_PATH)
 print(f"WWW: {WWW}")
-# import log from qrew
-# from qrew.util.log import
+# ─────────────────────────────────────────────────────────────────────────────
+# Application-specific imports
+# ─────────────────────────────────────────────────────────────────────────────
 from qrew.simulation.refactor.graph import Network, Node, DirectedEdge
 from qrew.simulation.refactor.process import Process
 from qrew.simulation.refactor.resources.classical_resources import ClassicalDevice
 from qrew.simulation.refactor.broker import Broker
 from qrew.ast_dag.AstDagConverter import AstDagConverter
-# from test_GE import generate_Gaussian_elimination_network_random_demo
-# from test_chemistry_network import generate_electronic_energy_network,generate_electronic_energy_network2
+# from qrew.app.network_samples import (
+#     generate_Gaussian_elimination_network_random_demo,
+#     generate_electronic_energy_network,
+#     generate_electronic_energy_network2,
+# )
 
-from qrew.app.network_samples import generate_Gaussian_elimination_network_random_demo,generate_electronic_energy_network,generate_electronic_energy_network2
+
+from test_GE import generate_Gaussian_elimination_network_random_demo
+from test_chemistry_network import generate_electronic_energy_network,generate_electronic_energy_network2
 
 
 from qrew.results import (
@@ -64,32 +97,34 @@ from qrew.results import (
     publish_resource_usage_history
 )
 from qrew.simulation.refactor.devices.quantum_devices import *
-VERSION = "1.1"
-PYVIS_OUTPUT_ID = 'pyvis'
-purplesmap = mpl.colormaps['Purples']
-bluesmap = mpl.colormaps['Blues']
-cmap = bluesmap
-# Example network setup
+
 n1 = Node(id=None, process_model=None, network_type=Node.INPUT)
 n2 = Node(id=None, process_model=None, network_type=Node.INPUT)
-out1 = Node(id=None, process_model=None, network_type=Node.OUTPUT)
+out = Node(id=None, process_model=None, network_type=Node.OUTPUT)
 
-p1 = Node(id=None, process_model=None, inputs=[n1], outputs=[out1])
-p2 = Node(id=None, process_model=None, inputs=[n2], outputs=[out1])
-p3 = Node(id=None, process_model=None, inputs=[p1, p2], outputs=[out1])
+p1 = Node(id=None, process_model=None, inputs=[n1], outputs=[out])
+p2 = Node(id=None, process_model=None, inputs=[n2], outputs=[out])
+p3 = Node(id=None, process_model=None, inputs=[p1, p2], outputs=[out])
 
 device = ClassicalDevice(
     device_name="Supercomputer",
     processor_type="CPU",
     RAM=100 * 10**9,
-    properties={"Cores": 20, "Clock Speed": 3 * 10**9}
+    properties={"Cores": 20, "Clock Speed": 3e9},
 )
 broker = Broker(classical_devices=[device])
-net = Network("Test", nodes=[p1, p2, p3], input_nodes=[n1, n2], output_nodes=[out1], broker=broker)
+test_network = Network(
+    name="Test",
+    nodes=[p1, p2, p3],
+    input_nodes=[n1, n2],
+    output_nodes=[out],
+    broker=broker,
+)
+logger.debug("Initialized test Network with %d nodes", len(test_network.nodes))
 
-# Set matplotlib parameters
+
 mpl.rcParams["font.family"] = "Arial"
-mpl.rcParams["font.size"] = 11
+mpl.rcParams["font.size"]   = 11
 
 # AST/DAG test
 def get_astdag_network(path, filename=True):
