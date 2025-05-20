@@ -27,10 +27,11 @@ from .utilities import (
     any_dict1_vals_in_dict2_vals,
     publish_gantt,
 )
-import logging
-import datetime
 
-logger = logging.getLogger(__name__)
+
+import datetime
+from ...util.log import get_logger
+logger = get_logger(__name__)
 
 
 class DirectedEdge:
@@ -226,7 +227,9 @@ class Node:
 
         # If the user’s ephemeral rename pass sets self._signature 
         # and modifies self.normalized_map, check they exist
-        if not self.process.signature:
+        # if not self.process.signature:
+        #     return False
+        if not hasattr(self.process, "initialized"):
             return False
         rights = list(self.process.signature.rights())
         logger.debug(f"{self} with right registers: {rights}")
@@ -307,10 +310,52 @@ class Node:
 
         self.start_time = datetime.datetime.now()
         self.total_duration = 0.0
-        logger.debug(f"Starting node {repr(self)} with inputs: {[d.id for d in self.process.inputs]}")
+        # logger.debug(f"Starting node {repr(self)} with inputs: {[d for d in self.process.inputs]}")
         # logger.debug(f"Starting node {self.id} at t={self.start_time}")
+    def check_if_ready(self):
+        """
+        checks if this node is ready to start or not
 
+        This method should evaluate the node inputs (list of Data instances) 
+        against the process.signature (i.e. the RegisterSpec's). If correct,
+        then the node should be marked for starting. 
+        Returns True if this Node’s incoming Data satisfy its Process’s
+        expected_input_properties (via validate_data_properties), False otherwise.
+        Does not raise; simply peeks at validity.
+        """
+        # 1) gather all Data from incoming edges
+        inputs = [d for edge in self.input_edges for d in edge.data]
+
+        # 2) temporarily assign into the existing process and test
+        orig_inputs = self.process.inputs
+        self.process.inputs = inputs
+        try:
+            ok = self.process.validate_data_properties(show_debug_log=False)
+        except InitError:
+            ok = False
+        # 3) restore
+        self.process.inputs = orig_inputs
+        return ok
+
+    def ensure_ready(self):
+        """
+        Validates inputs by actually instantiating the Process.
+        On success, it replaces self.process with the new instance,
+        sets its status to Process.READY, and returns None.
+        On failure, it propagates the InitError with full mismatch detail.
+        """
+        # 1) gather all Data
+        inputs = [d for edge in self.input_edges for d in edge.data]
+
+        # 2) inject into our existing process and run the verbose check
+        self.process.inputs = inputs
+        # this will raise InitError with your pretty log if anything fails
+        self.process.validate_data_properties(show_debug_log=True)
+
+        # 3) mark ready
+        self.process.status = Process.READY
     def ready_to_start(self):
+        # TODO: update to just return self.check_if_ready()
         self.inputs: List[Data] = []
         for input_edge in self.input_edges:
             for data in input_edge.data:
@@ -322,6 +367,7 @@ class Node:
         )
         del self.inputs
         return is_ready
+    
 
     def __property_in_input_edge(self, property: dict):
         for data in self.inputs:
@@ -375,23 +421,42 @@ class Node:
             self.process.status = Process.COMPLETED
 
     def verify_allocation(self, allocation: Allocation) -> bool:
+        """Return True when *either* no resources are required *or*
+        the allocation satisfies the declared requirement.
+        """
         required_resource = self.process.required_resources
+        # ∅ requirement  →  always satisfied
+        if not required_resource:          # None, [], (), {} all count as “no resource”
+            return True
 
         if isinstance(required_resource, ClassicalResource):
             assert isinstance(
                 allocation, ClassicalAllocation
-            ), f"Expected ClassicalAllocation for ClassicalResource requirement but got {type(allocation)} instead"
-            conditions = (
-                required_resource.memory <= allocation.allocated_memory,
-                required_resource.num_cores <= allocation.allocated_cores,
+            ), (
+                "Expected ClassicalAllocation for ClassicalResource "
+                f"requirement but got {type(allocation)}"
             )
+            conditions = (
+                required_resource.memory     <= allocation.allocated_memory,
+                required_resource.num_cores  <= allocation.allocated_cores,
+            )
+
         elif isinstance(required_resource, QuantumResource):
             assert isinstance(
                 allocation, QuantumAllocation
-            ), f"Expected QuantumAllocation for QuantumResource requirement but got {type(allocation)} instead"
+            ), (
+                "Expected QuantumAllocation for QuantumResource "
+                f"requirement but got {type(allocation)}"
+            )
             conditions = (
                 required_resource.circuit.qubit_count
                 == len(allocation.allocated_qubit_idxs),
+            )
+            logger.debug(f'Required number of qubit == {required_resource.circuit.qubit_count}, number of qubits allocated from synthesizer: {len(allocation.allocated_qubit_idxs)}')
+        else:
+            raise TypeError(
+                "required_resources must be a Resource, a sequence of Resources, "
+                "or a falsy placeholder signalling ‘no requirement’"
             )
 
         return all(conditions)
@@ -414,7 +479,7 @@ class Node:
 
         for result in self.process.generate_output():
             usage_str = result.properties.get("Usage", None)
-            logger.debug(f"     [EdgeGen]  Handling output result: {result} => usage={usage_str} hint={result.metadata.hint}")
+            # logger.debug(f"     [EdgeGen]  Handling output result: {result} => usage={usage_str} hint={result.metadata.hint}")
             
             self.output_edges.append(
                 DirectedEdge(
@@ -424,7 +489,7 @@ class Node:
                     edge_type=DirectedEdge.OUTPUT,
                 )
             )
-        logger.debug(f" [EdgeGen]  final output_edges => {self.output_edges}")
+        # logger.debug(f" [EdgeGen]  final output_edges => {self.output_edges}")
     def map_edges_to_output_nodes(self):
         """Maps outgoing DirectedEdges to the next appropriate Nodes in the
         network as specified by self.output_nodes.
@@ -459,8 +524,8 @@ class Node:
         Returns:
             Node: The expected Node that DirectedEdge edge connects to
         """
-        logger.debug(f" [Hooking] Checking data usage for {edge} => data usage(s): "
-                    f"{[d.properties.get('Usage') for d in edge.data]}")
+        # logger.debug(f" [Hooking] Checking data usage for {edge} => data usage(s): "
+        #             f"{[d.properties.get('Usage') for d in edge.data]}")
         assert all(
             isinstance(output_node, Node) for output_node in output_nodes
         ), f"{output_nodes} must be a list of Nodes"
@@ -468,18 +533,19 @@ class Node:
             edge.source_node == self
         ), f"Node {self} does not have permission to assign edge of Node {edge.source_node}"
         usage_list = [d.properties.get('Usage','?') for d in edge.data] if edge.data else []
-        logger.debug(f"[Hooking] Checking which nodes require edge {edge}")
+        # logger.debug(f"[Hooking] Checking which nodes require edge {edge}")
 
         dest_nodes = []
         for node in output_nodes:
             # We'll debug the node's expected_input_properties
-            logger.debug(f" [Hooking] Node {repr(node)}, initialied? {node.is_process_initialized()}:")
+            # logger.debug(f" [Hooking] Node {repr(node)}, initialied? {node.is_process_initialized()}:")
             # Then the logic to see if it matches
             if all(self.__edge_properties_in_output_node(edge_data.properties, node)
                 for edge_data in edge.data):
                 dest_nodes.append(node)
-                logger.debug(f"     => matched node {repr(node)}!")
+                # logger.debug(f"     => matched node {repr(node)}!")
         if not dest_nodes:
+            logger.debug(f" [Hooking] Node {repr(node)}, initialied? {node.is_process_initialized()}:      => NO match among {output_nodes}*")
             logger.debug(f"     => NO match among {output_nodes}*")
             raise ExpectedNodeError(
                 f"A mapping between Edge {edge} and Nodes {self.output_nodes} cannot be found"
@@ -545,7 +611,33 @@ class Node:
 
     def __repr__(self):
         return self.process.__class__.__name__ + "." + self.id
+def network_run_helper(network, starting_nodes,starting_inputs):
+    assert all(
+        node.network_type == Node.INPUT for node in starting_nodes
+    ), f"Given Nodes {starting_nodes} must all be INPUT nodes of the Network"
 
+    if isinstance(starting_inputs, list):
+        assert len(starting_nodes) == len(
+            starting_inputs
+        ), f"Each Node in starting_nodes must have a corresponding Data object(s) in starting_inputs"
+
+        for idx in range(len(starting_nodes)):
+            inputs = starting_inputs[idx]
+            node = starting_nodes[idx]
+            input_edge = DirectedEdge(
+                data=tuple(inputs),
+                edge_type="INPUT",
+                source_node=None,
+                dest_nodes=[node],
+            )
+            node.append_input_edge(input_edge)
+    else:
+        assert all(
+            len(node.input_edges) > 0 for node in starting_nodes
+        ), f"One or more Nodes in starting_nodes is not assigned an input DirectedEdge"
+
+    network.reset_network()
+    return network, starting_nodes
 
 class AllocationError(Exception):
     def __init__(self, *args, **kwargs):
@@ -688,19 +780,7 @@ class Network:
 
     def update_broker(self, broker):
         self.broker = broker
-
-    def run(
-        self,
-        starting_nodes: List[Node],
-        starting_inputs: List[List[Data]] = None,
-        simulate=True,
-    ):
-        """Runs the simulation of the Network beginning at starting_nodes.
-
-        Args:
-            starting_nodes (List[Node]): List of nodes to start the simulation
-            starting_inputs (List[List[Data]], optional): Input Data to begin Simulation. Defaults to None.
-        """
+    def network_prep(self, starting_nodes, starting_inputs):
         assert all(
             node.network_type == Node.INPUT for node in starting_nodes
         ), f"Given Nodes {starting_nodes} must all be INPUT nodes of the Network"
@@ -726,98 +806,158 @@ class Network:
             ), f"One or more Nodes in starting_nodes is not assigned an input DirectedEdge"
 
         self.reset_network()
+        return starting_nodes
 
-        remaining_nodes = copy.copy(starting_nodes)
-        active_nodes: List[Node] = []
-        elapsed_time = 0.0
-        execution_idx = 0
+    def run(
+        self,
+        starting_nodes: List[Node],
+        starting_inputs: List[List[Data]] = None,
+        simulate=True,
+    ):
+        """
+        Execute the workflow beginning at *starting_nodes*.
+
+        Handles three situations explicitly:
+
+        A. Normal progress – at least one node is ACTIVE, so time advances.
+        B. Pre-flight consistency – if ready_to_start() is True,
+           ensure_ready() must leave the process in status READY.
+        C. Dead-lock – no node can be initialised or progressed while
+           unfinished nodes still exist → raise RuntimeError.
+        """
+        # ------------------------------------------------------------------
+        # 0.  Seed INPUT nodes with starting data and clear old state
+        # ------------------------------------------------------------------
+        starting_nodes = self.network_prep(starting_nodes, starting_inputs)
+        remaining_nodes: list[Node] = starting_nodes.copy()
+        active_nodes:    list[Node] = []
+        self.execution_order.clear()
+
+        elapsed_time: float = 0.0
+        execution_idx: int  = 0
         results: Dict[Node, Result] = {}
 
-        while len(remaining_nodes) != 0 or len(active_nodes) != 0:
+       
+        # ------------------------------------------------------------------
+        # 1.  Pre-flight check on *static* INPUT nodes
+        # ------------------------------------------------------------------
+        for node in starting_nodes:
+            if getattr(node, "extend_dynamic", False):
+                logger.debug(f"Skipping pre-flight for dynamic node {repr(node)}")
+                continue
+
+            # quick boolean vs. heavier structural check
+            assert node.ready_to_start() == node.check_if_ready(), (
+                f"ready_to_start()/check_if_ready() diverged on {repr(node)}"
+            )
+
+            # heavy validation (raises InitError with nice message on mismatch)
+            node.ensure_ready()
+            logger.debug(f"Pre-flight: {repr(node)} READY")
+        # ------------------------------------------------------------------
+        # 2.  Main simulation loop
+        # ------------------------------------------------------------------
+        while remaining_nodes or active_nodes:
             self.status = Network.ACTIVE
-            node_idx = 0
-            while node_idx < len(remaining_nodes):
-                node = remaining_nodes[node_idx]
+
+            # --------------------------------------------------------------
+            # 2.1  try to initialise any nodes that are now ready
+            # --------------------------------------------------------------
+            idx = 0
+            while idx < len(remaining_nodes):
+                node = remaining_nodes[idx]
                 try:
                     self.__initialize_node(node)
-                    active_nodes.append(node)
-                    remaining_nodes.remove(node)
-                    self.execution_order.append(node)
-                    node.process.update()
-
-                    if isinstance(node.allocation, ClassicalAllocation):
-                        if simulate:
-                            memory_usage = node.allocation.allocated_memory
-                        else:
-                            node.process.time_till_completion = node.process.time
-                            memory_usage = node.process.memory
-
-                        results[node] = Result(
-                            network_idx=execution_idx,
-                            start_time=elapsed_time,
-                            end_time=None,
-                            device_name=node.allocation.device_name,
-                            memory_usage=memory_usage,
-                            qubits_used="N/A",
-                            circuit_depth="N/A",
-                            success_probability="N/A",
-                        )
-
-                    elif isinstance(node.allocation, QuantumAllocation):
-                        assert isinstance(
-                            node.process, QuantumProcess
-                        ), f"Expected QuantumProcess for QuantumAllocation {node.allocation}"
-                        results[node] = Result(
-                            network_idx=execution_idx,
-                            start_time=elapsed_time,
-                            end_time=None,
-                            device_name=node.allocation.device_name,
-                            memory_usage="N/A",
-                            qubits_used=node.allocation.allocated_qubit_idxs,
-                            circuit_depth=node.allocation.transpiled_circuit.depth(),
-                            success_probability=node.process._compute_sucess_probability(
-                                node.allocation
-                            ),
-                        )
-
-                except (AllocationError, InitError):
-                    node_idx = node_idx + 1
+                except (AllocationError, InitError) as e:
+                    logger.debug(f"Init-skip {repr(node)}: {e}")
+                    idx += 1
                     continue
 
-                execution_idx = execution_idx + 1
+                active_nodes.append(node)
+                remaining_nodes.remove(node)
+                self.execution_order.append(node)
+                node.process.update()
 
-            node_idx = 0
-            update_timestep = self.__compute_min_timestep(active_nodes)
-            elapsed_time = elapsed_time + update_timestep
-            prev_active = active_nodes.copy()
-            prev_remaining  = remaining_nodes.copy()
-            while node_idx < len(active_nodes):
-                active_node = active_nodes[node_idx]
-                self.__update_node(active_node, update_timestep)
-                if active_node.process.status == Process.COMPLETED:
-                    if active_node.process.dynamic:
-                        self.__extend_dynamic_node(active_node)
-                    self.__complete_node(active_node)
-                    active_nodes.remove(active_node)
-                    remaining_nodes.extend(self.get_prepared_output_nodes(active_node))
-                    logger.debug(f'Removing {repr(active_node)} from active nodes and preparing new remaining nodes:\n  - active nodes: {prev_active} -> {active_nodes}\n  - remaining nodes: {prev_remaining} -> {remaining_nodes}')
-                    results[active_node].end_time = elapsed_time
-                    continue
+                # bookkeeping for results dataframe
+                if isinstance(node.allocation, ClassicalAllocation):
+                    mem = node.allocation.allocated_memory if simulate else node.process.memory
+                    results[node] = Result(
+                        network_idx=execution_idx,
+                        start_time=elapsed_time,
+                        end_time=None,
+                        device_name=node.allocation.device_name,
+                        memory_usage=mem,
+                        qubits_used="N/A",
+                        circuit_depth="N/A",
+                        success_probability="N/A",
+                    )
+                elif isinstance(node.allocation, QuantumAllocation):
+                    results[node] = Result(
+                        network_idx=execution_idx,
+                        start_time=elapsed_time,
+                        end_time=None,
+                        device_name=node.allocation.device_name,
+                        memory_usage="N/A",
+                        qubits_used=node.allocation.allocated_qubit_idxs,
+                        circuit_depth=node.allocation.transpiled_circuit.depth(),
+                        success_probability=node.process._compute_sucess_probability(
+                            node.allocation
+                        ),
+                    )
+                execution_idx += 1  # only advance when a node really started
 
-                node_idx = node_idx + 1
+            # --------------------------------------------------------------
+            # 2.2  dead-lock / termination check BEFORE advancing time
+            # --------------------------------------------------------------
+            if not active_nodes:
+                if remaining_nodes:                       # → Case C
+                    raise RuntimeError("Network deadlock detected")
+                break                                      # all work finished
+
+            # --------------------------------------------------------------
+            # 2.3  advance time by minimum remaining execution
+            # --------------------------------------------------------------
+            dt = self.__compute_min_timestep(active_nodes)
+            assert dt != INFINITY
+            elapsed_time += dt
+
+            # --------------------------------------------------------------
+            # 2.4  update ACTIVE nodes and harvest newly ready successors
+            # --------------------------------------------------------------
+            idx = 0
+            while idx < len(active_nodes):
+                node = active_nodes[idx]
+                self.__update_node(node, dt)
+
+                if node.process.status == Process.COMPLETED:
+                    if node.process.dynamic:
+                        self.__extend_dynamic_node(node)
+
+                    self.__complete_node(node)
+                    active_nodes.remove(node)
+                    remaining_nodes.extend(self.get_prepared_output_nodes(node))
+                    self.describe
+                    results[node].end_time = elapsed_time
+                    continue  # do NOT increment idx – list contracted
+                idx += 1
+
+        # ------------------------------------------------------------------
+        # 3.  Finish
+        # ------------------------------------------------------------------
         self.status = Network.INACTIVE
-        self.results_df: pd.DataFrame = self.generate_results_dataframe(results)
+        self.results_df = self.generate_results_dataframe(results)
         return self.results_df
+    
 
     def reset_network(self):
         for node in self.nodes:
             node.output_edges = []
             if node.network_type != Node.INPUT:
                 node.input_edges = []
-
-    def __initialize_node(self, node: Node):
+    def _initialize_node(self, node: Node):
         node.start()
         self.__allocate_resources(node)
+        logger.debug(f"Starting node {repr(node)} with inputs: {[d for d in node.process.inputs]} ---> resources allocated: {node.allocation}")
         assert node.verify_allocation(
             node.allocation
         ), f"Node {node.id} cannot execute it's process with given allocation {node.allocation}"
@@ -830,7 +970,38 @@ class Network:
             time_till_completion = node.process._compute_quantum_process_update_time(
                 node.allocation
             )
+        else:
+            # defaulting
+            flops = node.process.flops
+            time_till_completion = flops / node.allocation.clock_frequency
 
+
+            # node.process._set_transpiled_circ()
+            # node.process._
+        node.process.time_till_completion = time_till_completion
+
+    def __initialize_node(self, node: Node):
+        node.start()
+        self.__allocate_resources(node)
+        logger.debug(
+            f"Starting node {repr(node)} with inputs: {[d for d in node.process.inputs]} "
+            # f"\ndict: {node.process.input_data} "
+            f"---> resources allocated: {node.allocation}"
+        )
+        assert node.verify_allocation(
+            node.allocation
+        ), f"Node {node.id} cannot execute it's process with given allocation {node.allocation}"
+
+        if isinstance(node.process, ClassicalProcess):
+            time_till_completion = node.process._compute_classical_process_update_time(
+                node.allocation
+            )
+        elif isinstance(node.process, QuantumProcess):
+            time_till_completion = node.process._compute_quantum_process_update_time(
+                node.allocation
+            )
+        else:
+            time_till_completion
             # node.process._set_transpiled_circ()
             # node.process._
         node.process.time_till_completion = time_till_completion
@@ -846,22 +1017,23 @@ class Network:
             `Allocation`: An allocation result
 
         """
-        if node.process.required_resources is None:
-            allocation = Allocation()
-
+        if not node.process.required_resources:
+            node.process.status = Process.ACTIVE
+            node.allocation = None                  # ← was Allocation() ✅
+            return
+          
         else:
-            # logger.debug(f"Node {node.id} is attempting allocation...")
             try:
                 allocation = self.broker.request_allocation(
                     node.process.required_resources
                 )
-                # logger.debug(f"Node {node.id} resource allocation successful")
             except AssertionError as e:
                 if str(e) == "No available devices":
-                    raise AllocationError(f"Node {node.id} resource allocation FAILED")
-                else:
-                    raise e
-                
+                    raise AllocationError(
+                        f"Node {node.id} resource allocation FAILED"
+                    ) from None
+                raise
+
         node.process.status = Process.ACTIVE
         node.allocation = allocation
 
@@ -954,14 +1126,16 @@ class Network:
 
         """
 
-        if node.process.required_resources is None:
+        """Ask the broker for resources—unless the process requires none."""
+        if not node.process.required_resources:
             node.allocation = None
-        else:
-            try:
-                self.broker.request_deallocation(node.allocation)
-            except:  ## TODO specify expected exception error
-                raise AllocationError(f"Node {node.id} resource deallocation FAILED")
-            node.allocation = None
+            return
+
+        try:
+            self.broker.request_deallocation(node.allocation)
+        except Exception:  # TODO: replace with concrete broker exception
+            raise AllocationError(f"Node {node.id} resource deallocation FAILED")
+        node.allocation = None
 
     def get_prepared_output_nodes(self, node: Node):
         """Returns a list of all nodes in node.output_nodes whose
@@ -992,12 +1166,12 @@ class Network:
 
         return min_timestep
 
-    def generate_gantt_plot(self):
+    def generate_gantt_plot(self,show=False):
         assert isinstance(
             self.results_df, pd.DataFrame
         ), f"Generate simulation results by calling network.run()!"
 
-        publish_gantt(self.results_df)
+        publish_gantt(self.results_df,show=show)
 
     def generate_results_dataframe(self, results: Dict[Node, Result]) -> pd.DataFrame:
         results_dict = {
@@ -1007,7 +1181,7 @@ class Network:
             "Start Time [s]": [],
             "End Time [s]": [],
             "Device Name": [],
-            "Memory Cost [B]": [],
+            "Memory [B]": [],
             "Qubits Used": [],
             "Circuit Depth": [],
             "Success Probability": [],
@@ -1020,7 +1194,7 @@ class Network:
             results_dict["Start Time [s]"].append(val.start_time)
             results_dict["End Time [s]"].append(val.end_time)
             results_dict["Device Name"].append(val.device_name)
-            results_dict["Memory Cost [B]"].append(val.memory_usage)
+            results_dict["Memory [B]"].append(val.memory_usage)
             results_dict["Qubits Used"].append(val.qubits_used)
             results_dict["Circuit Depth"].append(val.circuit_depth)
             results_dict["Success Probability"].append(val.success_probability)
@@ -1076,13 +1250,15 @@ class Network:
         
         return G, mapping
 
-    def visualize(self, show_edge_labels=False, show=False, ax=None):
+    def visualize(self, show_edge_labels=False, show=False, ax=None,figsize=(12, 10),):
         G = nx.DiGraph()
         edge_labels = {}
         mapping = {}
 
         if ax is None:
-            fig, ax = plt.subplots()
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.figure
 
         if self.execution_order == []:
             show_edge_labels = False
@@ -1235,7 +1411,7 @@ class Network:
                 # f"Nodes: {node_ids}\n"
                 f" - Active Nodes: {active}\n"
                 # f"Node .network_types: {node_edges}\n"
-                f" - Inactive Nodes: {inactive}\n"
+                f" - Unstarted Nodes: {inactive}\n"
                 f" - Completed Nodes: {completed}"
             
             
@@ -1245,3 +1421,158 @@ class Network:
         # print(description)
     def __str__(self):
         return self.name
+    
+    def run_backup(
+        self,
+        starting_nodes: List[Node],
+        starting_inputs: List[List[Data]] = None,
+        simulate=True,
+    ):
+        """
+        Execute the workflow beginning at *starting_nodes*.
+
+        Handles three situations explicitly:
+
+        A. Normal progress – at least one node is ACTIVE, so time advances.
+        B. Pre-flight consistency – if ready_to_start() is True,
+           ensure_ready() must leave the process in status READY.
+        C. Dead-lock – no node can be initialised or progressed while
+           unfinished nodes still exist → raise RuntimeError.
+        """
+        # ------------------------------------------------------------------
+        # 0.  Seed INPUT nodes with starting data and clear old state
+        # ------------------------------------------------------------------
+        starting_nodes = self.network_prep(starting_nodes, starting_inputs)
+        remaining_nodes: list[Node] = starting_nodes.copy()
+        active_nodes:    list[Node] = []
+        self.execution_order.clear()
+
+        elapsed_time: float = 0.0
+        execution_idx: int  = 0
+        results: Dict[Node, Result] = {}
+
+        # --- PRE-FLIGHT VALIDATION (only on *static* INPUT nodes) ---
+        # for node in starting_nodes:
+        #     # skip any node that is marked dynamic → will be fed later by extend_network
+        #     if getattr(node, "extend_dynamic", False):
+        #         logger.debug(f"Skipping pre-flight for dynamic node {repr(node)}")
+        #         continue
+
+        #     # quick vs. full consistency check
+        #     original_ok = node.ready_to_start()
+        #     new_ok      = node.check_if_ready()
+        #     assert original_ok == new_ok, (
+        #         f"Boolean ready_to_start() and check_if_ready() diverged on {repr(node)}"
+        #     )
+
+        #     # now do the *verbose* validation (will raise with pretty InitError if bad)
+        #     try:
+        #         node.ensure_ready()
+        #         logger.debug(f"Pre-flight: Node {repr(node)} READY for execution.")
+        #     except InitError as e:
+        #         logger.error(f"Pre-flight full check failed for {repr(node)}:\n{e}")
+        #         # abort early if any static input is invalid
+        #         raise
+        # ------------------------------------------------------------------
+        # 1.  Pre-flight check on *static* INPUT nodes
+        # ------------------------------------------------------------------
+        for node in starting_nodes:
+            if getattr(node, "extend_dynamic", False):
+                logger.debug(f"Skipping pre-flight for dynamic node {repr(node)}")
+                continue
+
+            # quick boolean vs. heavier structural check
+            assert node.ready_to_start() == node.check_if_ready(), (
+                f"ready_to_start()/check_if_ready() diverged on {repr(node)}"
+            )
+
+            # heavy validation (raises InitError with nice message on mismatch)
+            node.ensure_ready()
+            logger.debug(f"Pre-flight: {repr(node)} READY")
+        # Main simulation loop
+        # We know we’ll only spin when:
+        #  - Case A: active_nodes non-empty → we can advance time and complete work
+        #  - Case B: active_nodes empty but some remaining are ready → we can init new work
+        #  - Case C: neither → deadlock, so we bail out immediately
+        while len(remaining_nodes) != 0 or len(active_nodes) != 0:
+            self.status = Network.ACTIVE
+            did_initialize = False
+            did_complete   = False
+            node_idx = 0
+            while node_idx < len(remaining_nodes):
+                node = remaining_nodes[node_idx]
+                try:
+                    self.__initialize_node(node)
+                    logger.debug(f"Attempting to init {node} with input edges {node.input_edges}")
+                    active_nodes.append(node)
+                    remaining_nodes.remove(node)
+                    did_initialize = True
+                    self.execution_order.append(node)
+                    node.process.update()
+
+                    if isinstance(node.allocation, ClassicalAllocation):
+                        if simulate:
+                            memory_usage = node.allocation.allocated_memory
+                        else:
+                            node.process.time_till_completion = node.process.time
+                            memory_usage = node.process.memory
+
+                        results[node] = Result(
+                            network_idx=execution_idx,
+                            start_time=elapsed_time,
+                            end_time=None,
+                            device_name=node.allocation.device_name,
+                            memory_usage=memory_usage,
+                            qubits_used="N/A",
+                            circuit_depth="N/A",
+                            success_probability="N/A",
+                        )
+
+                    elif isinstance(node.allocation, QuantumAllocation):
+                        assert isinstance(
+                            node.process, QuantumProcess
+                        ), f"Expected QuantumProcess for QuantumAllocation {node.allocation}"
+                        results[node] = Result(
+                            network_idx=execution_idx,
+                            start_time=elapsed_time,
+                            end_time=None,
+                            device_name=node.allocation.device_name,
+                            memory_usage="N/A",
+                            qubits_used=node.allocation.allocated_qubit_idxs,
+                            circuit_depth=node.allocation.transpiled_circuit.depth(),
+                            success_probability=node.process._compute_sucess_probability(
+                                node.allocation
+                            ),
+                        )
+
+                except (AllocationError, InitError) as e:
+                    logger.debug(f"Could not init {node}: {e}")
+                    self.describe
+                    node_idx = node_idx + 1
+                    continue
+
+                execution_idx = execution_idx + 1
+
+            node_idx = 0
+            update_timestep = self.__compute_min_timestep(active_nodes)
+            assert update_timestep != INFINITY
+            elapsed_time = elapsed_time + update_timestep
+            prev_active = active_nodes.copy()
+            prev_remaining  = remaining_nodes.copy()
+            while node_idx < len(active_nodes):
+                active_node = active_nodes[node_idx]
+                self.__update_node(active_node, update_timestep)
+                if active_node.process.status == Process.COMPLETED:
+                    if active_node.process.dynamic:
+                        self.__extend_dynamic_node(active_node)
+                    self.__complete_node(active_node)
+                    active_nodes.remove(active_node)
+                    remaining_nodes.extend(self.get_prepared_output_nodes(active_node))
+                    logger.debug(f'Removing {repr(active_node)} from active nodes and preparing new remaining nodes:\n  - active nodes: {prev_active} -> {active_nodes}\n  - remaining nodes: {prev_remaining} -> {remaining_nodes}')
+                    results[active_node].end_time = elapsed_time
+                    continue
+
+                node_idx = node_idx + 1
+        self.status = Network.INACTIVE
+        self.results_df: pd.DataFrame = self.generate_results_dataframe(results)
+        return self.results_df

@@ -11,8 +11,8 @@ import qiskit.circuit.library as qiskit_library
 import qrew.simulation.refactor.quantum_gates as quantum_gateset
 from qrew.simulation.refactor.data_types import *
 
-from ...util.log import logging
-logger = logging.getLogger(__name__)
+from ...util.log import get_logger
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from resources.quantum_resources import QuantumDevice
@@ -117,8 +117,8 @@ class QuantumCircuit:
         """Return a Cirq SVG diagram of the circuit, ready for Jupyter display."""
         from cirq.contrib.svg import SVGCircuit
         import cirq
-        from qrew.visualization_tools import translate_c_to_cirq
-        cirq_circ = translate_c_to_cirq(self, save_measurements=save_measurements)
+        from qrew.simulation.refactor.q_interop.cirq_interop import translate_qc_to_cirq
+        cirq_circ = translate_qc_to_cirq(self, save_measurements=save_measurements)
         # Delete the leading identity moment Cirq inserted (looks cleaner)
         if cirq_circ and isinstance(cirq_circ[0], cirq.Moment):
             cirq_circ.__delitem__(0)
@@ -141,49 +141,7 @@ class QuantumCircuit:
             f"{len(self.instructions)} instructions ({gate_summary}), "
             f"depth={self.depth()}>"
         )
-def qiskit_to_quantum_circuit(qc: QiskitCircuit):
-    circuit = QuantumCircuit(qubit_count=qc.num_qubits, instructions=[])
-    for qiskit_gate in qc.data:
-        gate_name = qiskit_gate.operation.name.upper()
-        params = qiskit_gate.params
 
-        if gate_name == "TDG":
-            gate_name = "Tdg"
-
-        gate = getattr(quantum_gateset, gate_name)
-        if len(params) > 0:
-            circuit.add_instruction(
-                gate=gate(params[0]),
-                indices=tuple(qubit._index for qubit in qiskit_gate.qubits),
-            )
-        else:
-            circuit.add_instruction(
-                gate=gate(), indices=tuple(qubit._index for qubit in qiskit_gate.qubits)
-            )
-
-    return circuit
-
-
-def quantum_circuit_to_qiskit(qc: QuantumCircuit):
-    circuit = QiskitCircuit(qc.qubit_count, 0)
-    for instruction in qc.instructions:
-        gate_name = instruction.gate.name
-
-        if gate_name == "CZPow":
-            circuit.append(
-                qiskit_library.CZGate().power(instruction.gate.param),
-                list(instruction.gate_indices),
-            )
-        else:
-            qiskit_gate = getattr(qiskit_library, gate_name + "Gate")
-            if hasattr(instruction.gate, "param"):
-                circuit.append(
-                    qiskit_gate(instruction.gate.param), list(instruction.gate_indices)
-                )
-            else:
-                circuit.append(qiskit_gate(), list(instruction.gate_indices))
-
-    return circuit
 
 
 class LayoutSynthesizer:
@@ -590,20 +548,6 @@ class LayoutSynthesizer:
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
 
-        # physical_qubit_idxs = []
-        # for logical_qubit_idx in range(self.circuit.qubit_count):
-        #     physical_qubit_idxs.append(pi[logical_qubit_idx][0])
-
-        # for timestep in range(self.circuit_depth - 1):
-        #     for edge in self.available_connectivity.edges:
-        #         implies_condition = Or(edge[0] not in physical_qubit_idxs,
-        #                                 edge[1] not in physical_qubit_idxs)
-        #         self.solver.add(
-        #             Implies(
-        #                 implies_condition,
-        #                 sigma[edge[0]][edge[1]][timestep] == False
-        #             )
-        #         )      
 
         P0 = [pi[q][0] for q in range(self.circuit.qubit_count)]
 
@@ -658,7 +602,7 @@ class LayoutSynthesizer:
 
         logger.debug(f"Initial qubit mapping: {initial_qubit_map}")
         logger.debug(f"Final qubit mapping: {final_qubit_map}")
-        logger.debug(f"Objective result: {objective_result}, SWAP count: {swaps}, time: {time}")
+        logger.debug(f"Objective result: {objective_result}, SWAP count: {swaps}")
 
         del self.results
         return result_circuit, initial_qubit_map, final_qubit_map, objective_result, {'depth':objective_result,'time':time,'swaps':swaps}
@@ -822,33 +766,12 @@ class LayoutSynthesizer:
             for instruction in result_circuit_instructions[timestep]:
                 if (instruction.gate.name == "SWAP") and (
                     "SWAP" not in self.device.gate_set
-                ):
-                    gate_idxs = instruction.gate_indices
-                    for transpiled_instruction in self.device.transpiled_swap_circuit:
-                        transpiled_gate: QuantumGate = getattr(
-                            quantum_gateset,
-                            transpiled_instruction.operation.name.upper(),
-                        )
-                        transpiled_gate_idxs = tuple(
-                            gate_idxs[qubit._index]
-                            for qubit in transpiled_instruction.qubits
-                        )
-                        if len(transpiled_instruction.params) > 0:
-                            params = transpiled_instruction.params[0]
-                            result_circuit.add_instruction(
-                                gate=transpiled_gate(params),
-                                indices=transpiled_gate_idxs,
-                            )
-                        else:
-                            result_circuit.add_instruction(
-                                gate=transpiled_gate(), indices=transpiled_gate_idxs
-                            )
+                ):  
+                    for sub in self.device.swap_decomposition(instruction.gate_indices):
+                        result_circuit.add_instruction(sub)
 
-                        # result_circuit.add_instruction(
-                        #     QuantumInstruction(
-                        #         gate=transpiled_gate, qubit_indices=transpiled_gate_idxs
-                        #     )
-                        # )
+
+  
                 else:
                     result_circuit.add_instruction(instruction)
 
