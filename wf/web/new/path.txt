@@ -1,0 +1,5 @@
+/Library/Frameworks/Python.framework/Versions/3.12/bin/pip
+(web_wf) so714f@Sophies-MacBook-Pro workflow-web-interface % which python
+/Users/so714f/opt/anaconda3/envs/web_wf/bin/python
+(web_wf) so714f@Sophies-MacBook-Pro workflow-web-interface % echo $PATH
+/opt/homebrew/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Applications/Privileges.app/Contents/MacOS:/Users/so714f/opt/anaconda3/envs/web_wf/bin:/Users/so714f/opt/anaconda3/condabin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/Users/so714f/.vscode/extensions/ms-python.debugpy-2025.8.0-darwin-arm64/bundled/scripts/noConfigScripts
