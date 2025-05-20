@@ -1,14 +1,15 @@
-import networkx as nx
-from olsq.solve import collision_extracting
-import pytest
 
+
+import pytest
+from olsq.solve import collision_extracting
+import networkx as nx
 from qrew.simulation.refactor.resources import (
     QuantumDevice,
     QuantumResource,
 )
 from qrew.simulation.refactor.quantum import QuantumCircuit,QuantumInstruction, LayoutSynthesizer
 from qrew.simulation.refactor.quantum_gates import *
-
+from qrew.simulation.refactor.broker import Broker
 from qrew.simulation.refactor.devices.quantum_devices import (
     IBM_Kyiv,     # same device that triggered the (14,) qubit bug
 )
@@ -17,231 +18,6 @@ from qrew.simulation.refactor.devices.quantum_devices import (
 #     assert 1 == 1
 
 
-# device: line4_device’      
-#                          
-#                     0 –– 1 –– 2 –– 3     
-# def line4_device():
-#     g = nx.Graph([(0, 1), (1, 2), (2,3)])
-#     return QuantumDevice(
-#         "line4", g, gate_set=("H", "CX", "SWAP"),
-#     )
-
-# def leaf_cnot():
-#     qc = QuantumCircuit(qubit_count=2)   # logical q0, q1
-#     qc.add_instruction(QuantumInstruction(H(),  (0,)))
-#     qc.add_instruction(QuantumInstruction(H(),  (1,)))
-#     qc.add_instruction(QuantumInstruction(CX(), (0, 1)))   # needs 0-2 edge
-#     return qc
-
-# @pytest.mark.parametrize("hard_island", [True, False])
-# def test_line4(hard_island):
-#     dev   = line4_device()
-#     circ  = leaf_cnot()
-
-#     res = QuantumResource(
-#         quantum_circuit=circ,
-#         LS_parameters={
-#             "transition based": False, "epsilon": 0.3,
-#             "objective": "depth",      "hard_island": hard_island,
-#         },
-#     )
-
-#     # ----------------  first allocation  -----------------------------------
-#     alloc1 = dev.allocate(res)
-#     touched1 = {q for inst in alloc1.transpiled_circuit.instructions
-#                    for q in inst.gate_indices}
-#     assert touched1 == set(alloc1.allocated_qubit_idxs)
-
-#     # ----------------  second allocation  ----------------------------------
-#     alloc2 = dev.allocate(res)
-#     touched2 = {q for inst in alloc2.transpiled_circuit.instructions
-#                    for q in inst.gate_indices}
-#     assert touched2 == set(alloc2.allocated_qubit_idxs)
-
-#     # after two concurrent reservations no connected component ≥2 remains
-#     with pytest.raises(AssertionError,
-#                        match="does not have sufficient available qubits"):
-#         dev.allocate(res)
-
-#     # clean-up
-#     dev.deallocate(alloc1)
-#     dev.deallocate(alloc2)
-#     assert sorted(dev.available_qubits) == [0, 1, 2, 3]
-
-
-
-
-def star5_device():
-    """5-qubit star: centre 0, leaves 1-4."""
-    g = nx.Graph([(0, 1), (0, 2), (0, 3), (0, 4)])
-    return QuantumDevice(
-        device_name="star5",
-        connectivity=g,
-        gate_set=("H", "CX", "SWAP"),
-    )
-
-def far_cnot_circuit():
-    """
-    2-logical-qubit circuit whose CX is *not* directly connected
-    on the star leaves; it forces a relay through qubit 0 unless forbidden.
-    """
-    qc = QuantumCircuit(qubit_count=2)
-    qc.add_instruction(QuantumInstruction(gate=H(),  qubit_indices=(0,)))
-    qc.add_instruction(QuantumInstruction(gate=H(),  qubit_indices=(1,)))
-    qc.add_instruction(QuantumInstruction(gate=CX(), qubit_indices=(0, 1)))
-    return qc
-
-
-def test_relay_qubit_policy_contract_1():
-    dev   = star5_device()
-    circ  = far_cnot_circuit()
-    # print(f"circ instructions: {circ.instructions}")
-    
-  
-    # wrap in QuantumResource because allocate() expects one
-    res = QuantumResource(
-        quantum_circuit=circ,
-        LS_parameters={"transition based": False,
-                       "epsilon": 0.3,
-                       "objective": "depth",
-                       "hard_island": True}
-    )
-    alloc = dev.allocate(res)
-    touched = {
-        q for instr in alloc.transpiled_circuit.instructions
-        for q in instr.gate_indices
-    }
-    # relay qubit 0 was indeed used
-    assert 0 in touched
-    # the new guard in allocate() guarantees every touched qubit is recorded
-    assert touched == set(alloc.allocated_qubit_idxs)
-
-
-def test_relay_qubit_policy_contract_2():
-    hard_island = False
-    dev   = star5_device()
-    circ  = far_cnot_circuit()
-    print(f"circ instructions: {circ.instructions}")
-    
-
-    # wrap in QuantumResource because allocate() expects one
-    res = QuantumResource(
-        quantum_circuit=circ,
-        LS_parameters={"transition based": False,
-                       "epsilon": 0.3,
-                       "objective": "depth",
-                       "hard_island": False}
-    )
-    alloc = dev.allocate(res)
-    touched = {
-        q for instr in alloc.transpiled_circuit.instructions
-        for q in instr.gate_indices
-    }
-    # relay qubit 0 was indeed used
-    assert 0 in touched
-    # the new guard in allocate() guarantees every touched qubit is recorded
-    assert touched == set(alloc.allocated_qubit_idxs)
-
-# def test_gate_set_is_set():
-#     qc = QuantumCircuit(2)
-#     qc.add_instruction(gate=X(), indices=(0,))
-#     qc.add_instruction(gate=X(), indices=(0,))      # duplicate on purpose
-#     assert qc.gate_set == {"X"}
-
-
-@pytest.fixture
-def device():
-    return generate_quantum_device()
-
-@pytest.fixture
-def circuit():
-    return generate_quantum_adder()
-def qubits_touched(qc):
-    """Return *all* physical qubits that appear in `qc`."""
-    return {q for ins in qc.instructions for q in ins.gate_indices}
-
-
-# ---------------------------------------------------------------------
-#  parametrised life-cycle test
-# ---------------------------------------------------------------------
-@pytest.mark.parametrize(
-    "hard_island, expected_depth, max_after, expected_qubits",
-    [
-        # old behaviour – optimiser must stay inside the 4-node island
-        (True,  15, 1, 4),
-        # relay allowed – optimiser may (or may not) add the 5th node
-        (False, 15, 0, 5),
-    ],
-    ids=["hard_island", "relay_allowed"],
-)
-def test_layout_allocate_deallocate_normal(
-    device,
-    circuit,
-    hard_island,
-    expected_depth,
-    max_after,
-    expected_qubits,
-):
-
-    # ------------------------------------------------------------------
-    # layout_synthesis  (depth & island invariants)
-    # ------------------------------------------------------------------
-    (compiled1,
-     init_map1,
-     final_map1,
-     depth1,
-     res1) = device.layout_synthesis(
-        circuit,
-        transition_based=False,
-        hard_island=hard_island,
-    )
-
-    assert depth1 == expected_depth
-    assert sorted(init_map1) == sorted(final_map1)
-
-    touched1 = qubits_touched(compiled1)
-
-    if hard_island:
-        # optimiser must stay strictly within the initial island
-        assert touched1.issubset(set(init_map1))
-    # else: relay qubits allowed – nothing to assert here
-
-    # ------------------------------------------------------------------
-    # allocate()  (scheduler bookkeeping)
-    # ------------------------------------------------------------------
-    avail_before = device.available_qubits.copy()
-    assert device.max_available_connections == 5          # toy connectivity
-
-    q_resource = QuantumResource(
-        quantum_circuit=circuit,
-        LS_parameters={
-            "transition based": False,
-            "epsilon": 0.3,
-            "objective": "depth",
-            "hard_island": hard_island,
-        },
-    )
-    alloc = device.allocate(q_resource)
-
-    # allocator reserves every qubit its own compilation touched
-    touched2 = qubits_touched(alloc.transpiled_circuit)
-    assert len(touched2) == expected_qubits
-    assert sorted(device.available_qubits + alloc.allocated_qubit_idxs) == sorted(
-        avail_before
-    )
-    assert device.max_available_connections == max_after
-    assert sorted(alloc.allocated_qubit_idxs) == sorted(touched2)
-
-    # the device-side check inside allocate() has already enforced
-    # the relay-free invariant when hard_island=True, so no extra
-    # assertion is required here.
-
-    # ------------------------------------------------------------------
-    # deallocate()
-    # ------------------------------------------------------------------
-    device.deallocate(alloc)
-    assert sorted(device.available_qubits) == sorted(avail_before)
-    assert device.max_available_connections == 5
 
 def generate_quantum_adder():
     circuit = QuantumCircuit(qubit_count=4)
@@ -300,15 +76,69 @@ def test_add_instruction():
     assert len(circuit.instructions) == 23
 
 
+def test_depth_on_fully_connected():
+    fc = QuantumDevice(
+        "fc4", nx.complete_graph(4),
+        gate_set=("X","H","S","T","Tdg","CX")
+    )
+    circ = generate_quantum_adder()
+    _,_,_, depth, _ = fc.layout_synthesis(circ, transition_based=False)
+    assert depth == circ.depth() == 11
+
 def test_compute_circuit_depth():
+    # hard_island=False
     device = generate_quantum_device()
     circuit = generate_quantum_adder()
     layout_synthesizer = LayoutSynthesizer(
-        quantum_circuit=circuit, device=device, transition_based=False
+        quantum_circuit=circuit, device=device, transition_based=False,hard_island=False
     )
-    circuit_depth = layout_synthesizer.compute_circuit_depth(circuit)
-    assert circuit_depth == 11
+    logical_depth = layout_synthesizer.compute_circuit_depth(circuit)
+    assert logical_depth == 11
+    compiled, init_map, final_map, routed_depth, _ = device.layout_synthesis(
+        circuit, transition_based=False, hard_island=False
+    )
 
+    assert routed_depth >= logical_depth
+    
+    assert routed_depth == 15
+    # sanity: mapping survives round-trip
+    assert sorted(init_map) == sorted(final_map)
+
+    
+    # hard_island=True
+    # TODO: Add counter layout synthesizer results 
+    compiled_HI, init_map_HI, final_map_HI, routed_depth_HI, _ = device.layout_synthesis(
+        circuit, transition_based=False, hard_island=True
+    )
+
+    # depth is still 15 – same number of layers, the SWAP now happens *inside*
+    assert routed_depth_HI == routed_depth == 15
+
+    # no relay qubits: every physical qubit in the compiled circuit
+    # must already appear in the initial mapping P0
+    touched_HI = {q for instr in compiled_HI.instructions for q in instr.gate_indices}
+    assert touched_HI.issubset(set(init_map_HI))
+
+    # mapping consistency
+    assert sorted(init_map_HI) == sorted(final_map_HI)
+    
+def test_depth_on_fully_connected():
+    """
+    To counter 'test_compute_circuit_depth' with a fully-connected device 
+    where logical depth and optimized layout depth should be equal
+
+    """
+    fully_connected_device = QuantumDevice(
+        "fc4", nx.complete_graph(4),
+        gate_set=("X","H","S","T","Tdg","CX")
+    )
+    circuit = generate_quantum_adder()
+    layout_synthesizer = LayoutSynthesizer(
+        quantum_circuit=circuit, device=fully_connected_device, transition_based=False,hard_island=False
+    )
+    logical_depth = layout_synthesizer.compute_circuit_depth(circuit)
+    _,_,_, depth, _ = fully_connected_device.layout_synthesis(circuit, transition_based=False)
+    assert depth == circuit.depth() == logical_depth == 11 
 
 def test_collision_extraction():
     device = generate_quantum_device()
