@@ -8,10 +8,12 @@
 # ← all your proxy exports, brew shellenv, etc. remain untouched above this
 
 # ── Conda hook (no proxy changes!) ─────────────────
-__conda_setup="$('/Users/you/opt/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+# — conda (re-)initialization, no proxy changes —
+__conda_setup="$('/Users/…/opt/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
 if [ $? -eq 0 ]; then
   eval "$__conda_setup"
 else
-  export PATH="/Users/you/opt/anaconda3/bin:$PATH"
+  export PATH="/Users/…/opt/anaconda3/bin:${PATH}"
 fi
 unset __conda_setup
+
