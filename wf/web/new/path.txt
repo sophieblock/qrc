@@ -3,3 +3,15 @@
 /Users/so714f/opt/anaconda3/envs/web_wf/bin/python
 (web_wf) so714f@Sophies-MacBook-Pro workflow-web-interface % echo $PATH
 /opt/homebrew/bin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/Applications/Privileges.app/Contents/MacOS:/Users/so714f/opt/anaconda3/envs/web_wf/bin:/Users/so714f/opt/anaconda3/condabin:/Library/Frameworks/Python.framework/Versions/3.12/bin:/Users/so714f/.vscode/extensions/ms-python.debugpy-2025.8.0-darwin-arm64/bundled/scripts/noConfigScripts
+
+
+# ← all your proxy exports, brew shellenv, etc. remain untouched above this
+
+# ── Conda hook (no proxy changes!) ─────────────────
+__conda_setup="$('/Users/you/opt/anaconda3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+  eval "$__conda_setup"
+else
+  export PATH="/Users/you/opt/anaconda3/bin:$PATH"
+fi
+unset __conda_setup
