@@ -15,23 +15,18 @@ class CallOrderFilter(logging.Filter):
             _RECORD_COUNTER += 1
             record.call_order = _RECORD_COUNTER
         return True
-def get_logger(name):
-    logger = logging.getLogger(name)
 
-    # All package loggers should propagate up to the single ROOT_LOGGER.
-    logger.propagate = True
-    
-    return logger
 def setup_root_logger(log_file_name="workflow.log"):
     """Configure the one-and-only file handler, filter, etc., on the qrew root logger."""
     global ROOT_LOGGER, FILE_HANDLER
+    print(f"Setting up logger")
     if ROOT_LOGGER is not None:
         return ROOT_LOGGER
 
-    ROOT_LOGGER = logging.getLogger(__name__)
-    # prevent any qrew logs from bubbling up into the Jupyter/root logger
-    ROOT_LOGGER.propagate = False
+    ROOT_LOGGER = logging.getLogger("qrew")
     ROOT_LOGGER.setLevel(logging.DEBUG)
+    ROOT_LOGGER.propagate = False   # ⟵ stop it from bubbling up
+
 
     # 1) Filter that stamps call_order
     call_filter = CallOrderFilter()
@@ -56,13 +51,20 @@ def setup_root_logger(log_file_name="workflow.log"):
 
     return ROOT_LOGGER
 
-def get_logger(name):
-    """Return a module logger that propagates into the single ROOT_LOGGER."""
-    setup_root_logger()
-    logger = logging.getLogger(f"qrew.{name}")
-    # child loggers inherit handlers from "qrew"
-    logger.propagate = True
-    return logger
+def get_logger(name=""):
+    """
+    Returns either:
+      - the root 'qrew' logger, if name=="" or "qrew"
+      - or a child 'qrew.<name>' logger
+    """
+    root = setup_root_logger()
+    if name in ("", "qrew"):
+        return root
+    lg = logging.getLogger(f"qrew.{name}")
+    lg.setLevel(logging.DEBUG)
+    # send its records up to 'qrew' (where the handlers live)
+    lg.propagate = True
+    return lg
 
 def reset_call_order():
     """Zero out the counter so the next log will be [1]."""
