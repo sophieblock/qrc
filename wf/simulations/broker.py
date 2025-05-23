@@ -177,7 +177,7 @@ class Broker:
             classical_devices=classical_devices, quantum_devices=quantum_devices
         )
     def get_max_value(self,key):
-        if key == 'Memory Cost [MB]':
+        if key == 'Memory [B]':
             return max([x.RAM for x in self.classical_devices])
         if key == "Qubits Used":
             return max([len(x.available_qubits) for x in self.quantum_devices]) 
