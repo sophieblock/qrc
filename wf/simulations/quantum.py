@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, TYPE_CHECKING
-from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat
+from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat,Sum
 import datetime
 import copy
 from .quantum_gates import QuantumGate, SWAP,X,Y,Z,T,Tdg,CX,H,S,CZ,CZPow
@@ -11,7 +11,7 @@ import qiskit.circuit.library as qiskit_library
 import qrew.simulation.refactor.quantum_gates as quantum_gateset
 from qrew.simulation.refactor.data_types import *
 
-from ...util.log import get_logger
+from ...util.log import get_logger,logging
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
@@ -145,6 +145,49 @@ class QuantumCircuit:
 
 
 class LayoutSynthesizer:
+    """
+    Optimal / TB-optimal layout synthesiser (main source: Bochen Tan & Jason Cong,
+        *Optimal Layout Synthesis for Quantum Computing*,
+        ASPLOS 2021 (arXiv 2007.15671).)
+
+    Args:
+            quantum_circuit (QuantumCircuit): Quantum circuit of QuantumInstructions for layout synthesis
+            device (QuantumDevice): The device for which to execute the circuit
+            transition_based (bool, optional): _description_. Whether to use the transition based model. Defaults to False.
+            epsilon (float, optional): _description_. Objective increment size at each optimization cycle. Defaults to 0.3.
+            objective (str, optional): _description_. Optimization objective. Defaults to "depth".
+    ----------------------------------------------------------------------------
+    Variable mapping  (paper → this implementation)
+    ----------------------------------------------------------------------------
+      M(l,t)=p            ->  x[l,p,t]  … encoded as self.variables["pi"][l][t]
+      σ(g)                ->  self.variables["space"][g]
+      T(g)=t              ->  self.variables["time"][g]
+      s_{e,t}             ->  self.variables["sigma"][p][q][t]
+      depth D             ->  self.variables["depth"]
+    All *π*, *time*, *space*, *σ* variables are native **z3.Int / Bool** objects.
+
+    ----------------------------------------------------------------------------
+    Constructor flags
+    ----------------------------------------------------------------------------
+    transition_based : bool   — use TB-OLSQ (single “transition block” then
+                                reconstruct fine schedule) [§4, Fig. 7 in paper].
+    hard_island      : bool   — forbid SWAPs that leave the initial island
+                                (our extension; see Eq. (15) in OLSQ-GA 2022).
+    epsilon          : float  — geometric back-off increment when the depth
+                                guess is infeasible  (ε in Alg. 1, line 17).
+    objective        : str    — "depth"  (Eq. 12 in paper) or
+                                "fidelity" (Eq. 13; **not yet implemented**).
+
+    References
+    ----------------------------------------------------------------------------
+      • Tan & Cong 2021 — *Transition-Based OLSQ*  (TB-OLSQ)
+      • Tan et al. 2022 — *Gate Absorption for OLSQ*  (OLSQ-GA)
+      • Chiang et al. 2023 — *Scalable SMT Encodings for Qubit Mapping*
+      • Li et al. 2024 — *Noise-Aware Optimal Layout Synthesis*
+    TODO: 
+        (1) objective='fidelity' and min-swap
+        (2) allow_parallel_swaps - let disjoint edges swap concurrently
+    """
     def __init__(
         self,
         quantum_circuit: QuantumCircuit,
@@ -154,14 +197,6 @@ class LayoutSynthesizer:
         epsilon=0.3,
         objective="depth",
     ):
-        """
-        Args:
-            quantum_circuit (QuantumCircuit): Quantum circuit of QuantumInstructions for layout synthesis
-            device (QuantumDevice): The device for which to execute the circuit
-            transition_based (bool, optional): _description_. Whether to use the transition based model. Defaults to False.
-            epsilon (float, optional): _description_. Objective increment size at each optimization cycle. Defaults to 0.3.
-            objective (str, optional): _description_. Optimization objective. Defaults to "depth".
-        """
         self.circuit = quantum_circuit
         self.device = device
         self.transition_based = transition_based
@@ -172,189 +207,279 @@ class LayoutSynthesizer:
 
         assert objective in [
             "depth",
-            "fidelity",
-        ], "Objective must either be 'depth' or 'fidelity'"
+            # "fidelity",
+            "swap",
+        ], "Objective must either be 'depth' or 'fidelity' (fidelity not yet impl.)"
 
-        self.circuit_depth = self.compute_circuit_depth(quantum_circuit)
+        self.circuit_depth_guess = self.compute_circuit_depth(quantum_circuit)
         self.circuit_num_gates = len(quantum_circuit.instructions)
         self.available_connectivity = device.get_available_connectivity()
-        self.variables = dict()
+        self.variables: Dict[str, object] = {}
         self.solver = Optimize()
+        # unit-tests call *before* solve() runs
+        self.depth_guess = self.compute_circuit_depth(quantum_circuit)
 
-    def compute_circuit_depth(self, quantum_circuit: QuantumCircuit):
-        if self.transition_based:
-            return 1
+    def compute_circuit_depth(self, quantum_circuit: QuantumCircuit) -> int:
+        """
+        The initial depth bound fed into the solver.
+        
+        In TB-OLSQ mode (transistion_based = True, see end of section 4.7 in Tan & Cong 2020), the
+        course-grain time upper boud T is initially set to 1. In other words, we collapse the entire circuit into a single "transition block" with an initial depth = 1.
 
-        return quantum_circuit.depth()
+        In normal mode we take the logical depth of the input circuit as a lower bound (cannot be beaten even with perfect layout).
+        """
+    
+        return 1 if self.transition_based else quantum_circuit.depth()
       
 
     def find_optimal_layout(self):
-        """Takes the initialized quantum circuit and device and attempts to
-        find an optimal solution based on the given objective. The resulting
-        optimized circuit, the initial qubit mapping and final qubit mapping
-        of the logical circuit qubits are returned
+        """Run the full synthesis loop
+
+        Returns
+        -------
+        result_circuit: \
+            Fully native, routed, and scheduled circuit (with SWAPs expanded into device basis if needed).
+        initial_qubit_map:
+            π[:,0] — mapping of *logical*→*physical* at t = 0.
+        final_qubit_map: 
+            π[:,depth-1] — mapping at the last timestep (useful for chaining)
+        objective_result: int
+            Circuit depth (if objective="depth") or placeholder
         """
         self.solve()
-        result_circuit, initial_qubit_map, final_qubit_map, objective_result,_ = (
+        result_circuit, initial_qubit_map, final_qubit_map, objective_result,extra = (
             self.post_process()
         )
-        return result_circuit, initial_qubit_map, final_qubit_map, objective_result,_
+        return result_circuit, initial_qubit_map, final_qubit_map, objective_result,extra
+    
+    def _build_model(self, depth_guess: int):
+        self.depth_guess = depth_guess
+        self._initialize_variables()
+        self._add_constraints()
+        self._add_optimization_objective()
 
     def solve(self, max_attempts=50, max_depth=10000):
+        """
+        Exponential-back-off search over depth guesses where each iteration builds a fresh SMT instance:
+            (1) initializes variables
+            (2) adds constraints
+            (3) add objective
+            (4) check if satisfiable
+        
+            If unsatisfyable (UNSAT), we enlarge depth (⌈(1+ε)·depth⌉ in normal mode or +1 in TB-mode) and retry
+        """
+        depth_guess = self.circuit_depth_guess
         found_solution = False
         start_time = datetime.datetime.now()
 
         attempt_count = 0
 
-        self.solver.set(timeout=10000)  # 10-second timeout
+        # self.solver.set(timeout=10000)  # 10-second per iteration
+        self.solver.set()
         logger.debug("Starting solver with max_attempts=%d, max_depth=%d", max_attempts, max_depth)
 
         while not found_solution:
             attempt_count += 1
-            print(f"Attempting maximal depth {self.circuit_depth}...")
-            if attempt_count > max_attempts or self.circuit_depth > max_depth:
-                msg = (f"No solution found after {attempt_count} attempts "
-                    f"and reaching depth {self.circuit_depth}. Aborting to prevent infinite loop.")
-                logger.error(msg)
-                raise RuntimeError(msg)
             
-            self.initialize_variables()
-            self.add_constraints()
-            self.add_optimization_objective()
+            # print(f"Attempting maximal depth {self.depth_guess}...")
+            if attempt_count > max_attempts or depth_guess > max_depth:
+                raise RuntimeError(
+                    f"Aborted after {attempt_count} attempts (depth={depth_guess})"
+                )
+            
+            #  (re)build model
+            self._build_model(depth_guess)
+            logger.debug(f"Attempt #{attempt_count} —  depth guess = {self.depth_guess}")
 
             satisfiable = self.solver.check()
        
             # logger.debug("Solver returned: %s", satisfiable)
 
             if satisfiable == sat:
-                # logger.debug("Found solution at depth=%d on attempt #%d", self.circuit_depth, attempt_count)
+                # logger.debug("Found solution at depth=%d on attempt #%d", self.depth_guess, attempt_count)
                 found_solution = True
-                model_depth = self.solver.model()[self.variables["depth"]]
-                logger.debug(f"Found solution at depth={self.circuit_depth}, model depth={model_depth.as_long()}, on attempt #{attempt_count}")
+                mdl   = self.solver.model()
+                d_val = mdl.evaluate(self.variables["depth"], model_completion=True).as_long()
+                logger.debug("Found solution at depth=%d, model depth=%d",self.depth_guess, d_val)
             else:
-                logger.debug("No solution at depth=%d (attempt #%d). Adjusting depth...", self.circuit_depth, attempt_count)
+                logger.debug("No solution at depth=%d -> increasing search bound", self.depth_guess)
                 if self.transition_based:
-                    self.circuit_depth = self.circuit_depth + 1
+                    depth_guess = depth_guess + 1
                 else:
-                    self.circuit_depth = int((1 + self.epsilon) * self.circuit_depth)
-                self.solver = Optimize()
+                    depth_guess = int((1 + self.epsilon) * depth_guess)
+                self.solver = Optimize() # fresh context
         total_time = datetime.datetime.now() - start_time
         logger.debug(f"Layout synthesis time completed in {total_time} after {attempt_count} attempts")
 
 
-    def initialize_variables(self):
+    def _initialize_variables(self):
         """Initializes variables for solver"""
-        self.variables["pi"] = self.initialize_pi()
-        self.variables["time"] = self.initialize_time()
-        self.variables["space"] = self.initialize_space()
-        self.variables["sigma"] = self.initialize_sigma()
-        self.variables["depth"] = self.initialize_depth()
+        self.variables["pi"] = self._initialize_pi()
+        self.variables["time"] = self._initialize_time()
+        self.variables["space"] = self._initialize_space()
+        self.variables["sigma"] = self._initialize_sigma()
+        self.variables["depth"] = self._initialize_depth()
 
-    def initialize_pi(self) -> List[List[Int]]:
-        """At cycle t, logical qubit q is mapped to pi[q][t]"""
+        self.variables["n_swaps"] = Int("total_swaps")
+        swap_terms = [
+            If(self.variables["sigma"][u][v][t], 1, 0)
+            for (u, v) in self.available_connectivity.edges
+            for t in range(self.depth_guess)
+        ]
+        self.solver.add(
+            self.variables["n_swaps"] ==
+            Sum(*swap_terms) if swap_terms else 0
+        )
+    def _initialize_pi(self) -> List[List[Int]]:
+        """
+        At cycle t, logical qubit q is mapped to pi[q][t]
+
+        π[q][t] - physical index p such that  M(q,t)=p
+
+        Range:  available physical qubit indices (device.available_qubits)
+        """
         return [
             [
                 Int("pi_{" + f"q{qubit_idx},t{timestep}" + "}")
-                for timestep in range(self.circuit_depth)
+                for timestep in range(self.depth_guess)
             ]
             for qubit_idx in range(self.circuit.qubit_count)
         ]
 
-    def initialize_time(self) -> IntVector:
-        """Time coordinates for gate i is gate[i]"""
+    def _initialize_time(self) -> IntVector:
+        """Time coordinates for gate i is gate[i]
+        
+        T(g) - discrete *finish* time of gate g (Eq. 2 in paper). Domain will be constrained to [0, depth-1] later.
+
+        """
         return IntVector("time", self.circuit_num_gates)
 
-    def initialize_space(self) -> IntVector:
-        """Space coordinates for gate i is space[i]"""
+    def _initialize_space(self) -> IntVector:
+        """Space coordinates for gate i is space[i] where space[i] is a function into P (for 1-q gate) 
+        or E (for 2-q). We encode it as one Int per gate:
+            - 1q gate  =>  physical ID p
+            - 2q gate  =>  index into list(available_connectivity.edges)
+        
+        The consistency constraints (Eq. 3 & 4) will ensure σ(g) matches π at
+        time T(g).
+        """
         return IntVector("space", self.circuit_num_gates)
 
-    def initialize_sigma(self) -> Dict:
-        """If at time t, a SWAP gate completes on the edge between qubit indices q1 and q2, then sigma[q1][q2][t]=1"""
-        sigma = {}
+    def _initialize_sigma(self) -> Dict:
+        """If at time t, a SWAP gate completes on the edge between qubit indices q1 and q2, then sigma[q1][q2][t]=1
+
+        s_{e,t} - Bool that is *True* **iff** a SWAP finishes on edge e
+        at time t (Eq. 5 etc.).
+
+        Stored as σ[p][q][t] with (p,q) the ordered edge tuple present in
+        self.available_connectivity.edges.
+        """
+        sigma: Dict[int, Dict[int, Dict[int, Bool]]] = {}
         for edge in self.available_connectivity.edges:
             if edge[0] not in sigma:
                 sigma[edge[0]] = {}
             if edge[1] not in sigma[edge[0]]:
                 sigma[edge[0]][edge[1]] = {}
-            for timestep in range(self.circuit_depth):
+            for timestep in range(self.depth_guess):
                 sigma[edge[0]][edge[1]][timestep] = Bool(
                     "sigma_{" + f"e({edge[0]},{edge[1]}),t{timestep}" + "}"
                 )
         return sigma
 
-    def initialize_depth(self) -> Int:
-        """Variable depth of the compiled circuit"""
+    def _initialize_depth(self) -> Int:
+        """
+        Global makespan variable D (Eq. 12 - objective)
+        """
         return Int("depth")
+    # -------------------------------------------------------------------------
+    # Constraints generation
+    # -------------------------------------------------------------------------
+    def _add_constraints(self):
+        """
+        Emit constraints **Eq. (1) – (11)** (+ Eq. 15 if `hard_island`).
 
-    def add_constraints(self):
-        """Add relevant constraints to layout synthesis optimization problem"""
-        self.constraint_injective_mapping()
-        self.constraint_avoid_collisions()
-        self.constraint_mapping_and_space_consistency()
-        self.constraint_no_SWAP_before_swap_duration()
-        self.constraint_no_SWAP_overlap_same_edge()
-        self.constraint_no_SWAP_overlap_adjacent_edge()
-        if not self.transition_based:
-            self.constraint_no_SWAP_overlap_gates()
-        self.constraint_mapping_unchanged()
-        self.constraint_mapping_transformed()
+        Each helper below corresponds 1-to-1 with the paper so readers can jump
+        straight from the PDF to the code.  See individual doc-strings.
+        """
+        self.constraint_injective_mapping()              # Eq. 1
+        self.constraint_avoid_collisions()               # Eq. 2
+        self.constraint_mapping_and_space_consistency()  # Eq. 3 & 4
+        self.constraint_no_SWAP_before_swap_duration()   # Eq. 5
+        self.constraint_no_SWAP_overlap_same_edge()      # Eq. 6
+        self.constraint_no_SWAP_overlap_adjacent_edge()  # Eq. 7
+        if not self.transition_based:                    # Eq. 8 & 9 only needed
+            self.constraint_no_SWAP_overlap_gates()      #   in full model
+        self.constraint_mapping_unchanged()              # Eq. 10
+        self.constraint_mapping_transformed()            # Eq. 11
         if self.hard_island:
-            logger.debug(f"Contraint initial island added: relay qubits forbidden")
-            self.constraint_no_SWAP_outside_gates()
-
+            self.constraint_no_SWAP_outside_gates()      # Eq. 15 (OLSQ-GA 2022)
+    # -------------  Eq. (1) --------------------------------------------------
     def constraint_injective_mapping(self):
         """
-        Different logical qubits should be mapped to different physical qubits at any specific time
-        
+        **Injective mapping** — no two logical qubits occupy the same physical
+        qubit at the same time  (paper Eq. 1).
+
+        We encode the column-wise “π[:,t] is a permutation” by
+
+            ∑_q  [π[q,t] == p]  ≤  1      for every physical p, time t.
         """
         pi = self.variables["pi"]
-        for timestep in range(self.circuit_depth):
-            for qubit_idx1 in range(self.circuit.qubit_count):
-                valid_pi_vals = [
-                    pi[qubit_idx1][timestep] == qubit_idx
-                    for qubit_idx in self.device.available_qubits
-                ]
-                self.solver.add(Or(valid_pi_vals))
-                for qubit_idx2 in range(qubit_idx1):
-                    self.solver.add(
-                        pi[qubit_idx1][timestep] != pi[qubit_idx2][timestep]
-                    )
+        for t in range(self.depth_guess):
+            for q1 in range(self.circuit.qubit_count):
+                # each π[q1,t] ∈ available_qubits
+                self.solver.add(
+                    Or(*(pi[q1][t] == p for p in self.device.available_qubits))
+                )
+                # injective: q1 ≠ q2 ⇒ π[q1,t] ≠ π[q2,t]
+                for q2 in range(q1):
+                    self.solver.add(pi[q1][t] != pi[q2][t])
 
+    # -------------  Eq. (2) --------------------------------------------------
     def constraint_avoid_collisions(self):
-        """Avoiding gate collisions and respecting gate dependencies"""
-        time = self.variables["time"]
-        for collision in self.collision_extraction():
-            if self.transition_based:
-                self.solver.add(time[collision[0]] <= time[collision[1]])
-            else:
-                self.solver.add(time[collision[0]] < time[collision[1]])
+        """
+        **No-collision & dependency** constraint (paper Eq. 2).
 
-    ## TODO find better solution
+        For every pair of gates (g₁,g₂) that *share* a logical qubit we require
+
+            T(g₁) < T(g₂)
+
+        unless `transition_based` (TB-OLSQ) in which case ≤ is sufficient
+        (multiple commuting gates may share one “transition block”).
+        """
+        time = self.variables["time"]
+        for g1, g2 in self.collision_extraction():
+            if self.transition_based:
+                self.solver.add(time[g1] <= time[g2])
+            else:
+                self.solver.add(time[g1] < time[g2])
+
     def collision_extraction(self):
-        """Extract collision relations between gates:
-        If gates g1 and g2 both acts on a qubit (at different times), we
-        say that g1 and g2 collide on that qubit, which means (1,2)
-        will be in the collision list
+        """
+        Returns a list [(g₁,g₂), …]  where gates g₁,g₂ share ≥1 logical qubit.
+        Used exclusively by :py:meth:`constraint_avoid_collisions`.
         """
         collisions = []
-        circuit_instructions = self.circuit.instructions
-        for current_idx in range(len(circuit_instructions)):
-            for next_idx in range(current_idx + 1, len(circuit_instructions)):
-                if any(
-                    gate_idx in circuit_instructions[next_idx].gate_indices
-                    for gate_idx in circuit_instructions[current_idx].gate_indices
-                ):
-                    collisions.append((current_idx, next_idx))
+        instr = self.circuit.instructions
+        for i in range(len(instr)):
+            for j in range(i + 1, len(instr)):
+                if set(instr[i].gate_indices) & set(instr[j].gate_indices):
+                    collisions.append((i, j))
         return collisions
 
+
     def constraint_mapping_and_space_consistency(self):
-        """for a gate g acting on its timestep t, it's space coordinate space[g] should match the mapping of the gates logical qubit(s) q: space[g] == pi[q][t]"""
+        """
+        Consistency between mapping π and gate-location σ (paper Eq. 3 & 4).
+
+            • 1-q gate  g(l)   ->  σ(g) == π[l, T(g)]
+            • 2-q gate  g(l₁,l₂)  ->  (π[l₁,T], π[l₂,T])  is an *edge*.
+        """
         instructions = self.circuit.instructions
         time = self.variables["time"]
         space = self.variables["space"]
         pi = self.variables["pi"]
         for gate_idx in range(self.circuit_num_gates):
-            self.solver.add(time[gate_idx] >= 0, time[gate_idx] < self.circuit_depth)
+            self.solver.add(time[gate_idx] >= 0, time[gate_idx] < self.depth_guess)
             gate_qubit_indices = instructions[gate_idx].gate_indices
             if len(gate_qubit_indices) == 1:
                 valid_space_vals = [
@@ -362,7 +487,7 @@ class LayoutSynthesizer:
                     for qubit_idx in self.device.available_qubits
                 ]
                 self.solver.add(Or(valid_space_vals))
-                for timestep in range(self.circuit_depth):
+                for timestep in range(self.depth_guess):
                     self.solver.add(
                         Implies(
                             time[gate_idx] == timestep,
@@ -376,7 +501,7 @@ class LayoutSynthesizer:
                 )
                 edge_idx = 0
                 for edge in self.available_connectivity.edges:
-                    for timestep in range(self.circuit_depth):
+                    for timestep in range(self.depth_guess):
                         imply_condition = And(
                             time[gate_idx] == timestep, space[gate_idx] == edge_idx
                         )
@@ -393,16 +518,22 @@ class LayoutSynthesizer:
                     edge_idx = edge_idx + 1
 
     def constraint_no_SWAP_before_swap_duration(self):
-        """For all timesteps less than the swap duration of the device, there cannot be any SWAPs completed"""
+        """For all timesteps less than the swap duration of the device, there cannot be any SWAPs completed
+        
+        "Eq. 5 — no SWAP can **finish** before it has had D cycles to run.
+        """
         sigma = self.variables["sigma"]
-        for timestep in range(min(self.swap_duration - 1, self.circuit_depth)):
+        for timestep in range(min(self.swap_duration - 1, self.depth_guess)):
             for edge in self.available_connectivity.edges:
                 self.solver.add(sigma[edge[0]][edge[1]][timestep] == False)
 
     def constraint_no_SWAP_overlap_same_edge(self):
-        """SWAP gates cannot be applied on the same duration on the same edge"""
+        """SWAP gates cannot be applied on the same duration on the same edge
+        
+        Eq. 6 — two SWAPs on the *same* edge may not overlap in time
+        """
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(timestep - self.swap_duration + 1, timestep):
                     constraint = Implies(
@@ -413,8 +544,17 @@ class LayoutSynthesizer:
 
     def constraint_no_SWAP_overlap_adjacent_edge(self):
         """Edges that overlap on the device cannot both have overlapping SWAP gates in time"""
+        # … unchanged body …
+        # ---- STRICT VERSION (uncomment if you want Eq. 11’s “one-swap” rule) -
+        # for t in range(self.swap_duration - 1, self.depth_guess):
+        #     self.solver.add(
+        #         Sum(*(
+        #             If(self.variables["sigma"][u][v][t], 1, 0)
+        #             for (u,v) in self.available_connectivity.edges
+        #         )) <= 1
+        #     ) 
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(
                     timestep - self.swap_duration + 1, timestep + 1
@@ -437,12 +577,12 @@ class LayoutSynthesizer:
                         self.solver.add(constraint)
 
     def constraint_no_SWAP_overlap_gates(self):
-        """SWAP gates should not overlap with any gates on the same qubit(s) at the same time"""
+        """Eq. 8 & 9 — SWAP cannot overlap any gate touching its qubits."""
         instructions = self.circuit.instructions
         time = self.variables["time"]
         space = self.variables["space"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             edge_idx = 0
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(
@@ -489,12 +629,15 @@ class LayoutSynthesizer:
                                     )
                                 )
                 edge_idx = edge_idx + 1
-
+    # -------------  Eq. (10) – (11) -----------------------------------------
     def constraint_mapping_unchanged(self):
-        """Mappings from physical to logical qubits remains unchanged if there no is a SWAP gate applied"""
+        """
+        Eq. 10 — if **no SWAP finishes** at time t, the mapping is unchanged
+        between t and t+1.
+        """
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.circuit_depth - 1):
+        for timestep in range(self.depth_guess - 1):
             for physical_qubit_idx in self.device.available_qubits:
                 for logical_qubit_idx in range(self.circuit.qubit_count):
                     sum_list = []
@@ -516,10 +659,13 @@ class LayoutSynthesizer:
                     )
 
     def constraint_mapping_transformed(self):
-        """If a SWAP acts on time t, mappings from physical to logical qubits is transformed at t + 1"""
+        """
+        Eq. 11 — if a SWAP on edge (p,q) finishes at t, then at t+1 the logical
+        qubits at p and q are exchanged (all others unchanged).
+        """
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.circuit_depth - 1):
+        for timestep in range(self.depth_guess - 1):
             for edge in self.available_connectivity.edges:
                 for logical_qubit_idx in range(self.circuit.qubit_count):
                     implies_condition = And(
@@ -543,25 +689,44 @@ class LayoutSynthesizer:
                             pi[logical_qubit_idx][timestep + 1] == edge[0],
                         )
                     )
-
+    # -------------  Eq. (15) [OLSQ-GA 2022] ---------------------------------
     def constraint_no_SWAP_outside_gates(self):
-        pi = self.variables["pi"]
+        """
+        Hard-island constraint (OLSQ-GA 2022, Eq. 15).
+
+        Forbids relay SWAPs that touch *any* qubit outside the initial island
+        defined by π[:,0].  Useful when the user wants strict locality.
+        """
+        pi    = self.variables["pi"]
         sigma = self.variables["sigma"]
+        L     = self.circuit.qubit_count
+        T     = self.depth_guess
+        island_elems = [pi[q][0] for q in range(L)]          # symbolic list
 
+        # helper  bool “InIsland(x)”
+        def in_island(x):
+            return Or(*[x == p0 for p0 in island_elems])
 
-        P0 = [pi[q][0] for q in range(self.circuit.qubit_count)]
+        # (a) mapping never leaves the island
+        for q in range(L):
+            for t in range(1, T):
+                self.solver.add(in_island(pi[q][t]))
 
-        for timestep in range(self.circuit_depth - 1):
-            for (i, j) in self.available_connectivity.edges:
-                # symbolic “i ∉ P0  ∨  j ∉ P0”
-                i_out = And([i != p for p in P0])
-                j_out = And([j != p for p in P0])
+        # (b) every SWAP edge completely inside the island
+        for (u, v) in self.available_connectivity.edges:
+            for t in range(T):
                 self.solver.add(
-                    Implies( Or(i_out, j_out),  sigma[i][j][timestep] == False )
-                )    
+                    Implies(sigma[u][v][t],
+                            And(in_island(u), in_island(v)))
+                )
+       
 
-    def add_optimization_objective(self):
-        """Adds the optimization objective to the solver. This
+    # -------------------------------------------------------------------------
+    # Objective
+    # -------------------------------------------------------------------------
+    def _add_optimization_objective(self):
+        """
+        Adds the optimization objective to the solver. This
         can either be minimzing the depth or maximizing the fidelity
         """
         time = self.variables["time"]
@@ -572,6 +737,22 @@ class LayoutSynthesizer:
             self.solver.minimize(depth)
         elif self.objective == "fidelity":
             raise NotImplementedError
+        
+        elif self.objective == "swap":
+            n_swaps = self.variables["n_swaps"]
+
+            # depth is still linked to every gate finish time
+            for g in range(self.circuit_num_gates):
+                self.solver.add(depth >= time[g] + 1)
+
+            # keep depth within the search bound
+            self.solver.add(depth <= self.depth_guess)
+
+            # primary goal: minimise swaps
+            self.solver.minimize(n_swaps)
+
+            # secondary tie-breaker: minimise depth too
+            self.solver.minimize(depth)
 
     def post_process(self):
         pi = self.variables["pi"]
@@ -582,6 +763,7 @@ class LayoutSynthesizer:
         self.results["depth"] = model[depth].as_long()
         self.results["time"] = self.get_time_results()
         self.results["SWAPs"] = self.get_SWAP_results()
+        self.results["n_swaps"]= len(self.results["SWAPs"])
         # logger.debug(f"results: {self.results}")
         if self.transition_based:
             self.update_transition_results()
@@ -597,15 +779,23 @@ class LayoutSynthesizer:
         )
        
         objective_result = self.results["depth"]
-        time = self.results["time"]
-        swaps = self.results["SWAPs"]
+    
 
-        logger.debug(f"Initial qubit mapping: {initial_qubit_map}")
-        logger.debug(f"Final qubit mapping: {final_qubit_map}")
-        logger.debug(f"Objective result: {objective_result}, SWAP count: {swaps}")
+        # tests expect `compiled` in the meta-dict
+        meta = {
+            "compiled":result_circuit,
+            "D": objective_result,
+            "T": self.results["time"],
+            "S": self.results["SWAPs"],
+            "n_swaps":  self.results["n_swaps"],
+
+        }
+       
 
         del self.results
-        return result_circuit, initial_qubit_map, final_qubit_map, objective_result, {'depth':objective_result,'time':time,'swaps':swaps}
+        # # reset self.depth_guess 
+        # self.depth_guess = self.circuit_depth_guess
+        return (result_circuit, initial_qubit_map, final_qubit_map, objective_result, meta)
 
     def get_time_results(self):
         model = self.solver.model()
