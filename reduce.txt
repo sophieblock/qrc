@@ -1,87 +1,62 @@
 warmstart = 750
 factor = 0.1
 patience = 10
-rtol_1e4 = 1e-4
-rtol_1e5 = 1e-5
+rtol_values = [1e-4, 1e-5]
 atol = 0.0
 cooldown = 2
 accumulation_size = 3
 min_scale = 0.0
-# Initial best value (the first cost)
-best_value = costs_analog[0]
-plateau_count = 0
-cooldown_count = 0
-scale = 1.0
 
-# Lists to store which epochs trigger a reduction
-triggered_epochs_1e4 = []
-triggered_epochs_1e5 = []
-accumulated_count = 0
-accumulated_value_1e4 = 0.0
-accumulated_value_1e5 = 0.0
-# Iterate through the costs starting from the second epoch
-for epoch in range(1, len(costs_analog)):
-    if epoch < warmstart:
-        continue
-    avg_value = costs_analog[epoch]
-    # Accumulate values for both rtol checks
-    accumulated_count += 1
-    accumulated_value_1e4 += avg_value
-    accumulated_value_1e5 += avg_value
+triggered_epochs = {rtol: [] for rtol in rtol_values}
 
-    # Check if we have enough accumulated values to apply the logic
-    if accumulated_count == accumulation_size:
-        # Calculate average values for the accumulated costs
-        avg_accumulated_value_1e4 = accumulated_value_1e4 / accumulation_size
-        avg_accumulated_value_1e5 = accumulated_value_1e5 / accumulation_size
-        
-        # Calculate thresholds for both rtol values
-        threshold_1e4 = (1 - rtol_1e4) * best_value - atol
-        threshold_1e5 = (1 - rtol_1e5) * best_value - atol
-        
-        # Check if the current average value is an improvement
-        has_improved_1e4 = avg_accumulated_value_1e4 < threshold_1e4
-        has_improved_1e5 = avg_accumulated_value_1e5 < threshold_1e5
+state = {
+    rtol: {
+        'best_value': costs_analog[warmstart - 1],
+        'plateau_count': 0,
+        'cooldown_count': 0,
+        'scale': 1.0,
+        'accumulated_count': 0,
+        'accumulated_value': 0.0
+    } for rtol in rtol_values
+}
 
-        # Update best value if improved
-        if has_improved_1e4:
-            best_value = avg_accumulated_value_1e4
-            plateau_count = 0  # Reset plateau count
-        else:
-            plateau_count += 1  # Increment plateau count
+for epoch in range(warmstart, len(costs_analog)):
+    current_cost = costs_analog[epoch]
 
-        # Check for cooldown
-        if cooldown_count > 0:
-            cooldown_count -= 1  # Decrease cooldown count
-        else:
-            # Check if we need to trigger a reduction
-            if plateau_count >= patience:
-                scale *= factor  # Reduce the scale
-                cooldown_count = cooldown  # Set cooldown
-                triggered_epochs_1e4.append(epoch)  # Log the epoch
+    for rtol in rtol_values:
+        s = state[rtol]
 
-        # Repeat for rtol = 1e-5
-        if has_improved_1e5:
-            best_value = avg_accumulated_value_1e5
-            plateau_count = 0  # Reset plateau count
-        else:
-            plateau_count += 1  # Increment plateau count
+        # Accumulate the current cost
+        s['accumulated_count'] += 1
+        s['accumulated_value'] += current_cost
 
-        # Check for cooldown
-        if cooldown_count > 0:
-            cooldown_count -= 1  # Decrease cooldown count
-        else:
-            # Check if we need to trigger a reduction
-            if plateau_count >= patience:
-                scale *= factor  # Reduce the scale
-                cooldown_count = cooldown  # Set cooldown
-                triggered_epochs_1e5.append(epoch)  # Log the epoch
+        if s['accumulated_count'] == accumulation_size:
+            avg_accumulated_value = s['accumulated_value'] / accumulation_size
+            threshold = (1 - rtol) * s['best_value'] - atol
 
-        # Reset accumulation variables
-        accumulated_count = 0
-        accumulated_value_1e4 = 0.0
-        accumulated_value_1e5 = 0.0
+            # Check for improvement
+            if avg_accumulated_value < threshold:
+                s['best_value'] = avg_accumulated_value
+                s['plateau_count'] = 0
+            else:
+                s['plateau_count'] += 1
 
+            # Cooldown logic
+            if s['cooldown_count'] > 0:
+                s['cooldown_count'] -= 1
+            elif s['plateau_count'] >= patience:
+                s['scale'] *= factor
+                s['cooldown_count'] = cooldown
+                triggered_epochs[rtol].append(epoch)
+                s['plateau_count'] = 0
+
+            # Reset accumulation
+            s['accumulated_count'] = 0
+            s['accumulated_value'] = 0.0
+
+# Output results
+for rtol in rtol_values:
+    print(f"Epochs triggering reduction with rtol={rtol}: {triggered_epochs[rtol]}")
 # Output the results
 print("Epochs that would trigger a reduction with rtol = 1e-4:", triggered_epochs_1e4)
 # print("Epochs that would trigger a reduction with rtol = 1e-5:", triggered_epochs_1e5)
