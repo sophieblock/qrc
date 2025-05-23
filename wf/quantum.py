@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, TYPE_CHECKING
-from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat
+from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat,Sum
 import datetime
 import copy
 from .quantum_gates import QuantumGate, SWAP,X,Y,Z,T,Tdg,CX,H,S,CZ,CZPow
@@ -145,6 +145,49 @@ class QuantumCircuit:
 
 
 class LayoutSynthesizer:
+    """
+    Optimal / TB-optimal layout synthesiser (main source: Bochen Tan & Jason Cong,
+        *Optimal Layout Synthesis for Quantum Computing*,
+        ASPLOS 2021 (arXiv 2007.15671).)
+
+    Args:
+            quantum_circuit (QuantumCircuit): Quantum circuit of QuantumInstructions for layout synthesis
+            device (QuantumDevice): The device for which to execute the circuit
+            transition_based (bool, optional): _description_. Whether to use the transition based model. Defaults to False.
+            epsilon (float, optional): _description_. Objective increment size at each optimization cycle. Defaults to 0.3.
+            objective (str, optional): _description_. Optimization objective. Defaults to "depth".
+    ----------------------------------------------------------------------------
+    Variable mapping  (paper → this implementation)
+    ----------------------------------------------------------------------------
+      M(l,t)=p            ->  x[l,p,t]  … encoded as self.variables["pi"][l][t]
+      σ(g)                ->  self.variables["space"][g]
+      T(g)=t              ->  self.variables["time"][g]
+      s_{e,t}             ->  self.variables["sigma"][p][q][t]
+      depth D             ->  self.variables["depth"]
+    All *π*, *time*, *space*, *σ* variables are native **z3.Int / Bool** objects.
+
+    ----------------------------------------------------------------------------
+    Constructor flags
+    ----------------------------------------------------------------------------
+    transition_based : bool   — use TB-OLSQ (single “transition block” then
+                                reconstruct fine schedule) [§4, Fig. 7 in paper].
+    hard_island      : bool   — forbid SWAPs that leave the initial island
+                                (our extension; see Eq. (15) in OLSQ-GA 2022).
+    epsilon          : float  — geometric back-off increment when the depth
+                                guess is infeasible  (ε in Alg. 1, line 17).
+    objective        : str    — "depth"  (Eq. 12 in paper) or
+                                "fidelity" (Eq. 13; **not yet implemented**).
+
+    References
+    ----------------------------------------------------------------------------
+      • Tan & Cong 2021 — *Transition-Based OLSQ*  (TB-OLSQ)
+      • Tan et al. 2022 — *Gate Absorption for OLSQ*  (OLSQ-GA)
+      • Chiang et al. 2023 — *Scalable SMT Encodings for Qubit Mapping*
+      • Li et al. 2024 — *Noise-Aware Optimal Layout Synthesis*
+    TODO: 
+        (1) objective='fidelity' and min-swap
+        (2) allow_parallel_swaps - let disjoint edges swap concurrently
+    """
     def __init__(
         self,
         quantum_circuit: QuantumCircuit,
@@ -154,14 +197,6 @@ class LayoutSynthesizer:
         epsilon=0.3,
         objective="depth",
     ):
-        """
-        Args:
-            quantum_circuit (QuantumCircuit): Quantum circuit of QuantumInstructions for layout synthesis
-            device (QuantumDevice): The device for which to execute the circuit
-            transition_based (bool, optional): _description_. Whether to use the transition based model. Defaults to False.
-            epsilon (float, optional): _description_. Objective increment size at each optimization cycle. Defaults to 0.3.
-            objective (str, optional): _description_. Optimization objective. Defaults to "depth".
-        """
         self.circuit = quantum_circuit
         self.device = device
         self.transition_based = transition_based
@@ -173,13 +208,16 @@ class LayoutSynthesizer:
         assert objective in [
             "depth",
             # "fidelity",
+            "swap",
         ], "Objective must either be 'depth' or 'fidelity' (fidelity not yet impl.)"
 
-        self.circuit_depth = self.compute_circuit_depth(quantum_circuit)
+        self.circuit_depth_guess = self.compute_circuit_depth(quantum_circuit)
         self.circuit_num_gates = len(quantum_circuit.instructions)
         self.available_connectivity = device.get_available_connectivity()
         self.variables: Dict[str, object] = {}
         self.solver = Optimize()
+        # unit-tests call *before* solve() runs
+        self.depth_guess = self.compute_circuit_depth(quantum_circuit)
 
     def compute_circuit_depth(self, quantum_circuit: QuantumCircuit) -> int:
         """
@@ -213,6 +251,12 @@ class LayoutSynthesizer:
             self.post_process()
         )
         return result_circuit, initial_qubit_map, final_qubit_map, objective_result,extra
+    
+    def _build_model(self, depth_guess: int):
+        self.depth_guess = depth_guess
+        self._initialize_variables()
+        self._add_constraints()
+        self._add_optimization_objective()
 
     def solve(self, max_attempts=50, max_depth=10000):
         """
@@ -224,6 +268,7 @@ class LayoutSynthesizer:
         
             If unsatisfyable (UNSAT), we enlarge depth (⌈(1+ε)·depth⌉ in normal mode or +1 in TB-mode) and retry
         """
+        depth_guess = self.circuit_depth_guess
         found_solution = False
         start_time = datetime.datetime.now()
 
@@ -235,47 +280,57 @@ class LayoutSynthesizer:
 
         while not found_solution:
             attempt_count += 1
-            logger.debug(f"Attempt #{attempt_count} —  depth guess = {self.circuit_depth}")
-            # print(f"Attempting maximal depth {self.circuit_depth}...")
-            if attempt_count > max_attempts or self.circuit_depth > max_depth:
+            
+            # print(f"Attempting maximal depth {self.depth_guess}...")
+            if attempt_count > max_attempts or depth_guess > max_depth:
                 raise RuntimeError(
-                    f"Aborted after {attempt_count} attempts (depth={self.circuit_depth})"
+                    f"Aborted after {attempt_count} attempts (depth={depth_guess})"
                 )
             
             #  (re)build model
-            self.initialize_variables()
-            self.add_constraints()
-            self.add_optimization_objective()
+            self._build_model(depth_guess)
+            logger.debug(f"Attempt #{attempt_count} —  depth guess = {self.depth_guess}")
 
             satisfiable = self.solver.check()
        
             # logger.debug("Solver returned: %s", satisfiable)
 
             if satisfiable == sat:
-                # logger.debug("Found solution at depth=%d on attempt #%d", self.circuit_depth, attempt_count)
+                # logger.debug("Found solution at depth=%d on attempt #%d", self.depth_guess, attempt_count)
                 found_solution = True
-                model_depth = self.solver.model()[self.variables["depth"]]
-                logger.debug(f"Found solution at depth={self.circuit_depth}, model depth={model_depth.as_long()}")
+                mdl   = self.solver.model()
+                d_val = mdl.evaluate(self.variables["depth"], model_completion=True).as_long()
+                logger.debug("Found solution at depth=%d, model depth=%d",self.depth_guess, d_val)
             else:
-                logger.debug("No solution at depth=%d -> increasing search bound", self.circuit_depth)
+                logger.debug("No solution at depth=%d -> increasing search bound", self.depth_guess)
                 if self.transition_based:
-                    self.circuit_depth = self.circuit_depth + 1
+                    depth_guess = depth_guess + 1
                 else:
-                    self.circuit_depth = int((1 + self.epsilon) * self.circuit_depth)
+                    depth_guess = int((1 + self.epsilon) * depth_guess)
                 self.solver = Optimize() # fresh context
         total_time = datetime.datetime.now() - start_time
         logger.debug(f"Layout synthesis time completed in {total_time} after {attempt_count} attempts")
 
 
-    def initialize_variables(self):
+    def _initialize_variables(self):
         """Initializes variables for solver"""
-        self.variables["pi"] = self.initialize_pi()
-        self.variables["time"] = self.initialize_time()
-        self.variables["space"] = self.initialize_space()
-        self.variables["sigma"] = self.initialize_sigma()
-        self.variables["depth"] = self.initialize_depth()
+        self.variables["pi"] = self._initialize_pi()
+        self.variables["time"] = self._initialize_time()
+        self.variables["space"] = self._initialize_space()
+        self.variables["sigma"] = self._initialize_sigma()
+        self.variables["depth"] = self._initialize_depth()
 
-    def initialize_pi(self) -> List[List[Int]]:
+        self.variables["n_swaps"] = Int("total_swaps")
+        swap_terms = [
+            If(self.variables["sigma"][u][v][t], 1, 0)
+            for (u, v) in self.available_connectivity.edges
+            for t in range(self.depth_guess)
+        ]
+        self.solver.add(
+            self.variables["n_swaps"] ==
+            Sum(*swap_terms) if swap_terms else 0
+        )
+    def _initialize_pi(self) -> List[List[Int]]:
         """
         At cycle t, logical qubit q is mapped to pi[q][t]
 
@@ -286,12 +341,12 @@ class LayoutSynthesizer:
         return [
             [
                 Int("pi_{" + f"q{qubit_idx},t{timestep}" + "}")
-                for timestep in range(self.circuit_depth)
+                for timestep in range(self.depth_guess)
             ]
             for qubit_idx in range(self.circuit.qubit_count)
         ]
 
-    def initialize_time(self) -> IntVector:
+    def _initialize_time(self) -> IntVector:
         """Time coordinates for gate i is gate[i]
         
         T(g) - discrete *finish* time of gate g (Eq. 2 in paper). Domain will be constrained to [0, depth-1] later.
@@ -299,7 +354,7 @@ class LayoutSynthesizer:
         """
         return IntVector("time", self.circuit_num_gates)
 
-    def initialize_space(self) -> IntVector:
+    def _initialize_space(self) -> IntVector:
         """Space coordinates for gate i is space[i] where space[i] is a function into P (for 1-q gate) 
         or E (for 2-q). We encode it as one Int per gate:
             - 1q gate  =>  physical ID p
@@ -310,7 +365,7 @@ class LayoutSynthesizer:
         """
         return IntVector("space", self.circuit_num_gates)
 
-    def initialize_sigma(self) -> Dict:
+    def _initialize_sigma(self) -> Dict:
         """If at time t, a SWAP gate completes on the edge between qubit indices q1 and q2, then sigma[q1][q2][t]=1
 
         s_{e,t} - Bool that is *True* **iff** a SWAP finishes on edge e
@@ -325,13 +380,13 @@ class LayoutSynthesizer:
                 sigma[edge[0]] = {}
             if edge[1] not in sigma[edge[0]]:
                 sigma[edge[0]][edge[1]] = {}
-            for timestep in range(self.circuit_depth):
+            for timestep in range(self.depth_guess):
                 sigma[edge[0]][edge[1]][timestep] = Bool(
                     "sigma_{" + f"e({edge[0]},{edge[1]}),t{timestep}" + "}"
                 )
         return sigma
 
-    def initialize_depth(self) -> Int:
+    def _initialize_depth(self) -> Int:
         """
         Global makespan variable D (Eq. 12 - objective)
         """
@@ -339,7 +394,7 @@ class LayoutSynthesizer:
     # -------------------------------------------------------------------------
     # Constraints generation
     # -------------------------------------------------------------------------
-    def add_constraints(self):
+    def _add_constraints(self):
         """
         Emit constraints **Eq. (1) – (11)** (+ Eq. 15 if `hard_island`).
 
@@ -369,7 +424,7 @@ class LayoutSynthesizer:
             ∑_q  [π[q,t] == p]  ≤  1      for every physical p, time t.
         """
         pi = self.variables["pi"]
-        for t in range(self.circuit_depth):
+        for t in range(self.depth_guess):
             for q1 in range(self.circuit.qubit_count):
                 # each π[q1,t] ∈ available_qubits
                 self.solver.add(
@@ -424,7 +479,7 @@ class LayoutSynthesizer:
         space = self.variables["space"]
         pi = self.variables["pi"]
         for gate_idx in range(self.circuit_num_gates):
-            self.solver.add(time[gate_idx] >= 0, time[gate_idx] < self.circuit_depth)
+            self.solver.add(time[gate_idx] >= 0, time[gate_idx] < self.depth_guess)
             gate_qubit_indices = instructions[gate_idx].gate_indices
             if len(gate_qubit_indices) == 1:
                 valid_space_vals = [
@@ -432,7 +487,7 @@ class LayoutSynthesizer:
                     for qubit_idx in self.device.available_qubits
                 ]
                 self.solver.add(Or(valid_space_vals))
-                for timestep in range(self.circuit_depth):
+                for timestep in range(self.depth_guess):
                     self.solver.add(
                         Implies(
                             time[gate_idx] == timestep,
@@ -446,7 +501,7 @@ class LayoutSynthesizer:
                 )
                 edge_idx = 0
                 for edge in self.available_connectivity.edges:
-                    for timestep in range(self.circuit_depth):
+                    for timestep in range(self.depth_guess):
                         imply_condition = And(
                             time[gate_idx] == timestep, space[gate_idx] == edge_idx
                         )
@@ -468,7 +523,7 @@ class LayoutSynthesizer:
         "Eq. 5 — no SWAP can **finish** before it has had D cycles to run.
         """
         sigma = self.variables["sigma"]
-        for timestep in range(min(self.swap_duration - 1, self.circuit_depth)):
+        for timestep in range(min(self.swap_duration - 1, self.depth_guess)):
             for edge in self.available_connectivity.edges:
                 self.solver.add(sigma[edge[0]][edge[1]][timestep] == False)
 
@@ -478,7 +533,7 @@ class LayoutSynthesizer:
         Eq. 6 — two SWAPs on the *same* edge may not overlap in time
         """
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(timestep - self.swap_duration + 1, timestep):
                     constraint = Implies(
@@ -491,7 +546,7 @@ class LayoutSynthesizer:
         """Edges that overlap on the device cannot both have overlapping SWAP gates in time"""
         # … unchanged body …
         # ---- STRICT VERSION (uncomment if you want Eq. 11’s “one-swap” rule) -
-        # for t in range(self.swap_duration - 1, self.circuit_depth):
+        # for t in range(self.swap_duration - 1, self.depth_guess):
         #     self.solver.add(
         #         Sum(*(
         #             If(self.variables["sigma"][u][v][t], 1, 0)
@@ -499,7 +554,7 @@ class LayoutSynthesizer:
         #         )) <= 1
         #     ) 
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(
                     timestep - self.swap_duration + 1, timestep + 1
@@ -527,7 +582,7 @@ class LayoutSynthesizer:
         time = self.variables["time"]
         space = self.variables["space"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.circuit_depth):
+        for timestep in range(self.swap_duration - 1, self.depth_guess):
             edge_idx = 0
             for edge in self.available_connectivity.edges:
                 for swap_timestep in range(
@@ -582,7 +637,7 @@ class LayoutSynthesizer:
         """
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.circuit_depth - 1):
+        for timestep in range(self.depth_guess - 1):
             for physical_qubit_idx in self.device.available_qubits:
                 for logical_qubit_idx in range(self.circuit.qubit_count):
                     sum_list = []
@@ -610,7 +665,7 @@ class LayoutSynthesizer:
         """
         pi = self.variables["pi"]
         sigma = self.variables["sigma"]
-        for timestep in range(self.circuit_depth - 1):
+        for timestep in range(self.depth_guess - 1):
             for edge in self.available_connectivity.edges:
                 for logical_qubit_idx in range(self.circuit.qubit_count):
                     implies_condition = And(
@@ -637,7 +692,7 @@ class LayoutSynthesizer:
     # -------------  Eq. (15) [OLSQ-GA 2022] ---------------------------------
     def constraint_no_SWAP_outside_gates(self):
         """
-        **Hard-island** constraint (OLSQ-GA 2022, Eq. 15).
+        Hard-island constraint (OLSQ-GA 2022, Eq. 15).
 
         Forbids relay SWAPs that touch *any* qubit outside the initial island
         defined by π[:,0].  Useful when the user wants strict locality.
@@ -648,7 +703,7 @@ class LayoutSynthesizer:
 
         P0 = [pi[q][0] for q in range(self.circuit.qubit_count)]
 
-        for timestep in range(self.circuit_depth - 1):
+        for timestep in range(self.depth_guess - 1):
             for (i, j) in self.available_connectivity.edges:
                 # symbolic “i ∉ P0  ∨  j ∉ P0”
                 i_out = And([i != p for p in P0])
@@ -660,7 +715,7 @@ class LayoutSynthesizer:
     # -------------------------------------------------------------------------
     # Objective
     # -------------------------------------------------------------------------
-    def add_optimization_objective(self):
+    def _add_optimization_objective(self):
         """
         Adds the optimization objective to the solver. This
         can either be minimzing the depth or maximizing the fidelity
@@ -673,6 +728,22 @@ class LayoutSynthesizer:
             self.solver.minimize(depth)
         elif self.objective == "fidelity":
             raise NotImplementedError
+        
+        elif self.objective == "swap":
+            n_swaps = self.variables["n_swaps"]
+
+            # depth is still linked to every gate finish time
+            for g in range(self.circuit_num_gates):
+                self.solver.add(depth >= time[g] + 1)
+
+            # keep depth within the search bound
+            self.solver.add(depth <= self.depth_guess)
+
+            # primary goal: minimise swaps
+            self.solver.minimize(n_swaps)
+
+            # secondary tie-breaker: minimise depth too
+            self.solver.minimize(depth)
 
     def post_process(self):
         pi = self.variables["pi"]
@@ -683,6 +754,7 @@ class LayoutSynthesizer:
         self.results["depth"] = model[depth].as_long()
         self.results["time"] = self.get_time_results()
         self.results["SWAPs"] = self.get_SWAP_results()
+        self.results["n_swaps"]= len(self.results["SWAPs"])
         # logger.debug(f"results: {self.results}")
         if self.transition_based:
             self.update_transition_results()
@@ -698,15 +770,23 @@ class LayoutSynthesizer:
         )
        
         objective_result = self.results["depth"]
-        time = self.results["time"]
-        swaps = self.results["SWAPs"]
+    
 
-        logger.debug(f"Initial qubit mapping: {initial_qubit_map}")
-        logger.debug(f"Final qubit mapping: {final_qubit_map}")
-        logger.debug(f"Objective result: {objective_result}, SWAP count: {swaps}")
+        # tests expect `compiled` in the meta-dict
+        meta = {
+            "compiled":result_circuit,
+            "D": objective_result,
+            "T": self.results["time"],
+            "S": self.results["SWAPs"],
+            "n_swaps":  self.results["n_swaps"],
+
+        }
+       
 
         del self.results
-        return result_circuit, initial_qubit_map, final_qubit_map, objective_result, {'depth':objective_result,'time':time,'swaps':swaps}
+        # # reset self.depth_guess 
+        # self.depth_guess = self.circuit_depth_guess
+        return (result_circuit, initial_qubit_map, final_qubit_map, objective_result, meta)
 
     def get_time_results(self):
         model = self.solver.model()
