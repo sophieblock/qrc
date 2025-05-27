@@ -1,11 +1,11 @@
 # from .builder import Port,Connection, Flow, Data, ProcessInstance, DanglingT, LeftDangle, RightDangle
 from .data import Data, Result, DataSpec
-from .register import RegisterSpec,Flow,Signature
+from .schema import RegisterSpec,Flow,Signature
 from .graph import Node, DirectedEdge
 from .process import Process
-from .dtypes import *
+from .data_types import *
 
-from workflow.simulation.refactor.dtypes import DataType
+from qrew.simulation.refactor.data_types import DataType
 
 import numpy as np
 from numpy.typing import NDArray
@@ -19,9 +19,9 @@ import networkx as nx
 from functools import cached_property
 
 
-from ...util.log import logging
+from ...util.log import get_logger,logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 from torch.fx.experimental.symbolic_shapes import ShapeEnv as TorchShapeEnv
 import torch
@@ -202,7 +202,14 @@ class Split(Process):
     """
 
     dtype: Any = field(converter=canonicalize_dtype)
-   
+    @dtype.validator
+    def _validate_dtype(self, attribute, value):
+        # Reject any symbolic data_width
+        from sympy import Basic as SymExpr
+
+        width = getattr(value, "data_width", None)
+        if isinstance(width, SymExpr) or (hasattr(width, "free_symbols") and width.free_symbols):
+            raise ValueError(f"Cannot split with symbolic data_width: {width}")
 
     @cached_property
     def signature(self) -> Signature:
@@ -241,6 +248,7 @@ class Split(Process):
             logger.debug(f"{self.dtype} with element dtype: {self.dtype.element_type} output dtype: {out_dtype}, elem_width: {elem_width}, n_elems: {n_elems}, fan_out: {fan_out}")
        
         elif isinstance(self.dtype, CType):
+            
             out_dtype = CBit()
             fan_out   = self.dtype.data_width
             logger.debug(f"{self.dtype}, output dtype: {out_dtype}, fan_out: {fan_out}")
@@ -1278,7 +1286,6 @@ class ProcessBuilder:
             func=_add_edge
         )
         
-        # Process and yield the output Ports for the next step
         yield from (
             (spec.name, _to_port(process_instance, spec, available=self._available))
             for spec in process.signature.rights()
@@ -1298,8 +1305,8 @@ class ProcessBuilder:
                     flow=Flow.RIGHT
                 )
             # If it's an array of Ports, pick the first element's dtype, etc.
-            # (If you handle shaped arrays, you can adapt this further.)
-            # For example:
+            # TODO: handle shaped arrays to adapt further
+        
             first_port = port.reshape(-1)[0]
             return RegisterSpec(
                 name=name,
@@ -1340,17 +1347,16 @@ class ProcessBuilder:
                 new_spec = _infer_match(name, port)
                 self._data.append(new_spec)
 
-        # Build a final signature that includes the new RIGHT-flow registers
+        
         signature = Signature(self._data)
 
-        # Now connect each final_port to RightDangle using _process_ports
         _process_ports(
             registers=signature.rights(),
             in_ports=final_ports,
             debug_str='Finalizing',
             func=_finish_edges
         )
-        # Return the composite with all connections, pinsts, and normalized_map
+        
         return CompositeMod(
             connections=self._connections,
             signature=signature,
@@ -1358,28 +1364,7 @@ class ProcessBuilder:
             normalized_map=normalized_map  # Pass along the parent's normalized_map
         )
 
-        # # If items from `final_ports` dont already exist in `_data` just add them with Flow.RIGHT
-        # right_side_names = [spec.name for spec in self._data if spec.flow & Flow.RIGHT]
       
-
-        # for name, port in final_ports.items():
-           
-        #     if name not in right_side_names:
-           
-                
-        #         self._data.append(_infer_match(name, port))
-          
-
-        # signature = Signature(self._data)
-
-        # _process_ports(
-        #     registers=signature.rights(),  in_ports=final_ports, func=_finish_edges
-        # )
-      
-
-        # return CompositeMod(
-        #     connections=self._connections, signature=signature, pinsts=self._pinsts
-        # )
 
     @staticmethod
     def map_ports(
@@ -1425,10 +1410,7 @@ class ProcessBuilder:
                 return _map_port(ports)
             return vmap(ports)
 
-        return {name: _map_ports(ports) for name, ports in ports.items()}
-
-
-        
+        return {name: _map_ports(ports) for name, ports in ports.items()}    
         
     def _new_index(self):
         """Generate a new unique index for ProcessInstance."""
@@ -1436,27 +1418,56 @@ class ProcessBuilder:
         self._index += 1
         return index
     
-    
-
     def split(self, port: Port, num_parts: Optional[int] = None) -> List[PortT]:
         """Split a register into multiple smaller registers."""
+        dt = port.reg.dtype
+
         # split_ports = []
         # for i in range(num_parts):
         #     split_ports.append(self.add_process(Split(size=1), reg=reg))
         if not isinstance(port, Port):
             raise ValueError(f'Expects a single dataport to split')
+        # if isinstance(dt, (TensorType, MatrixType)) and (prod(dt.shape) or 1) <= 1:
+        #     raise ValueError(f"Cannot split single-element tensor {dt}")
         # logger.debug(f"port: {port},\nreg: {port.reg},\ndtype: {port.reg.dtype}")
-        return self.add(Split(dtype=port.reg.dtype), arg=port)
+        return self.add(Split(dtype=dt), arg=port)
 
     def join(self, ports: List[PortT], dtype: Optional[DataType] = None) -> PortT:
         """Concatenate multiple ports into a single register."""
-        try:
-            ports = np.asarray(ports)
-            (n,) = ports.shape
-        except AttributeError:
-            raise ValueError("Can on merge/join equal-shaped ports. (potentiall only size 1?)")
+        # try:
+        #     ports = np.asarray(ports)
+        #     (n,) = ports.shape
+        # except AttributeError:
+        #     raise ValueError("Can on merge/join equal-shaped ports. (potentiall only size 1?)")
+        ports = np.asarray(ports)
+        (n,) = ports.shape
         if dtype is None:
-            dtype = CAny(n)
+            wire_dts = [p.reg.dtype for p in ports.reshape(-1)]
+            # ensure mutual consistency under LOOSE severity
+            for a, b in itertools.combinations(wire_dts, 2):
+                if not check_dtypes_consistent(
+                    a, b,
+                        severity=DTypeCheckingSeverity.LOOSE,
+                        classical_level=C_PromoLevel.CAST,
+                        quantum_level=Q_PromoLevel.LOOSE,
+                    ):
+                        raise ValueError(f"Inconsistent dtypes in join: {wire_dts!r}")
+                # pick a representative base
+                base = wire_dts[0]
+                # if it’s a TensorType, we’re really flattening an array-of-arrays,
+                # so append the new axis:
+                if isinstance(base, TensorType):
+                    dtype = TensorType(shape=(*base.shape, n), element_type=base.element_type)
+                else:
+                    # for scalars/bitfields, composing n wires → a wider scalar:
+                    new_width = base.data_width * n
+                    cls = type(base)
+                    # assume constructor signature `(bit_width, …)`
+                    dtype = cls(**{**base.__dict__, "bit_width": new_width})
+
+
+
+            
         logger.debug(f"ports.shape: {ports.shape},\ndtype: {dtype}")
         return self.add(Join(dtype=dtype), arg=ports)
     
