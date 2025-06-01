@@ -401,6 +401,12 @@ def get_groupwise_lr_trees(
         med = jnp.median(x)
         mad = jnp.median(jnp.abs(x - med))
         return med, mad
+    median_all, mad_all = med_mad(grad_magnitudes)
+
+    grad_norm = jnp.linalg.norm(grads)
+    
+    initial_lr = jnp.where(grad_norm > 0, max_lr / grad_norm, 0.1)
+    print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
 
     med_tau, mad_tau = med_mad(g_tau)
     med_h,   mad_h   = med_mad(g_h)
