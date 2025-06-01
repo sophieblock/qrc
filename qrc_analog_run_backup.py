@@ -280,7 +280,6 @@ def get_rate_of_improvement(cost, prev_cost,second_prev_cost):
 
     return acceleration
 
-
 def get_base_learning_rate(grads, scale_factor=.1, min_lr=1e-5, max_lr=0.2):
     """Estimate a more practical initial learning rate based on the gradient norms."""
     grad_norm = jnp.linalg.norm(grads)
@@ -362,6 +361,7 @@ def get_initial_lr_per_param(grads, num_train, base_step=0.01,raw_lr=None, min_l
         # print(lr_tree)
     return lr_tree
 
+
 def get_groupwise_lr_trees(
     grads: jnp.ndarray,
     num_train,
@@ -401,6 +401,7 @@ def get_groupwise_lr_trees(
         med = jnp.median(x)
         mad = jnp.median(jnp.abs(x - med))
         return med, mad
+    
     median_all, mad_all = med_mad(grad_magnitudes)
 
     grad_norm = jnp.linalg.norm(grads)
@@ -411,15 +412,31 @@ def get_groupwise_lr_trees(
     med_tau, mad_tau = med_mad(g_tau)
     med_h,   mad_h   = med_mad(g_h)
     med_J,   mad_J   = med_mad(g_J)
+    if scale_by_num_train:
+        if num_train >= 20:
+            factor = NC/8
+            
+        elif num_train <= 15 and num_train > 10:
+            factor = NC/4
+        elif num_train <= 10:
+            factor = NC/2
+    else:
+        factor = 1.0
 
-    r_tau = (med_tau + mad_tau) *0.5
-    r_h   = (med_h   + mad_h)*0.5
-    r_J   = (med_J   + mad_J)
+    r_tau = (med_tau + mad_tau) * factor
+    r_h   = (med_h   + mad_h)* factor
+    r_J   = (med_J   + mad_J)* factor
+    # r_tau = (med_tau + mad_tau)
+    # r_h   = (med_h   + mad_h)
+    # r_J   = (med_J   + mad_J)
 
     # 5) per‐group rule
-    lr_tau = r_tau * max_lr / (g_tau + r_tau + 1e-12)
-    lr_h   = r_h   * max_lr / (g_h   + r_h   + 1e-12)
-    lr_J   = r_J   * max_lr / (g_J   + r_J   + 1e-12)
+    # lr_tau = r_tau * max_lr / (g_tau + r_tau + 1e-12)
+    # lr_h   = r_h   * max_lr / (g_h   + r_h   + 1e-12)
+    # lr_J   = r_J   * max_lr / (g_J   + r_J   + 1e-12)
+    lr_tau = max_lr * (r_tau / (g_tau + r_tau + 1e-12))
+    lr_h   = max_lr *  (r_h  / (g_h   + r_h   + 1e-12))
+    lr_J   = max_lr * (r_J  / (g_J   + r_J   + 1e-12))
 
     # 6) scatter back
     lr_tree = jnp.zeros_like(grad_magnitudes)
@@ -459,6 +476,61 @@ def get_groupwise_lr_trees(
     return lr_tree, mask_tau, mask_h, mask_J
 from optax._src import base as optax_base
 from reduce_on_plateau import reduce_on_plateau
+from typing import NamedTuple
+def _l2(tree):
+    return jnp.sqrt(sum(jnp.sum(jnp.square(x))
+                        for x in jax.tree_util.tree_leaves(tree)))
+def reduce_on_cost_threshold(threshold, factor=.25, min_scale=1e-5):
+    class S(NamedTuple):
+        scale: jnp.ndarray
+        done:  jnp.ndarray
+
+    def init(_):                      # params not needed here
+        return S(jnp.asarray(1.), jnp.asarray(False))
+
+    def upd(updates, state, params=None, *, value=None, **extras):
+        """Optax expects (updates, state, params, **extra)."""
+        fire = (value is not None) & (value <= threshold) & (~state.done)
+        
+        new_scale = jnp.where(fire,
+                              jnp.maximum(state.scale * factor, min_scale),
+                              state.scale)
+        new_state = S(new_scale, state.done | fire)
+        updates = jax.tree_util.tree_map(lambda g: g * new_scale, updates)
+        return updates, new_state
+
+    return optax.GradientTransformationExtraArgs(init, upd)
+
+# ── 2) shrink when grad variance stalls ───────────────────────────────────────
+def reduce_on_grad_variance(factor=.5, patience=10, window=50,
+                            var_tol=1e-6, min_scale=1e-5):
+    class S(NamedTuple):
+        scale:  jnp.ndarray
+        mean:   jnp.ndarray
+        var:    jnp.ndarray
+        streak: jnp.ndarray
+    α = jnp.exp(-1./window)
+
+    def init(_):
+        return S(jnp.asarray(1.), jnp.asarray(0.), jnp.asarray(0.),
+                 jnp.asarray(0, jnp.int32))
+
+    def upd(updates, state, params=None, **extras):
+        g_norm = _l2(updates)
+        mean   = α*state.mean + (1-α)*g_norm
+        var    = α*state.var  + (1-α)*(g_norm - mean)**2
+        streak = jnp.where(var < var_tol, state.streak + 1, 0)
+
+        fire   = (streak >= patience) & (state.scale > min_scale)
+        scale  = jnp.where(fire,
+                           jnp.maximum(state.scale * factor, min_scale),
+                           state.scale)
+        new_state = S(scale, mean, var, streak)
+        updates   = jax.tree_util.tree_map(lambda g: g * scale, updates)
+        return updates, new_state
+
+    return optax.GradientTransformationExtraArgs(init, upd)
+
 def get_optimizer(
     case: int,
     opt_lr,
@@ -474,6 +546,8 @@ def get_optimizer(
     atol: float = 0.0,
     cooldown: int = 0,
     accumulation_size: int = 1,
+    cost_threshold=1e-3,
+    grad_var_tol=1e-6,
     min_scale: float = 0.0,
     # fraction of epochs to wait before enabling plateau logic
     warmup_steps:int = 100,
@@ -486,9 +560,14 @@ def get_optimizer(
     case 1: 'masked per group adam' -> parameters grouped by type and updated by type via adam 
     case 2: "masked per group adam & ReduceLROnPlateau" -> case 1 but we scale down lrs when a barren plateau is detected
     case 3: grouped Adam + delayed ReduceLROnPlateau
+    4  + cost-threshold shrink
+      5  + low-grad-variance shrink
     
     default: case 0
     """
+    def adam(lr):  # convenience
+        return optax.inject_hyperparams(optax.adam)(learning_rate=lr,
+                                                    b1=b1, b2=b2, eps=eps)
     def wrap(base_optimizer, passes_value: bool, passes_step: bool):
         def init_fn(params):
             return base_optimizer.init(params)
@@ -504,6 +583,11 @@ def get_optimizer(
             return base_optimizer.update(updates, state, params=params, **kwargs)
 
         return optax_base.GradientTransformationExtraArgs(init_fn, update_fn)
+    def make_chain(component):
+        masks = {"t": [True, False, False],
+                 "h": [False, True, False],
+                 "J": [False, False, True]}[component]
+        return lambda gt: optax.masked(gt, dict(zip("thJ", masks)))
 
 
     if case == 1:
@@ -546,7 +630,8 @@ def get_optimizer(
     elif case == 3:
         desc = "masked per group Adam + delayed ReduceLROnPlateau"
         # how many update‐calls to skip plateau reductions
-        # warmup_steps = int(num_epochs * warmup_fraction)
+        if not warmup_steps:
+            warmup_steps = int(num_epochs * warmup_fraction)
         print(f"warmup steps: {warmup_steps}")
 
         def one_group(rate):
@@ -577,8 +662,30 @@ def get_optimizer(
             optax.masked(one_group(opt_lr["J"]), mask_J),
         )
         return desc, wrap(base_opt, passes_value=True, passes_step=True)
-        
+    elif case == 4:
+        desc = "group Adam + cost-threshold shrink"
+        sched = reduce_on_cost_threshold(cost_threshold, factor, min_scale)
+        def g(rate): return optax.chain(adam(rate), sched)
+        base = optax.chain(
+            optax.clip_by_global_norm(1.),
+            make_chain("t")(g(opt_lr["t"])),
+            make_chain("h")(g(opt_lr["h"])),
+            make_chain("J")(g(opt_lr["J"])),
+        )
+        return desc, wrap(base, passes_value=True, passes_step=False)
 
+    elif case == 5:
+        desc = "group Adam + grad-variance shrink"
+        sched = reduce_on_grad_variance(factor, patience, 50,
+                                        grad_var_tol, min_scale)
+        def g(rate): return optax.chain(adam(rate), sched)
+        base = optax.chain(
+            optax.clip_by_global_norm(1.),
+            make_chain("t")(g(opt_lr["t"])),
+            make_chain("h")(g(opt_lr["h"])),
+            make_chain("J")(g(opt_lr["J"])),
+        )
+        return desc, wrap(base, passes_value=False, passes_step=True)
     # default fallback
     desc = "per-param Adam"
     base_opt = optax.chain(
@@ -589,7 +696,8 @@ def get_optimizer(
     )
     return desc, wrap(base_opt, passes_value=False)
 
-def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key,init_case_num,PATIENCE,ACCUMULATION_SIZE):
+
+def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate_name,bath,num_bath,init_params_dict, dataset_key,init_case_num,PATIENCE,ACCUMULATION_SIZE, RTOL = 1e-4,ATOL=1e-7):
     float32=''
     opt_lr = None
     a_marked = None
@@ -609,7 +717,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         if not temp_f.startswith('.'):
             files_in_folder.append(temp_f)
     
-    k = 2
+    k = 1
    
     if len(files_in_folder) >= k:
         print('Already Done. Skipping: '+folder_gate)
@@ -723,7 +831,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             max_lr=0.01
         
         opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees(
-            flat_grads,N_train,NC=N_ctrl, max_lr=max_lr, time_steps=time_steps, debug=True, scale_by_num_train=False
+            flat_grads,N_train,NC=N_ctrl, max_lr=max_lr, time_steps=time_steps, debug=True, scale_by_num_train=True
         )
         opt_lr = opt_lr_tree
        
@@ -738,7 +846,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     
  
    
-    debug = False
+    debug = True
     
 
     if debug:
@@ -781,17 +889,18 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
     # optimization protocols, leave only one uncommented (the selected protocol)
     #  (see `get_optimizer` description for more details)
     # case_num = 0 # "per-param Adam"
-    # case_num = 1 # "masked per group adam"
+    case_num = 1 # "masked per group adam"
 
-    case_num = 2 # "masked per group adam & ReduceLROnPlateau"
-    case_num = 3 # "masked per group adam & delayed ReduceLROnPlateau"
+    # case_num = 2 # "masked per group adam & ReduceLROnPlateau"
+    # case_num = 3 # "masked per group adam & delayed ReduceLROnPlateau"
+    # case_num = 4
     assert init_case_num == case_num
 
     COOLDOWN = 0
     FACTOR = 0.9
-    RTOL = 1e-4
+   
 
-    MIN_SCALE = 0.1
+    MIN_SCALE = 0.01
 
     opt_descr, opt = get_optimizer(
         case=case_num,
@@ -800,12 +909,12 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         factor=FACTOR,
         patience=PATIENCE,
         rtol=RTOL,
-       
+        atol=ATOL,
         cooldown=COOLDOWN,
         accumulation_size=ACCUMULATION_SIZE,
         min_scale=MIN_SCALE,
-        warmup_steps = 15,
-        warmup_fraction = 0,
+        warmup_steps = 400,
+        # warmup_fraction = .15,
         )
    
     
@@ -925,7 +1034,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 print( 
                         f" -> Reduced scale from {scale_history[-2]} to {scale_history[-1]} at epoch {epoch}:\n"
                         f"  - pc: {plateau_count_history[-2]} (new: {plateau_count_history[-1]})"
-                        f"  - new best: {float(best_value_history[-1]):.3e},\n"
+                        f"  - new best: {float(best_value_history[-1]):.3e}, diff: {best_value_history[-2]-best_value_history[-1]:.3e},\n"
                         # f"  - best:        {float(best):.2e},\n"
                         # f"  - threshold:   {float(best * (1 - RTOL) + RTOL):.2e}"
                         # f"  -> new LR stats: min={lr_min:.2e}, max={lr_max:.2e}, "
@@ -980,7 +1089,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         grads_per_epoch.append(grad)
         # Logging
         max_abs_grad = jnp.max(jnp.abs(grad))
-        if epoch == 0 or (epoch + 1) % 50 == 0:
+        if epoch == 0 or (epoch + 1) % 250 == 0:
             var_grad = jnp.var(grad,ddof=1)
             mean_grad = jnp.mean(jnp.abs(grad))
             e = time.time()
@@ -994,7 +1103,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             # )
         
             epoch_time = e - s
-            state_count_val = plateau_t.count
+            # state_count_val = plateau_t.count
             
             # learning_rate = opt_state[1].hyperparams['learning_rate']
             # last_pc = plateau_count_history[-1] 
@@ -1004,7 +1113,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 print(f'Epoch {epoch + 1} --- cost: {cost:.3e}, '
                     # f"best: {last_best:.4e}, avg: {last_avg:.4e}, "
                     # f'plateau_count: {last_pc}, '
-                    f'num_reductions: {num_reductions}, count: {state_count_val}, scale: {scale_history[-1]} '
+                    f'num_reductions: {num_reductions}, '
                     f'[t: {epoch_time:.1f}s]'
                     )
             else:
@@ -1012,7 +1121,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
                 # print(f'Epoch {epoch + 1} --- cost: {cost:.4f}, best={best_val:.4f}, avg: {current_avg:.4f}, lr={learning_rates[-1]:.4f} [{plateau_state.scale:.3f}], '
                     # f"best: {last_best:.4e}, avg: {last_avg:.4e}, "
                     # f'plateau_count: {last_pc}, '
-                    f'num_reductions: {num_reductions}, count: {state_count_val}'
+                    f'num_reductions: {num_reductions}'
                     f'[t: {epoch_time:.1f}s]'
                     )
            
@@ -1173,6 +1282,7 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
             'lrs_J':           lrs_J_history,
             'lrs_all': lr_hist,
             'plateau_count_history':plateau_count_history,
+            'scale_history':scale_history,
             'avg_value_history':avg_value_history,
             'best_value_history':best_value_history,
             'cooldown_count_history':cooldown_count_history,
@@ -1196,18 +1306,32 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         pickle.dump(df, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-
  
+
 if __name__ == '__main__':
+
+
+    
 
     
     # run below 
-    N_ctrl = 1
+    N_ctrl = 2
    
    
-    trots = [4,8,10,12,14,16,18,20,24,28]
+
+    # trots = [1,15,20,25,30,35,40]
+    # trots = [25,28,30,32,35,38,40,45]
+    trots = [4,6,8,10,12,16,20,24,28]
+    trots = [10]
+    # trots = [8,12,20,24,28]
+    # trots = [4,8,10,12,14,16,18,20,24,28]
 
     # res = [1, 2, 3]
+    # trots = [10,12,14,16,20]
+    # trots = [10,14,20,24,28]
+    # trots = [24,28]
+    # trots = [6]
+
     res = [1]
   
 
@@ -1220,15 +1344,18 @@ if __name__ == '__main__':
     num_epochs = 1500
     N_train = 20
     add=0
-    case_num = 3
-    patience= 2
-    accum_size = 2
+    case_num = 1
+    patience= 5
+    accum_size = 5
+    rtol = 1e-4
+    atol=1e-7
+    
+    # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
     if case_num in [2,3]:
-        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/'
+        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/ATOL_1e-7/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/'
-   
     else:
-        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}_scale_by_train_False/'
+        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
@@ -1248,7 +1375,7 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        # if not gate_idx in [7,11]:
+        # if not gate_idx in [2]:
         #     continue
 
 
@@ -1285,3 +1412,4 @@ if __name__ == '__main__':
                     params = jnp.concatenate([time_step_params, main_params])
 
                     run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,init_params_dict = init_params_dict,dataset_key = dataset_key,init_case_num=case_num,PATIENCE=patience, ACCUMULATION_SIZE=accum_size)
+                    
