@@ -361,15 +361,73 @@ def get_initial_lr_per_param(grads, num_train, base_step=0.01,raw_lr=None, min_l
         # print(lr_tree)
     return lr_tree
 
+def get_groupwise_lr_lars(
+    params: jnp.ndarray,
+    grads: jnp.ndarray,
+    num_train: int,
+    NC: int,
+    max_lr: float,
+    time_steps: int,
+    eps: float = 1e-12,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    LARS‐style per‐group lr:  lr_group = lr0 * ‖param_group‖ / (‖grad_group‖ + eps), clipped to [min, max].
+    """
+    D = params.shape[0]
+    idx = jnp.arange(D)
 
+    mask_tau = idx < time_steps
+    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
+    mask_J   = idx >= time_steps + 3
+
+    p_tau = jnp.abs(params[mask_tau])  # could be actual param values
+    p_h   = jnp.abs(params[mask_h])
+    p_J   = jnp.abs(params[mask_J])
+
+    g_tau = jnp.abs(grads[mask_tau]) + eps
+    g_h   = jnp.abs(grads[mask_h])   + eps
+    g_J   = jnp.abs(grads[mask_J])   + eps
+
+    # compute 2‐norms
+    w_tau_norm = jnp.linalg.norm(p_tau) + eps
+    w_h_norm   = jnp.linalg.norm(p_h)   + eps
+    w_J_norm   = jnp.linalg.norm(p_J)   + eps
+
+    grad_tau_norm = jnp.linalg.norm(g_tau) + eps
+    grad_h_norm   = jnp.linalg.norm(g_h)   + eps
+    grad_J_norm   = jnp.linalg.norm(g_J)   + eps
+
+    # pick a global “base lr”—for instance, some constant times 1 / sqrt(D).
+    # Many LARS implementations just say: lr0 = 0.1, or lr0 = 0.5 / sqrt(D), etc.
+    lr0 = 0.1  # you can tune this
+
+    # now layer‐wise ratio
+    lr_tau = lr0 * (w_tau_norm / (grad_tau_norm + eps))
+    lr_h   = lr0 * (w_h_norm   / (grad_h_norm   + eps))
+    lr_J   = lr0 * (w_J_norm   / (grad_J_norm   + eps))
+
+    # optionally clip each group’s lr to [min_lr, max_lr]
+    lr_tau = jnp.clip(lr_tau, 1e-6, max_lr)
+    lr_h   = jnp.clip(lr_h,   1e-6, max_lr)
+    lr_J   = jnp.clip(lr_J,   1e-6, max_lr)
+
+    # scatter back into a single vector of shape [D,]
+    lr_tree = jnp.zeros_like(params)
+    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
+    lr_tree = lr_tree.at[mask_h].set(lr_h)
+    lr_tree = lr_tree.at[mask_J].set(lr_J)
+
+    # (The masks themselves can also be returned if needed downstream.)
+    return lr_tree, mask_tau, mask_h, mask_J
 def get_groupwise_lr_trees(
+    params: jnp.ndarray,
     grads: jnp.ndarray,
     num_train,
     NC,
     max_lr: float,
     time_steps: int,
     debug: bool = False,
-    scale_by_num_train = True,
+    eps: float = 1e-12,
 ) -> jnp.ndarray:
     """
     Args:
