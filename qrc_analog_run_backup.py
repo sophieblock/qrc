@@ -541,6 +541,7 @@ def get_groupwise_lr_lars(
     # (The masks themselves can also be returned if needed downstream.)
     return lr_tree, mask_tau, mask_h, mask_J
 
+
 def get_groupwise_lr_trees(
     params: jnp.ndarray,
     grads: jnp.ndarray,
@@ -550,6 +551,8 @@ def get_groupwise_lr_trees(
     max_lr: float = 0.2,
     debug: bool = False,
     scale_by_num_train = True,
+    target_update: float = 0.05,
+    eps: float = 1e-12,
 ) -> jnp.ndarray:
     """
     Args:
@@ -568,7 +571,7 @@ def get_groupwise_lr_trees(
     
     max_grad = float(jnp.max(grads))
     # choose a “target” maximum update size, e.g. 10% of a typical parameter
-    target_update =0.05 # jnp.mean(np.abs(params)) * 0.10
+    target_update =0.05 # jnp.mean(np.abs(params)) * 0.05
     
     # then set max_lr so that max_lr * max_grad ≈ target_update
     lr_upper_bound = target_update / (max_grad + 1e-12)
@@ -592,7 +595,10 @@ def get_groupwise_lr_trees(
     g_tau = grad_magnitudes[mask_tau]
     g_h   = grad_magnitudes[mask_h]
     g_J   = grad_magnitudes[mask_J]
-
+    def get_base_lr(grad_norm,target_update,eps = 1e-12):
+        return jnp.where(grad_norm > 0.0,
+                        target_update / (grad_norm + eps),
+                        1e-3)
     # 3) medians & MADs
     def med_mad(x):
         med = jnp.median(x)
@@ -602,8 +608,24 @@ def get_groupwise_lr_trees(
     median_all, mad_all = med_mad(grad_magnitudes)
 
     grad_norm_all = jnp.linalg.norm(grad_magnitudes)
-    print(f" All: med = {median_all:.3e}, mad={mad_all:.3e}, grad norm={grad_norm_all:.3e}. Upper bound set to {lr_upper_bound:.4f}")
 
+    g_tau_norm, g_h_norm, g_J_norm = jnp.linalg.norm(g_tau) +eps, jnp.linalg.norm(g_h)+eps, jnp.linalg.norm(g_J)+eps
+    sum_norms = g_tau_norm+g_h_norm+g_J_norm
+    tau_base_lr, h_base_lr, J_base_lr = get_base_lr(g_tau_norm,target_update), get_base_lr(g_h_norm,target_update),get_base_lr(g_J_norm,target_update) 
+
+    # print(f" All: med = {median_all:.3e}, mad={mad_all:.3e}, grad norm={grad_norm_all:.3e}. Upper bound set to {lr_upper_bound:.4f}")
+    if debug:
+        med_all,mad_all = med_mad(grad_magnitudes)
+        
+        print(f"\n--- global‐norm anchor ---")
+        print(f"  grad_norm_all = {grad_norm_all:.3e}, sum(norms)={sum_norms:.3e}, Upper bound set to {lr_upper_bound:.4f}")
+        # print(f"  (target_update = {target_update:.3e})")
+        print(f"  median(|g|) = {med_all:.3e},  MAD(|g|) = {mad_all:.3e}")
+        print(f" alphas:      τ={float(g_tau_norm/sum_norms):.3e}, h={float(g_h_norm/sum_norms):.3e}, J={float(g_J_norm/sum_norms):.3e}")
+        print(f" base lrs:      τ={float(tau_base_lr):.3e}, h={float(h_base_lr):.3e}, J={float(J_base_lr):.3e}")
+
+        print("-----------------------------\n")
+   
     med_tau, mad_tau = med_mad(g_tau)
     med_h,   mad_h   = med_mad(g_h)
     med_J,   mad_J   = med_mad(g_J)
@@ -633,21 +655,31 @@ def get_groupwise_lr_trees(
     lr_tree = lr_tree.at[mask_tau].set(lr_tau)
     lr_tree = lr_tree.at[mask_h].set(lr_h)
     lr_tree = lr_tree.at[mask_J].set(lr_J)
+    
+    
+    # if debug:
+    #     # pull a few scalars out for printing
+    #     print(f"\n--- groupwise‐LR debug ---")
+    #     print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
+    #     print(f" medians og:      τ={float(med_tau):.3e}, h={float(med_h):.3e}, J={float(med_J):.3e}")
+    #     print(f" medians scaled:      τ={float(med_mad(lr_tau)[0]):.3e}, h={float(med_mad(lr_h)[0]):.3e}, J={float(med_mad(lr_J)[0]):.3e}")
+    #     print(f" means:         τ={float(jnp.mean(lr_tau)):.3e}, h={float(jnp.mean(lr_h)):.3e}, J={float(jnp.mean(lr_J)):.3e}")
+    #     print(f" r = med+mad:  τ={float(r_tau):.3e}, h={float(r_h):.3e}, J={float(r_J):.3e}")
+    #     # show a handful of per‐param picks
+    #     # ex = min(5, D)
+    #     # print(f" sample grads: {grad_magnitudes[:ex].tolist()}")
+    #     # print(f" sample lrs:   {lr_tree[:ex].tolist()}")
+    #     print(f" variances:    τ={float(jnp.var(lr_tau)):.3e}, h={float(jnp.var(lr_h)):.3e}, J={float(jnp.var(lr_J)):.3e}")
+    #     print(f"---------------------------\n")
 
     if debug:
-        # pull a few scalars out for printing
-        print(f"\n--- groupwise‐LR debug ---")
-        print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
-        print(f" medians og:      τ={float(med_tau):.3e}, h={float(med_h):.3e}, J={float(med_J):.3e}")
-        print(f" medians scaled:      τ={float(med_mad(lr_tau)[0]):.3e}, h={float(med_mad(lr_h)[0]):.3e}, J={float(med_mad(lr_J)[0]):.3e}")
-        print(f" means:         τ={float(jnp.mean(lr_tau)):.3e}, h={float(jnp.mean(lr_h)):.3e}, J={float(jnp.mean(lr_J)):.3e}")
-        print(f" r = med+mad:  τ={float(r_tau):.3e}, h={float(r_h):.3e}, J={float(r_J):.3e}")
-        # show a handful of per‐param picks
-        # ex = min(5, D)
-        # print(f" sample grads: {grad_magnitudes[:ex].tolist()}")
-        # print(f" sample lrs:   {lr_tree[:ex].tolist()}")
-        print(f" variances:    τ={float(jnp.var(lr_tau)):.3e}, h={float(jnp.var(lr_h)):.3e}, J={float(jnp.var(lr_J)):.3e}")
-        print(f"---------------------------\n")
+        # report final per‐group stats
+        print(f"\n--- groupwise‐LR debug (per‐param values) ---")
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e},  min={float(jnp.min(lr_tau)):.3e},  max={float(jnp.max(lr_tau)):.3e}")
+        print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e},    min={float(jnp.min(lr_h)):.3e},    max={float(jnp.max(lr_h)):.3e}")
+        print(f" J‐group: mean={float(jnp.mean(lr_J)):.3e},    min={float(jnp.min(lr_J)):.3e},    max={float(jnp.max(lr_J)):.3e}")
+        print("-------------------------------------------\n")
+
     # Assert that no elements in lr_tree are less than min_lr
     min_lr = 1e-6
     # Assert that no elements in lr_tree are less than min_lr
