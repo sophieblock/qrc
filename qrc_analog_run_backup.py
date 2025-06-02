@@ -540,15 +540,16 @@ def get_groupwise_lr_lars(
 
     # (The masks themselves can also be returned if needed downstream.)
     return lr_tree, mask_tau, mask_h, mask_J
+
 def get_groupwise_lr_trees(
     params: jnp.ndarray,
     grads: jnp.ndarray,
     num_train,
     NC,
-    max_lr: float,
     time_steps: int,
+    max_lr: float = 0.2,
     debug: bool = False,
-    eps: float = 1e-12,
+    scale_by_num_train = True,
 ) -> jnp.ndarray:
     """
     Args:
@@ -564,7 +565,24 @@ def get_groupwise_lr_trees(
     grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
     D = grad_magnitudes.shape[0]
     idx = jnp.arange(D)
+    
+    max_grad = float(jnp.max(grads))
+    # choose a “target” maximum update size, e.g. 10% of a typical parameter
+    target_update =0.05 # jnp.mean(np.abs(params)) * 0.10
+    
+    # then set max_lr so that max_lr * max_grad ≈ target_update
+    lr_upper_bound = target_update / (max_grad + 1e-12)
 
+    print(f"target_update: {target_update:.5f}, lr_upper_bound: {lr_upper_bound:.5f}")
+    
+    if lr_upper_bound>max_lr:
+        lr_upper_bound = max_lr
+        print(f" - lr_upper_bound > {max_lr}... Updating bound: {lr_upper_bound}")
+    
+    elif lr_upper_bound < max_lr*0.1:
+        lr_upper_bound=max_lr*0.1 
+        print(f" - lr_upper_bound < {max_lr*0.1}... Updating bound: {lr_upper_bound}")
+    
     # 1) masks
     mask_tau = idx < time_steps
     mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
@@ -583,10 +601,8 @@ def get_groupwise_lr_trees(
     
     median_all, mad_all = med_mad(grad_magnitudes)
 
-    grad_norm = jnp.linalg.norm(grads)
-    
-    initial_lr = jnp.where(grad_norm > 0, max_lr / grad_norm, 0.1)
-    print(f" group sizes:  τ={g_tau.shape[0]},  h={g_h.shape[0]},  J={g_J.shape[0]}")
+    grad_norm_all = jnp.linalg.norm(grad_magnitudes)
+    print(f" All: med = {median_all:.3e}, mad={mad_all:.3e}, grad norm={grad_norm_all:.3e}. Upper bound set to {lr_upper_bound:.4f}")
 
     med_tau, mad_tau = med_mad(g_tau)
     med_h,   mad_h   = med_mad(g_h)
@@ -605,19 +621,14 @@ def get_groupwise_lr_trees(
     r_tau = (med_tau + mad_tau) * factor
     r_h   = (med_h   + mad_h)* factor
     r_J   = (med_J   + mad_J)* factor
-    # r_tau = (med_tau + mad_tau)
-    # r_h   = (med_h   + mad_h)
-    # r_J   = (med_J   + mad_J)
 
-    # 5) per‐group rule
-    # lr_tau = r_tau * max_lr / (g_tau + r_tau + 1e-12)
-    # lr_h   = r_h   * max_lr / (g_h   + r_h   + 1e-12)
-    # lr_J   = r_J   * max_lr / (g_J   + r_J   + 1e-12)
-    lr_tau = max_lr * (r_tau / (g_tau + r_tau + 1e-12))
-    lr_h   = max_lr *  (r_h  / (g_h   + r_h   + 1e-12))
-    lr_J   = max_lr * (r_J  / (g_J   + r_J   + 1e-12))
 
-    # 6) scatter back
+    # per‐group rule
+    lr_tau = r_tau * lr_upper_bound / (g_tau + r_tau + 1e-12)
+    lr_h   = r_h   * lr_upper_bound / (g_h   + r_h   + 1e-12)
+    lr_J   = r_J   * lr_upper_bound / (g_J   + r_J   + 1e-12)
+
+
     lr_tree = jnp.zeros_like(grad_magnitudes)
     lr_tree = lr_tree.at[mask_tau].set(lr_tau)
     lr_tree = lr_tree.at[mask_h].set(lr_h)
@@ -653,6 +664,7 @@ def get_groupwise_lr_trees(
 
   
     return lr_tree, mask_tau, mask_h, mask_J
+
 from optax._src import base as optax_base
 from reduce_on_plateau import reduce_on_plateau
 from typing import NamedTuple
@@ -997,20 +1009,21 @@ def run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gat
         dt = e - s
         raw_lr,clipped_lr,grad_norm = get_base_learning_rate(init_grads)
         flat_grads = jnp.ravel(init_grads)
-        # after you’ve computed your flat_grads …
-        max_grad = float(jnp.max(flat_grads))
-        # choose a “target” maximum update size, e.g. 10% of a typical parameter
-        target_update = 0.05
-        # then set max_lr so that max_lr * max_grad ≈ target_update
-        max_lr = target_update / (max_grad + 1e-12)
-        print(f"raw_lr: {raw_lr:.3e}, max_lr: {max_lr:.3e}")
-        if max_lr>0.2:
-            max_lr = 0.2
-        elif max_lr < 0.01:
-            max_lr=0.01
         
         opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees(
             flat_grads,N_train,NC=N_ctrl, max_lr=max_lr, time_steps=time_steps, debug=True, scale_by_num_train=True
+        )
+        opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees_new(
+            params         = params,          # your flat parameter vector
+            grads          = flat_grads,     # magnitude of gradients
+            num_train      = N_train,        # number of Haar‐random states
+            NC             = N_ctrl,         # number of control qubits
+            max_lr         = 0.2,            # your chosen clip‐upper‐bound
+            time_steps     = time_steps,     # T
+            debug          = True,
+            scale_by_num_train = True,
+            target_update  = 0.05,
+            eps            = 1e-12,
         )
         opt_lr = opt_lr_tree
        
