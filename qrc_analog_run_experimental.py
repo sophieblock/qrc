@@ -785,18 +785,38 @@ def get_groupwise_lr_trees_new(
     r_tau = med_tau + mad_tau
     r_h   = med_h   + mad_h
     r_J   = med_J   + mad_J
-    # if debug:
+    if debug:
+        print(f"--- group statistics before LR‐scaling ---")
+        print(f"  τ‐block:  median = {float(med_tau):.3e},  MAD = {float(mad_tau):.3e},  r_tau = {float(r_tau):.3e}")
+        print(f"  h‐block:  median = {float(med_h):.3e},   MAD = {float(mad_h):.3e},   r_h   = {float(r_h):.3e}")
+        print(f"  J‐block:  median = {float(med_J):.3e},   MAD = {float(mad_J):.3e},   r_J   = {float(r_J):.3e}")
+        print("-------------------------------------------")
+    # optional extra scaling (old “factor” heuristic)
+    if scale_by_num_train:
+        if   num_train >= 20: fac = NC / 8
+        elif num_train >= 11: fac = NC / 4
+        else:                 fac = NC / 2
+        r_tau *= fac; r_h *= fac; r_J *= fac
 
+    lr_tau = eta_tau * (r_tau / (g_tau + r_tau + eps))
+    lr_h   = eta_h * (r_h   / (g_h   + r_h   + eps))
+    lr_J   = eta_J * (r_J   / (g_J   + r_J   + eps))
     # learning-rate vectors
-    lr_tree = jnp.zeros_like(grad_magnitudes)
-    lr_tree = lr_tree.at[mask_tau].set(jnp.clip(eta_tau * r_tau / (g_tau + r_tau), 1e-6, max_lr))
-    lr_tree = lr_tree.at[mask_h  ].set(jnp.clip(eta_h   * r_h   / (g_h   + r_h),   1e-6, max_lr))
-    lr_tree = lr_tree.at[mask_J  ].set(jnp.clip(eta_J   * r_J   / (g_J   + r_J),   1e-6, max_lr))
+    lr_tau = jnp.clip(lr_tau, 1e-6, max_lr)
+    lr_h   = jnp.clip(lr_h,   1e-6, max_lr)
+    lr_J   = jnp.clip(lr_J,   1e-6, max_lr)
 
+    lr_tree = jnp.zeros_like(grad_magnitudes)
+    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
+    lr_tree = lr_tree.at[mask_h  ].set(lr_h  )
+    lr_tree = lr_tree.at[mask_J  ].set(lr_J  )
 
     if debug:
         print("\n--- τ/h/J ceilings ---")
         print(f"  η_tau={float(eta_tau):.3e}, η_h={float(eta_h):.3e}, η_J={float(eta_J):.3e}")
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e},  min={float(jnp.min(lr_tau)):.3e},  max={float(jnp.max(lr_tau)):.3e}")
+        print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e},    min={float(jnp.min(lr_h)):.3e},    max={float(jnp.max(lr_h)):.3e}")
+        print(f" J‐group: mean={float(jnp.mean(lr_J)):.3e},    min={float(jnp.min(lr_J)):.3e},    max={float(jnp.max(lr_J)):.3e}")
         print("-------------------------------------------")
 
     return lr_tree, mask_tau, mask_h, mask_J
