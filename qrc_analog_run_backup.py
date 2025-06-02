@@ -360,6 +360,127 @@ def get_initial_lr_per_param(grads, num_train, base_step=0.01,raw_lr=None, min_l
 
         # print(lr_tree)
     return lr_tree
+def get_groupwise_lr_trees_new(
+    params: jnp.ndarray,
+    grads: jnp.ndarray,
+    num_train: int,
+    NC: int,
+    max_lr: float = 0.2,
+    time_steps: int = 10,
+    debug: bool = False,
+    scale_by_num_train: bool = True,
+    target_update: float = 0.05,
+    eps: float = 1e-12,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    Compute a per-parameter learning rate "tree" as follows:
+
+      1) Take the *global* 2-norm of all gradients:  grad_norm_all = ||grads||₂.
+         Define a single base_lr = target_update / (grad_norm_all + eps).
+         This ensures that on step 1, no parameter‐update (in norm‐sense) is larger
+         than "target_update".
+
+      2) Split parameters into three contiguous blocks:
+           - indices [0 : time_steps)           --> the "τ" (time‐durations) block
+           - indices [time_steps : time_steps+3) --> the "h" (global field) block
+           - indices [time_steps+3 : D)          --> the "J" (couplings) block
+         Let grad_magnitudes = |grads| + 1e-12, so we never divide by zero exactly.
+
+      3) Within each block ("τ", "h", "J") compute median and MAD of that block’s |grad|’s:
+           r_group = (median(|g_group|) + MAD(|g_group|)) * (scale_by_num_train ? factor : 1).
+         Here “factor” = {NC/8 if num_train>=20; NC/4 if 11<= num_train<=15; NC/2 if num_train<=10}.
+
+      4) Finally, for each parameter i in block 'group', set
+           lr_i = base_lr * [ r_group / (|g_i| + r_group + eps ) ].
+         (Then clip lr_i into [1e-6, max_lr].)
+
+      5) Return the full vector lr_tree of shape [D], plus the three masks
+         (mask_tau, mask_h, mask_J) so you know which indices belonged to which group.
+
+    Returns:
+      lr_tree:      an array of shape [D], one learning‐rate per parameter
+      mask_tau:     boolean mask for indices in the τ‐block
+      mask_h:       boolean mask for indices in the h‐block
+      mask_J:       boolean mask for indices in the J‐block
+    """
+    grad_magnitudes = jax.tree_util.tree_map(lambda g: jnp.abs(g) + 1e-12, grads)
+    D = grad_magnitudes.shape[0]
+    idx = jnp.arange(D)
+
+    
+    mask_tau = idx < time_steps
+    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
+    mask_J   = idx >= time_steps + 3
+    # 3) compute global gradient norm and base_lr
+    grad_norm_all = jnp.linalg.norm(grad_magnitudes)
+    base_lr = jnp.where(grad_norm_all > 0.0,
+                        target_update / (grad_norm_all + eps),
+                        1e-3)
+    # Clip base_lr so it never exceeds max_lr:
+    base_lr = jnp.minimum(base_lr, max_lr)
+    def med_mad(x):
+        med = jnp.median(x)
+        mad = jnp.median(jnp.abs(x - med))
+        return med, mad
+    if debug:
+        med_all,mad_all = med_mad(grad_magnitudes)
+        
+        print(f"\n--- global‐norm anchor ---")
+        print(f"  grad_norm_all = {grad_norm_all:.3e},  base_lr = {float(base_lr):.3e}")
+        print(f"  (target_update = {target_update:.3e})")
+        print(f"  median(|g|) = {med_all:.3e},  MAD(|g|) = {mad_all:.3e}")
+        print("-----------------------------\n")
+    # extract group subsets
+    g_tau = grad_magnitudes[mask_tau]
+    g_h   = grad_magnitudes[mask_h]
+    g_J   = grad_magnitudes[mask_J]
+
+
+    med_tau, mad_tau = med_mad(g_tau)
+    med_h,   mad_h   = med_mad(g_h)
+    med_J,   mad_J   = med_mad(g_J)
+
+    # 4) pick a raw group multiplier = (group_norm / total_norm)
+    #    so that sum of all three multipliers ≈ 1 (at least on a norm‐scale).
+    # sum_norms = tau_norm + h_norm + J_norm + eps
+    # alpha_tau = tau_norm / sum_norms
+    # alpha_h   = h_norm   / sum_norms
+    # alpha_J   = J_norm   / sum_norms
+
+
+    # 7) For each parameter i in group "τ", set:
+    #       lr_i = base_lr * [ r_tau / ( |g_i| + r_tau + eps ) ]
+    #    similarly for group "h" and group "J".
+    lr_tree = jnp.zeros_like(grad_magnitudes)
+
+    # τ‐group
+    lr_tau = base_lr * (r_tau / (g_tau + r_tau + eps))
+    lr_h   = base_lr * (r_h   / (g_h   + r_h   + eps))
+    lr_J   = base_lr * (r_J   / (g_J   + r_J   + eps))
+
+    # Clip each group’s per‐param learning rates to [min_lr, max_lr]
+    min_lr = 1e-6
+    lr_tau = jnp.clip(lr_tau, min_lr, max_lr)
+    lr_h   = jnp.clip(lr_h,   min_lr, max_lr)
+    lr_J   = jnp.clip(lr_J,   min_lr, max_lr)
+
+    # Scatter them back
+    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
+    lr_tree = lr_tree.at[mask_h].set(lr_h)
+    lr_tree = lr_tree.at[mask_J].set(lr_J)
+
+    if debug:
+        # report final per‐group stats
+        print(f"\n--- groupwise‐LR debug (per‐param values) ---")
+        print(f" t‐group: mean={float(jnp.mean(lr_tau)):.3e},  min={float(jnp.min(lr_tau)):.3e},  max={float(jnp.max(lr_tau)):.3e}")
+        print(f" h‐group: mean={float(jnp.mean(lr_h)):.3e},    min={float(jnp.min(lr_h)):.3e},    max={float(jnp.max(lr_h)):.3e}")
+        print(f" J‐group: mean={float(jnp.mean(lr_J)):.3e},    min={float(jnp.min(lr_J)):.3e},    max={float(jnp.max(lr_J)):.3e}")
+        print("-------------------------------------------\n")
+
+    # 8) sanity check: no lr < min_lr
+    assert jnp.all(lr_tree >= min_lr), "Some initial lr < min_lr; check scaling."
+
+    return lr_tree, mask_tau, mask_h, mask_J
 
 def get_groupwise_lr_lars(
     params: jnp.ndarray,
