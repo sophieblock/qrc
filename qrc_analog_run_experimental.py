@@ -1168,8 +1168,74 @@ def get_optimizer(
             make_chain("J")(g(opt_lr["J"])),
         )
         return desc, wrap(base, passes_value=False, passes_step=True)
+    # ------------------------------------------------------------------
+    # NEW  :  case == 5  →  slice-wise masked Adam  +  per-param scaling
+    # ------------------------------------------------------------------
     elif case == 5:
-        pass
+        """
+        case 5  ─  slice-wise independent Adam
+        --------------------------------------
+        * Same LR vector (lr_tree) you built for case 6.
+        * Each slice t and the h-vector get their own Adam moment buffers.
+        * Final element-wise scaling keeps per-parameter rates intact.
+        Expected opt_lr input:
+            opt_lr == (lr_tree, assignment_mask)
+                lr_tree         : flat [D] array
+                assignment_mask : flat [D] ints in {0,…,T} (T = h-group)
+        """
+        desc = "slice-wise masked Adam + per-param LR"
+
+        # ── unpack what run_test passed in ────────────────────────────
+        lr_tree, assignment_mask = opt_lr      # tuple from get_groupwise_lr_trees_slicewise
+        T        = time_steps
+        num_J    = params["J"].shape[0] // T   # need this for mask construction
+        D        = lr_tree.size
+
+        # ------------------------------------------------------------------
+        # 1) build pytree masks  {"t":Bool[T], "h":Bool[3], "J":Bool[T*num_J]}
+        #    one such mask per group-id  (0..T-1 slices,  T = h-group)
+        # ------------------------------------------------------------------
+        masks_by_gid = {}
+        for gid in range(T + 1):
+            flat = (assignment_mask == gid)          # [D] bool
+            mask_t = flat[:T]
+            mask_h = flat[T:T+3]
+            mask_J = flat[T+3:]
+            masks_by_gid[gid] = {"t": mask_t, "h": mask_h, "J": mask_J}
+
+        # ------------------------------------------------------------------
+        # 2) element-wise learning-rate scaling, re-using helper from case 6
+        # ------------------------------------------------------------------
+        def per_param_lr(lr_pytree):
+            def init_fn(_):               # stateless
+                return ()
+            def upd_fn(updates, state, params=None):
+                scaled = jax.tree_util.tree_map(lambda g, lr: g * lr,
+                                                updates, lr_pytree)
+                return scaled, state
+            return optax.GradientTransformation(init_fn, upd_fn)
+
+        lr_pytree = {
+            "t": lr_tree[:T],
+            "h": lr_tree[T:T+3],
+            "J": lr_tree[T+3:]
+        }
+
+        # ------------------------------------------------------------------
+        # 3) one Adam per slice (LR = 1.0, moments independent) + per-param LR
+        # ------------------------------------------------------------------
+        per_group_adams = []
+        for gid in range(T + 1):
+            adam_gid   = optax.adam(learning_rate=1.0, b1=b1, b2=b2, eps=eps)
+            masked     = optax.masked(adam_gid, masks_by_gid[gid])
+            per_group_adams.append(masked)
+
+        base_opt = optax.chain(
+            optax.clip_by_global_norm(1.0),   # safety
+            *per_group_adams,
+            per_param_lr(lr_pytree)           # keep the original lr_tree
+        )
+        return desc, wrap(base_opt, passes_value=False, passes_step=False)
     elif case == 6:
         """
         case 6 ─ slice-wise median/MAD LR  →  masked Adam
@@ -1303,7 +1369,7 @@ def run_test(params,
     num_bath,
     init_params_dict, 
     dataset_key,
-    init_case_num,
+    case_num,
     PATIENCE,
     ACCUMULATION_SIZE, 
     RTOL = 1e-4,
@@ -1311,6 +1377,8 @@ def run_test(params,
     COOLDOWN=0,
     FACTOR = 0.9,
     MIN_SCALE = 0.01,
+    scale_by_num_train=True,
+    per_block_target_update=False,
     ):
     float32=''
     opt_lr = None
@@ -1419,16 +1487,6 @@ def run_test(params,
         return loss
     
     
-    # optimization protocols, leave only one uncommented (the selected protocol)
-    #  (see `get_optimizer` description for more details)
-    # case_num = 0 # "per-param Adam"
-    case_num = 1 # "masked per group adam"
-
-    # case_num = 2 # "masked per group adam & ReduceLROnPlateau"
-    # case_num = 3 # "masked per group adam & delayed ReduceLROnPlateau"
-    # case_num = 4
-    # case_num = 6 # slice-wise LARS + (Masked) per‐group Adam
-    assert init_case_num == case_num
 
     
     min_raw_lr = 0.
@@ -1450,9 +1508,9 @@ def run_test(params,
         rms = jnp.linalg.norm(params) / jnp.sqrt(D)
         target_update = 0.75 * jnp.linalg.norm(params) / jnp.sqrt(D)
         
-        if case_num == 6:
+        if case_num in (5, 6):
       
-            print("Getting init lr stats for case #6: ")
+            print(f"Getting init lr stats for case #{case_num}: ")
             lr_tree, assignment_mask = get_groupwise_lr_trees_slicewise(
                 params           = params,       
                 grads            = flat_grads,
@@ -1465,13 +1523,13 @@ def run_test(params,
                 debug            = True,
                 target_update    = target_update,
                 eps              = 1e-12,
-                scale_by_num_train = True,
-                per_block_target_update=False
+                scale_by_num_train = scale_by_num_train,
+                per_block_target_update=per_block_target_update
             )
             opt_lr = (lr_tree, assignment_mask)
            
         else:
-            # (all other cases 0..5: keep your original get_groupwise_lr_trees_new)
+          
             lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_trees_new(
                 params         = params,          # your flat parameter vector
                 grads          = flat_grads,     # magnitude of gradients
@@ -1480,10 +1538,10 @@ def run_test(params,
                 max_lr         = 0.2,            # your chosen clip‐upper‐bound
                 time_steps     = time_steps,     # T
                 debug          = True,
-                scale_by_num_train = False,
+                scale_by_num_train = scale_by_num_train,
                 target_update  = target_update,
                 eps            = 1e-12,
-                per_block_target_update=False
+                per_block_target_update=per_block_target_update
             )
             opt_lr = {
                 "t": lr_tree[:time_steps],
@@ -1972,7 +2030,7 @@ if __name__ == '__main__':
 
     
     # run below 
-    N_ctrl = 2
+    N_ctrl = 1
    
    
 
@@ -2001,18 +2059,30 @@ if __name__ == '__main__':
     num_epochs = 1500
     N_train = 20
     add=0
-    case_num = 1
+
+
+     # optimization protocols, leave only one uncommented (the selected protocol)
+    #  (see `get_optimizer` description for more details)
+    # case_num = 0 # "per-param Adam"
+    case_num = 1 # "masked per group adam"
+
+    # case_num = 2 # "masked per group Adam + delayed ReduceLROnPlateau"
+    # case_num = 3 #"group Adam + cost-threshold shrink"
+    # case_num = 5 #  slice-wise independent per‐group Adam
+    # case_num = 6 # slice-wise  + (Masked) per‐group Adam
     patience= 5
     accum_size = 5
     rtol = 1e-4
     atol=1e-7
+    scale_by_num_train=True
+    per_block_target_update=False
     
     # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}_per_param_opt_.1k/'
     if case_num in [2,3]:
         folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/ATOL_1e-7/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/'
     else:
-        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}_new/tgt_granular_False/t=pi/scale=False/'
+        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}_new/tgt_granular_False/t=pi/scale={scale_by_num_train}/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
@@ -2068,5 +2138,23 @@ if __name__ == '__main__':
                     # Combine the two parts
                     params = jnp.concatenate([time_step_params, main_params])
 
-                    run_test(params, num_epochs, N_reserv, N_ctrl, time_steps,N_train,folder,gate,gate.name,bath,num_bath,init_params_dict = init_params_dict,dataset_key = dataset_key,init_case_num=case_num,PATIENCE=patience, ACCUMULATION_SIZE=accum_size)
-                    
+                    run_test(
+                        params,
+                        num_epochs,
+                        N_reserv,
+                        N_ctrl,
+                        time_steps,
+                        N_train,
+                        folder,
+                        gate,
+                        gate.name,
+                        bath,
+                        num_bath,
+                        case_num=case_num,
+                        init_params_dict=init_params_dict,
+                        dataset_key=dataset_key,
+                        PATIENCE=patience,
+                        ACCUMULATION_SIZE=accum_size,
+                        scale_by_num_train=scale_by_num_train,
+                        per_block_target_update=per_block_target_update
+                    )
