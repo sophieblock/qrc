@@ -688,6 +688,59 @@ def get_groupwise_lr_trees(
 def _rms(vec: jnp.ndarray) -> float:
     return float(jnp.linalg.norm(vec) / jnp.sqrt(vec.size + 1e-12))
 
+"""
+
+1. Contiguous Block Learning Rate Allocation: This name emphasizes the method of dividing the parameter vector into contiguous blocks (time durations, global field, and couplings) and assigning learning rates based on the characteristics of each block's gradients.
+1. Contiguous Block Learning Rate Allocation: This approach divides the parameter vector into three contiguous blocks—time durations ($\vec{\tau}$), global field ($\vec{h}$), and couplings ($\vec{J}$)—and assigns learning rates based on the characteristics of each block's gradients.
+
+2. Parameter Type-Based Learning Rate Scaling: This method groups parameters by their type into three distinct blocks: the time durations ($\vec{\tau}$), the global field vector ($\vec{h}$), and the coupling parameters ($\vec{J}$). Each block's learning rate is derived from the median and median absolute deviation (MAD) of the gradients within that block, allowing for tailored updates based on parameter type.
+
+3. Temporal Slice-Based Learning Rate Assignment: This approach organizes parameters into time-slice groups, where each time step $t$ includes the corresponding time duration ($\tau_t$), the coupling parameters for that time step (${J_{kl}^{(t)}}$), and the constant global field vector ($\hat{h} = (h^x, h^y, h^z)$). Learning rates are computed for each slice based on the gradients associated with that specific time step, enabling dynamic adjustments that reflect the temporal structure of the optimization problem.
+"""
+
+"""
+    Compute a per-parameter learning rate "tree" as follows:
+        1) Split parameters into three contiguous blocks:
+           - indices [0 : time_steps)           --> the "τ" (time‐durations) block
+           - indices [time_steps : time_steps+3) --> the "h" (global field) block
+           - indices [time_steps+3 : D)          --> the "J" (couplings) block
+         Let grad_magnitudes = |grads| + 1e-12, so we never divide by zero exactly.
+
+        2) Take the *global* 2-norm of all gradients:  grad_norm_all = ||grads||₂ and compute a
+            global ceiling \eta_max so that no parameter‐update in the first-step
+            update is larger than 'target_update' (in norm‐sense):
+                eta_max = target_update / (grad_norm_all + eps)
+        3) For each block $B\!\in\!\{\tau,h,J\}$ compute
+                \[
+                    r_B = \bigl(\mathrm{median}|g_B| + \mathrm{MAD}|g_B|\bigr)
+                        \times \texttt{scale\_fac}.
+                \]
+                If \texttt{scale\_by\_num\_train} is \textsc{True} the scale factor is
+                \[
+                    \texttt{scale\_fac}=
+                    \begin{cases}
+                    N_C/8 & N_{\text{train}}\!\ge 20,\\[2pt]
+                    N_C/4 & 11\!\le N_{\text{train}}\!\le 15,\\[2pt]
+                    N_C/2 & N_{\text{train}}\!\le 10,
+                    \end{cases}
+                \]
+                otherwise $\texttt{scale\_fac}=1$.
+        4) Finally, assign each parameter i in block 'B' it's individual learning rate:
+                    \[
+                    \eta_i =
+                    \eta_{\max}\;
+                    \frac{r_B}{|g_i|+r_B+\varepsilon},
+                    \qquad
+                    \eta_i\in[10^{-6},\; \texttt{max\_lr}].
+                \]
+            The 2-norm normalises the effect of a single outlier gradient (which would otherwise shrink every \eta_i),
+            yielding a larger usable \eta_max even when the gradient vector is sparse. 
+
+        5) Return the full vector lr_tree of shape [D], plus the three masks
+         (mask_tau, mask_h, mask_J) so you know which indices belonged to which group.
+      
+    """
+
 def get_groupwise_lr_trees_new(
     params: jnp.ndarray,
     grads: jnp.ndarray,
