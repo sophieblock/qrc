@@ -877,6 +877,59 @@ def get_optimizer(
             make_chain("J")(g(opt_lr["J"])),
         )
         return desc, wrap(base, passes_value=False, passes_step=True)
+    elif case == 6:
+        desc = "slice‐wise LARS + masked Adam"
+
+        # We assume `opt_lr` is *already* a flat [D]-vector (from get_slicewise_lr_trees).
+        # We also need the `assignment_mask` (length D, telling slice‐ID ∈ [0..T] for each index).
+        # But get_optimizer only got `opt_lr`. We can fix that by passing `opt_lr` as a tuple:
+        #    opt_lr = (lr_tree, assignment_mask) 
+        # when case_num=6 in run_test. (See step 3 below.)
+        lr_tree, assignment_mask = opt_lr  # unpack our tuple
+
+        # Build one mask per group (there are T slices + 1 “h” group).
+        T = num_epochs_or_time_steps_here   # we will pass `time_steps` into num_epochs or a new arg
+        # Actually, we'd rather pass time_steps explicitly into get_optimizer for case 6:
+        #    get_optimizer(case=6, opt_lr=(lr_tree,assignment_mask), time_steps=…, ...)
+        #
+        # Here we assume `time_steps` is accessible (it was passed to get_optimizer).
+        groups = jnp.arange(time_steps + 1)  # 0..T-1 = slices, T = h‐block
+        masks = {}
+        for g in groups:
+            masks[f"group_{g}"] = jax.tree_util.tree_map(
+                lambda i: i == g, assignment_mask
+            )  # boolean mask of length D
+
+        # Now build a separate Adam optimizer for each group g, each with its own constant lr = lr_group.
+        # We can use `optax.inject_hyperparams(optax.adam)(learning_rate=lr_group)`.
+        # However, Adam expects a *scalar* LR, so we extract from lr_tree (any index belonging to group g).
+        # Because within each group, lr_tree is constant, we can just pick the first element:
+        def make_group_adam(gid):
+            # pick a representative index for this group
+            idxs = jnp.where(assignment_mask == gid, size=lr_tree.shape[0])[0]
+            rep_idx = idxs[0]
+            lr_g = float(lr_tree[rep_idx])  # scalar for group gid
+            return optax.inject_hyperparams(optax.adam)(
+                learning_rate=lr_g, b1=b1, b2=b2, eps=eps
+            )
+
+        # Build a “chain” of one Adam per group, each masked:
+        chains = []
+        for g in groups:
+            chain_g = optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.masked(make_group_adam(g), {f"p{i}": (assignment_mask == g)[i] 
+                                                   for i in range(lr_tree.shape[0])})
+            )
+            chains.append(chain_g)
+
+        # Finally, we compose all the per‐group chains in one big `optax.chain`.
+        # Because each mask is disjoint, this will update each group in parallel,
+        # each with its own Adam instance and its own fixed lr.
+        base_opt = optax.chain(*chains)
+
+        # wrap the update fn so it accepts `value` (but we ignore it for pure Adam)
+        return desc, wrap(base_opt, passes_value=False, passes_step=False)
     # default fallback
     desc = "per-param Adam"
     base_opt = optax.chain(
