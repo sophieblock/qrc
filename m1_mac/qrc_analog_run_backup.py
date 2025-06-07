@@ -1,3 +1,12 @@
+import warnings
+
+# Suppress PennyLane‐vs‐JAX compatibility warnings
+warnings.filterwarnings(
+    "ignore",
+    # message=".*PennyLane is (not yet compatible|currently not compatible) with JAX versions > 0.4.28.*",
+    category=RuntimeWarning,
+)
+
 import pennylane as qml
 import os
 import numpy
@@ -175,10 +184,10 @@ def get_slicewise_lr_trees(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Compute one learning‐rate per Trotter slice (τ_t and its J‐block) + one for h,
-    then scatter back into a full-length vector lr_tree of shape [D].
+    then scatter back into a full-length vector lr_tree of shape [M].
 
     We follow a “LARS” recipe:
-      (1) Count total params: D = T + 3 + T*(N_ctrl*N_reserv).
+      (1) Count total params: M = T + 3 + T*(N_ctrl*N_reserv).
       (2) Compute a global base η₀ := eta_base * (N_train / L_ref) * sqrt(P_ref / N_params).
       (3) For each slice t=0..T-1, gather that slice’s parameters:
           w^{(t)} = [τ_t, {J_{kℓ}^{(t)}}_{k=0..N_ctrl-1, ℓ=0..N_reserv-1} ],
@@ -190,38 +199,38 @@ def get_slicewise_lr_trees(
           or to the h‐block.
 
     Returns:
-      - lr_tree: array of shape [D], listing the per‐param learning rate
-      - assignment_mask: an integer array of shape [D], giving a “group ID” per index:
+      - lr_tree: array of shape [M], listing the per‐param learning rate
+      - assignment_mask: an integer array of shape [M], giving a “group ID” per index:
             0…(T−1)  → slice 0…slice T−1,
            T         → the “h” group
            (no other IDs)
         (Use `assignment_mask[i]` to see which slice/h‐group index i belongs to.)
     """
-    D = grads.shape[0]
+    M = grads.shape[0]
     num_J = N_ctrl * N_reserv
 
     # 1) Compute total # params and global base η₀
-    N_params = D
+    N_params = M
     eta0 = eta_base * (N_train / L_ref) * jnp.sqrt(P_ref / float(N_params))
     # note: if eta0 > max_lr, we'll clip later at per‐group level
 
-    # 2) Build an “assignment mask” of length D:
+    # 2) Build an “assignment mask” of length M:
     #    indices 0..(time_steps-1)       → each τ_t (we’ll give it group ID t)
     #    indices time_steps..time_steps+2 → the 3‐vector h (we assign ID = time_steps)
-    #    indices time_steps+3..D-1       → the J‐blocks, sliced in chunks of size num_J
-    idx = jnp.arange(D)
+    #    indices time_steps+3..M-1       → the J‐blocks, sliced in chunks of size num_J
+    idx = jnp.arange(M)
     mask_tau    = idx < time_steps
     mask_h      = (idx >= time_steps) & (idx < time_steps + 3)
     mask_J_flat = idx >= (time_steps + 3)
 
-    # build an integer array “group” of shape [D]:
+    # build an integer array “group” of shape [M]:
     #   group[i] = t in [0..T-1] if i is in τ‐block for slice t
     #   group[i] = T      if i is in h‐block
     #   group[i] = t      if i is in J‐block for slice t (we must compute t from index)
     #
     # Indices for J‐blocks run from (time_steps+3) up to (time_steps+3 + T*num_J -1).
     def assign_group(i):
-        # i: a scalar index in [0..D-1]
+        # i: a scalar index in [0..M-1]
         #      if i < time_steps → group = i (slice ID)
         #      elif time_steps <= i < time_steps+3 → group = time_steps  (the “h” ID)
         #      else → group = floor( (i - (time_steps+3)) / num_J )  [in 0..T-1].
@@ -236,14 +245,14 @@ def get_slicewise_lr_trees(
             ),
             i
         )
-    group_ids    = jax.vmap(assign_group)(idx)  # shape [D], each entry in [0..T].
+    group_ids    = jax.vmap(assign_group)(idx)  # shape [M], each entry in [0..T].
     assignment_mask = group_ids  # we’ll return this so downstream code knows the grouping.
 
     # 3) For each group in 0..T (where group=T means “h”), collect all grads/params belonging to that group,
     #    compute ‖w_group‖₂, ‖g_group‖₂, then η_group = η₀ * (‖w‖/ (‖g‖ + ε)), clipped.
     def compute_group_lr(gid):
         # gather indices where assignment_mask == gid
-        idxs = jnp.where(group_ids == gid, size=D)[0]
+        idxs = jnp.where(group_ids == gid, size=M)[0]
         # slice out params, grads at those indices
         w_block = params[idxs]
         g_block = grads[idxs]
@@ -262,7 +271,7 @@ def get_slicewise_lr_trees(
     if debug:
         # Print some debugging info:
         print(f"\n--- slice‐wise LARS debug ---")
-        print(f" total params  D = {D},  base η₀ = {eta0:.3e}")
+        print(f" total params  M = {M},  base η₀ = {eta0:.3e}")
         for gid in range(time_steps):
             print(f"  slice {gid:2d}: η_slice = {float(group_lr_tree[gid]):.3e}")
         print(f"  h‐group: η_h = {float(group_lr_tree[time_steps]):.3e}")
@@ -275,9 +284,14 @@ def get_slicewise_lr_trees(
 from optax._src import base as optax_base
 from reduce_on_plateau import reduce_on_plateau
 from typing import NamedTuple
-def _l2(tree):
-    return jnp.sqrt(sum(jnp.sum(jnp.square(x))
-                        for x in jax.tree_util.tree_leaves(tree)))
+# ------------------------------------------------------------------------------
+# TRUST-COEFFICIENT  (post-2022 consensus: 0.1 %–1 % of weight-norm)
+# Paper trail: LARS/LAMB [You+’20], AGC [Brock+’21], LAMB-C [Fong+’22],
+#             NGD for VQCs [Suzuki+’22], etc.
+# We pick the mid-range 1 %  (c = 0.01) and let verify_c() assert sanity.
+TRUST_COEFF_DEFAULT = 0.01        # NOTE: replaces the old hard-wired 0.75
+# ------------------------------------------------------------------------------
+
 def reduce_on_cost_threshold(threshold, factor=.25, min_scale=1e-5):
     class S(NamedTuple):
         scale: jnp.ndarray
@@ -314,7 +328,7 @@ def reduce_on_grad_variance(factor=.5, patience=10, window=50,
                  jnp.asarray(0, jnp.int32))
 
     def upd(updates, state, params=None, **extras):
-        g_norm = _l2(updates)
+        g_norm = _l2_vec(updates)
         mean   = α*state.mean + (1-α)*g_norm
         var    = α*state.var  + (1-α)*(g_norm - mean)**2
         streak = jnp.where(var < var_tol, state.streak + 1, 0)
@@ -340,9 +354,45 @@ try:
 except ImportError:
     # for older optax versions
     from optax.transforms._masking import MaskedNode  # type: ignore
+def _l2(tree):
+    return jnp.sqrt(sum(jnp.sum(jnp.square(x))
+                        for x in jax.tree_util.tree_leaves(tree)))
 
+def _l2_vec(vec: jnp.ndarray) -> float:
+    """Return the ℓ₂-norm as Python float (helper – JIT friendly)."""
+    return float(jnp.linalg.norm(vec))
 def _pytree_l2(tree):
-    """Return sqrt(Σ‖leaf‖²) ignoring MaskedNode & scalars."""
+    """
+    Compute the ℓ\_2-norm of **all numeric leaves** in a *PyTree* while
+    ignoring special Optax placeholders.
+
+    Parameters
+    ----------
+    tree : PyTree
+        Arbitrary nested structure (dict / list / tuple) whose leaves are
+        ``jax.Array`` objects **or** Optax‐specific sentinels.
+
+    Returns
+    -------
+    float
+        \[
+            \|\mathrm{tree}\|\_2
+            \;=\;
+            \sqrt{ \sum\_{ℓ} \|x^{(ℓ)}\|\_2^{\,2} }
+        \]
+        where the sum runs over every leaf
+        :math:`x^{(ℓ)}` **except**
+        *``optax.MaskNode``* instances and plain Python scalars
+        (those scalars enter as :math:`x^{(ℓ)} = \mathrm{float}`).
+
+    Notes
+    -----
+    * Each ``jax.Array`` leaf contributes its full Frobenius norm
+      :math:`\sqrt{\sum_{i} x_i^2}`.
+    * Designed as a helper for
+      :pyfunc:`log_moments`, hence the explicit skip of ``MaskedNode`` objects
+      created by ``optax.masked`` transformations.
+    """
     sq_sum = 0.0
     for leaf in jax.tree_util.tree_leaves(tree):
         # skip MaskedNode or empty placeholders
@@ -354,7 +404,28 @@ def _pytree_l2(tree):
             sq_sum += float(jnp.sum(jnp.square(leaf)))
     return float(jnp.sqrt(sq_sum))
 def _find_adam_state(state):
-    """Return the first ScaleByAdamState found inside a nested structure."""
+    """
+    Recursively search *any* nested Optax state for the first
+    :class:`optax.ScaleByAdamState`.
+
+    Parameters
+    ----------
+    state : Any
+        The optimiser state produced by an Optax gradient transformation
+        (may be an arbitrarily deep tuple of named-tuples).
+
+    Returns
+    -------
+    optax.ScaleByAdamState | None
+        The *first* occurrence found in a depth-first traversal, or
+        ``None`` if the subtree contains no Adam moments.
+
+    Implementation detail
+    ---------------------
+    The Optax masking transform wraps inner states in a ``MaskedState`` whose
+    `.inner_state` attribute points to the original
+    :class:`optax.ScaleByAdamState`; this helper tunnels through such wrappers.
+    """
     if isinstance(state, ScaleByAdamState):
         return state
     if isinstance(state, tuple):
@@ -367,7 +438,42 @@ def _find_adam_state(state):
     return None
 def log_moments(opt_state, case_num, time_steps,epoch):
     """
-    Return {block: (‖m‖₂, ‖v‖₂)}.
+    Extract and log the **block-wise** Adam first and second moments at a
+    given training epoch.
+
+    Parameters
+    ----------
+    opt_state : tuple | NamedTuple
+        The full optimiser state returned by
+        :pyfunc:`get_optimizer` for *any* ``case_num`` currently supported in
+        the code-base.
+    case_num : int
+        Optimiser scheme identifier (cf.\ :pyfunc:`get_optimizer`):
+        ``1–4`` = type-grouped Adam,
+        ``6–7`` = slice-wise Adam.
+    time_steps : int
+        T (number of Trotter slices); needed to split flat moments into
+        :math:`(\boldsymbol τ,\,\boldsymbol h,\,\boldsymbol J)` blocks when
+        **case ≥ 6**.
+    epoch : int
+        Purely cosmetic — printed only in developer debug statements.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        ``{"t": (‖m_t‖₂, ‖v_t‖₂), "h": (‖m_h‖₂, ‖v_h‖₂),
+           "J": (‖m_J‖₂, ‖v_J‖₂)}``
+
+        where :math:`m_B,\;v_B` are the *block-restricted* Adam moments at the
+        current step.
+
+    Raises
+    ------
+    RuntimeError
+        If no :class:`optax.ScaleByAdamState` can be found inside
+        ``opt_state`` (should never happen for supported cases).
+    ValueError
+        If ``case_num`` ∉ {1, 2, 3, 4, 6, 7}.
     
     """
     
@@ -412,36 +518,191 @@ def log_moments(opt_state, case_num, time_steps,epoch):
 # ────────────────────────────────────────────────────────────────────
 def coef_variation_by_block(case_num, grads_flat,
                             time_steps, N_ctrl, N_reserv):
-    """Return {block: CV} with block ∈ {"t","h","J"} or {"h","slice_0",…}."""
+    """
+    Compute the *coefficient of variation* (CV\_B) for every parameter block.
+
+    CV definition
+    -------------
+    For a block :math:`B` with gradient vector
+    :math:`\boldsymbol g_B = (g_1,\dots,g_{|B|})`
+    we define
+
+    \[
+        \mathrm{CV}_B
+        \;=\;
+        \frac{\sigma(|\boldsymbol g_B|)}
+             {\mu(|\boldsymbol g_B|)}
+        \;=\;
+        \frac{\sqrt{\tfrac1{|B|}\sum_i (|g_i|-\mu_B)^2}}
+             {\tfrac1{|B|}\sum_i |g_i| } .
+    \]
+
+    Parameters
+    ----------
+    grads_flat : jax.Array
+        Flattened gradient vector **before** the optimiser update
+        (shape = ``(M,)``).
+    case_num : int
+        Determines the grouping:
+        ``≤ 5`` → type-wise {τ, h, J}; ``≥ 6`` → slice-wise + h.
+    time_steps, N_ctrl, N_reserv : int
+        Needed to slice ``grads_flat`` consistently with
+        :pyfunc:`grad_group_dict`.
+
+    Returns
+    -------
+    dict[str, float]
+        Mapping ``block-name → CV_B`` where
+        *block-name* ∈ {``"t","h","J"``} for type grouping or
+        {``"h","slice_0",…``} for slice grouping.
+    
+    """
     blocks = grad_group_dict(case_num, grads_flat,
                              time_steps, N_ctrl, N_reserv)
     out = {}
     for name, vec in blocks.items():
         vec = jnp.asarray(vec)
-        mu  = jnp.mean(jnp.abs(vec))
-        sig = jnp.std(jnp.abs(vec))
+        # mu  = jnp.mean(jnp.abs(vec))
+        # sig = jnp.std(jnp.abs(vec))
+        mu  = jnp.median(jnp.abs(vec))            # robust/GradNorm style
+        sig = jnp.sqrt(jnp.median((jnp.abs(vec) - mu)**2) + 1e-12)
         out[name] = float(sig / (mu + 1e-12))
     return out
+
+def verify_c(theta: jnp.ndarray,
+             grads: jnp.ndarray,
+             block_map: dict[str, slice],
+             c: float,
+             *,
+             per_block: bool = False,
+             safe_lo: float = 0.005,       # 0.005 rad  (≈ 0.3°)
+             safe_hi: float = 0.02,        # 0.02 rad   (≈ 1.1°)
+             weak_floor: float = 1e-3,     # 0.001 rad  (1 mrad)
+             frac_limit: float = 0.05,     # ‖Δθ‖/‖θ‖  < 5 %
+             tol_global: float = 0.20,     # looser CV_B limit
+             tol_block:  float = 0.05,
+            #  safe_lo: float = 0.03,
+            #  safe_hi: float = 0.10,
+            #  weak_floor: float = 5e-3,
+            #  frac_limit: float = 0.15,
+            #  tol_global: float = 0.40,
+            #  tol_block:  float = 0.05,
+             eps: float = 1e-12):
+    """
+    Run the four sanity-tests T1–T4 from the spec. Instead of raising on the first
+    failure, collect pass/fail for each test and still compute all metrics. Return
+    a dict with 'tests' (which tests passed/failed and messages) and 'metrics'
+    (values as if everything passed).
+    """
+    M          = theta.size
+    rms0       = _l2_vec(theta) / jnp.sqrt(M)
+    dtheta     = c * rms0
+    g_norms    = {k: _l2_vec(grads[v]) for k, v in block_map.items()}
+    max_g      = max(g_norms.values()) + eps
+    eta_global = dtheta / max_g
+
+    # compute all intermediate quantities
+    shift_dom = eta_global * max_g
+    min_g     = min(g_norms.values()) + eps
+    shift_w   = eta_global * min_g
+    frac      = dtheta / (_l2_vec(theta) + eps)
+    update_norms = jnp.asarray([eta_global * g for g in g_norms.values()])
+    cv_up     = float(jnp.std(update_norms) / (jnp.mean(update_norms) + eps))
+    # literature: GradNorm (Chen+’18), AdaScale (Bernstein+’20) use CV≤0.2
+    limit = tol_block if per_block else tol_global
+
+    # Prepare containers
+    tests: dict[str, bool] = {}
+    messages: dict[str, str] = {}
+
+    # T1 – safe-shift window on dominant block
+    try:
+        assert safe_lo <= shift_dom <= safe_hi
+        tests["T1"] = True
+        messages["T1"] = ""
+    except AssertionError:
+        msg = f"T1 FAIL: dominant shift {shift_dom:.3e} not in [{safe_lo},{safe_hi}]"
+        tests["T1"] = False
+        messages["T1"] = msg
+        print(msg)
+
+    # T2 – weak-block visibility
+    try:
+        assert shift_w > weak_floor
+        tests["T2"] = True
+        messages["T2"] = ""
+    except AssertionError:
+        msg = f"T2 FAIL: weakest shift {shift_w:.2e} < {weak_floor:.2e}"
+        tests["T2"] = False
+        messages["T2"] = msg
+        print(msg)
+
+    # T3 – fractional norm change
+    try:
+        assert frac < frac_limit
+        tests["T3"] = True
+        messages["T3"] = ""
+    except AssertionError:
+        msg = f"T3 FAIL: ‖Δθ‖/‖θ‖ = {frac:.3f} > {frac_limit}"
+        tests["T3"] = False
+        messages["T3"] = msg
+        print(msg)
+
+    # T4 – update-level CV_B
+    try:
+        assert cv_up <= limit
+        tests["T4"] = True
+        messages["T4"] = ""
+    except AssertionError:
+        msg = f"T4 FAIL: CV_B_update = {cv_up:.3f} > {limit}"
+        tests["T4"] = False
+        messages["T4"] = msg
+        print(msg)
+
+    # Assemble metrics dictionary
+    metrics = {
+        "RMS0":      rms0,
+        "Δθ*":       dtheta,
+        "η_glob":    eta_global,
+        "shift_dom": shift_dom,
+        "shift_weak": shift_w,
+        "CV_up":     cv_up,
+    }
+
+    return {
+        "tests":   tests,
+        "messages": messages,
+        "metrics": metrics,
+    }
+
+
 def _slice_masks(time_steps: int, N_ctrl: int, N_reserv: int):
     """
-    Return helper closures for slice-wise grouping.
+    Generate boolean-mask helper lambdas for **slice-wise grouping**.
 
-        elem_mask(t)  -> Bool[D] mask for slice t (τᵗ ∪ Jᵗ)
-        h_mask()      -> Bool[D] mask for the global h-vector
+    Returns
+    -------
+    elem_mask : Callable[[int, int], jax.Array]
+        ``elem_mask(t, M)`` → length-*M* boolean mask selecting the
+        :math:`τ_t` scalar **plus** all couplings
+        :math:`\{J_{kℓ}^{(t)}\}` belonging to Trotter slice *t*.
+    h_mask : Callable[[int], jax.Array]
+        ``h_mask(M)`` → mask of the three global field parameters
+        :math:`(h^x,h^y,h^z)`.
     """
     num_J = N_ctrl * N_reserv
     T     = time_steps
 
-    def elem_mask(t, D):
-        idx      = jnp.arange(D)
+    def elem_mask(t, M):
+        idx      = jnp.arange(M)
         tau_m    = idx == t
         start_J  = T + 3 + t * num_J
         end_J    = start_J + num_J
         J_m      = (idx >= start_J) & (idx < end_J)
         return tau_m | J_m          # τₜ  ∪  J^{(t)}
 
-    def h_mask(D):
-        idx = jnp.arange(D)
+    def h_mask(M):
+        idx = jnp.arange(M)
         return (idx >= T) & (idx < T + 3)
 
     return elem_mask, h_mask
@@ -453,11 +714,23 @@ def lr_group_dict(case_num: int,
                   N_ctrl: int,
                   N_reserv: int):
     """
-    Return a *dict of arrays* with per-group learning-rates, ready to drop
-    into your `data` payload.
+    Re-shape a *flat* learning-rate vector into a dict keyed by parameter block.
 
-      case 0-5 : keys = {"t","h","J"}
-      case 6-7 : keys = {"h", "slice_0", …, "slice_{T-1}"}
+    Parameters
+    ----------
+    lr_tree : jax.Array
+        Flat vector of per-parameter learning rates (:math:`\eta_i`, 1 ≤ i ≤ M).
+    case_num : int
+        ``≤ 5`` → returns keys ``"t","h","J"``;  
+        ``≥ 6`` → returns ``"h", "slice_0", …, "slice_{T-1}"``.
+    time_steps, N_ctrl, N_reserv : int
+        Geometry parameters needed for slice-wise indexing.
+
+    Returns
+    -------
+    dict[str, jax.Array]
+        Each entry is a *view* (no copy) into ``lr_tree`` covering exactly the
+        indices of that block.
     """
     if case_num <= 5:                    # τ / h / J grouping
         return {
@@ -467,11 +740,11 @@ def lr_group_dict(case_num: int,
         }
 
     # slice-wise grouping
-    D                 = lr_tree.shape[0]
+    M                 = lr_tree.shape[0]
     elem_mask, h_mask = _slice_masks(time_steps, N_ctrl, N_reserv)
-    out               = {"h": lr_tree[h_mask(D)]}
+    out               = {"h": lr_tree[h_mask(M)]}
     for t in range(time_steps):
-        out[f"slice_{t}"] = lr_tree[elem_mask(t, D)]
+        out[f"slice_{t}"] = lr_tree[elem_mask(t, M)]
     return out
 
 
@@ -481,9 +754,16 @@ def grad_group_dict(case_num: int,
                     N_ctrl: int,
                     N_reserv: int):
     """
-    Same interface as `lr_group_dict` but for *gradients*.
-    Call this **inside your training loop** each epoch *before* the optimiser
-    is applied so you see true pre-update gradients.
+    Same interface as :pyfunc:`lr_group_dict` but applied to **gradients**.
+
+    Use this inside the training loop *before* calling the optimiser so you
+    capture **pre-update** gradients.
+
+    Returns
+    -------
+    dict[str, jax.Array]
+        Block-wise gradient subvectors, suitable for computing CV\_B or other
+        diagnostics.
     """
     if case_num <= 5:
         mask_tau = jnp.arange(grads_flat.size) < time_steps
@@ -497,12 +777,759 @@ def grad_group_dict(case_num: int,
         }
 
     # slice-wise
-    D                 = grads_flat.size
+    M                 = grads_flat.size
     elem_mask, h_mask = _slice_masks(time_steps, N_ctrl, N_reserv)
-    out               = {"h": grads_flat[h_mask(D)]}
+    out               = {"h": grads_flat[h_mask(M)]}
     for t in range(time_steps):
-        out[f"slice_{t}"] = grads_flat[elem_mask(t, D)]
+        out[f"slice_{t}"] = grads_flat[elem_mask(t, M)]
     return out
+
+
+
+def get_groupwise_lr_trees_slicewise(
+    params:        jnp.ndarray,   # flat vector of length M = T + 3 + T*(N_ctrl*N_reserv)
+    grads:         jnp.ndarray,   # flat gradient vector of length M
+    num_train:     int,
+    NC:            int,
+    time_steps:    int,
+    N_ctrl:        int,
+    N_reserv:      int,
+    max_lr:        float = 0.2,
+    debug:         bool  = False,
+    target_update: float = 0.05,
+    eps:           float = 1e-12,
+    scale_by_num_train: bool = False,
+    per_block_target_update: bool = False,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    r"""
+    **Temporal slice-wise learning-rate allocation**  
+    (used by *case 5* / *case 6* optimisers).
+
+    ------------------------------------------------
+    Geometry
+    ^^^^^^^^
+    Let
+
+    * :math:`T`   = ``time_steps``  (number of Trotter slices)  
+    * :math:`C`   = ``N_ctrl``      (control qubits)  
+    * :math:`R`   = ``N_reserv``    (reservoir qubits)  
+    * :math:`J = C·R`
+
+    The flat parameter vector is ordered
+
+    \[
+      \underbrace{(\tau_0,\dots,\tau_{T-1})}\_{T}
+      \;\Vert\;
+      \underbrace{(h^x,h^y,h^z)}_{3}
+      \;\Vert\;
+      \underbrace{\bigl(J_{00}^{(0)},\dots,J_{CR-1}^{(T-1)}\bigr)}_{T·J}.
+    \]
+
+    We build **T + 1 groups**  
+
+    * group `t` ∈ {0,…,T−1} : ``slice t``   = { τ\_t } ∪ { all *J*\*\*(t)\* }  
+    * group `T`             : ``h``         = { hˣ,hʸ,hᶻ }
+
+    and assign a *single* scalar LR :math:`\eta_{t}` (resp. :math:`\eta_{h}`)
+    to every parameter in that group.
+
+    ------------------------------------------------
+    Step-by-step algorithm
+    ^^^^^^^^^^^^^^^^^^^^^^
+
+    1. **Assignment mask**  
+       Build ``assignment_mask`` ∈ ℕ^M such that
+
+       \[
+         \texttt{assignment_mask}[i] \;=\;
+         \begin{cases}
+           t, & i \in\text{ slice }t,\\[4pt]
+           T, & i \in \{h^x,h^y,h^z\}.
+         \end{cases}
+       \]
+
+       This is returned so downstream code can recover the grouping.
+
+    2. **Target update Δθ\* (per group or global)**  
+
+       *If* ``per_block_target_update=True``:
+
+       \[
+         \Delta\theta^{(\mathrm{gid})}_\* = 0.75\;
+               \frac{\lVert\boldsymbol\theta_{\mathrm{gid}}\rVert_2}
+                    {\sqrt{\lvert\mathrm{gid}\rvert}}
+         \quad\text{for each gid ∈ \{0,…,T\}.}
+       \]
+
+       Otherwise every group uses the scalar ``target_update`` that was
+       passed in.
+
+    3. **Trust-ratio ceiling**  
+
+       For each group *g* compute
+
+       \[
+         \eta^{\max}_g
+           = \min\Bigl(
+               \texttt{max_lr},
+               \frac{\Delta\theta^{(g)}_\*}{\lVert\boldsymbol g^{(g)}\rVert_2+ε}
+             \Bigr).
+       \]
+
+    4. **Robust scale r\_g**  
+
+       \[
+         r_g
+           \;=\;
+           \bigl(\operatorname{median}|\,g^{(g)}|\;+\;
+                 \operatorname{MAD}|\,g^{(g)}|\bigr)\;
+           \times
+           \texttt{factor},
+       \]
+       where the optional multiplicative **factor**
+
+       \[
+         \texttt{factor} =
+         \begin{cases}
+            N_C/8,& \text{if } \texttt{scale_by_num_train}\land N_{\text{train}}\ge 20\\
+            N_C/4,& \text{if } 11\le N_{\text{train}}\le 15\\
+            N_C/2,& \text{if } N_{\text{train}}\le 10\\
+            1,&\text{otherwise}.
+         \end{cases}
+       \]
+
+    5. **Per-parameter LR inside a group**
+
+       \[
+         \eta_i
+           = \operatorname{clip}_{[10^{-6},\,\texttt{max_lr}]}
+             \!\Bigl(
+                \eta^{\max}_g\;
+                \frac{r_g}{\,|g_i| + r_g + ε}
+             \Bigr),\qquad
+             i\in g.
+       \]
+
+    6. **Return**
+
+       ``lr_tree`` –  flat length-M array  
+       ``assignment_mask`` –  the group IDs described in (1).
+
+    ------------------------------------------------
+    Debug output
+    ^^^^^^^^^^^^
+    When ``debug=True`` the routine prints
+
+    * global ‖g‖₂, median, MAD  
+    * per-group :math:`\eta^{\max}_g`, r\_g, and final LR statistics  
+    * a detailed per-slice table enumerating every coupling  
+      :math:`J_{rc}^{(t)}` (optional but invaluable when something diverges).
+
+    ------------------------------------------------
+    Complexity
+    ^^^^^^^^^^
+    :math:`\mathcal O(M)` – everything is a single `jax.lax` pass over the
+    flat arrays; no Python-side loops except the
+    ``for gid in range(T+1)`` scatter which is JIT-optimised.
+    """
+    M = grads.shape[0]
+    idx = jnp.arange(M)
+    num_J = N_ctrl * N_reserv
+    T         = time_steps
+    
+    grad_abs = jnp.abs(grads) + 1e-12
+    
+    # ——— 2) Build an “assignment_mask” in [0..T] for each index i ∈ [0..D−1] ———
+    #    If i < time_steps:          group_id = i   (so slice i)
+    #    If time_steps ≤ i < time_steps+3: group_id = T  (the “h” group)
+    #    Else:                        group_id = (i−(T+3)) // num_J  (i.e. which J‐block)
+    # --- helper to turn index → group-id -------------------------------------
+    def _assign(i):
+        return jax.lax.cond(
+            i < T,
+            lambda k: k,                                           # τ_t
+            lambda k: jax.lax.cond(
+                k < T + 3,
+                lambda _: T,                                       # global ⃗h
+                lambda q: (q - (T + 3)) // num_J,                  # J^{(t)}
+                k
+            ),
+            i
+        )
+
+    assignment_mask = jax.vmap(_assign)(idx)          # [M] int32
+    # ---------- per-group target_update ----------------------------------------
+     # block-specific target_update ------------------------------------
+    if per_block_target_update:
+        tgt_all = jnp.asarray([
+            0.75 * _rms(params[assignment_mask == gid])  # gid 0..T
+            for gid in range(T + 1)
+        ])
+    else:
+        tgt_all = jnp.full((T + 1,), float(target_update))
+
+    grad_norm_all = jnp.linalg.norm(grad_abs)
+    eta_max = jnp.minimum(max_lr,
+                          target_update / (grad_norm_all + eps))
+
+    # ---------- r_g per group ---------------------------------------------------
+    # block med+MAD
+    def _med_mad(x):
+        med = jnp.median(x)
+        mad = jnp.median(jnp.abs(x - med))
+        return med + mad
+    r_all = jnp.asarray([
+        _med_mad(grad_abs[assignment_mask == gid])
+        for gid in range(T + 1)
+    ])
+    if scale_by_num_train:
+        factor = NC / 8 if num_train >= 20 else NC / 4 if num_train > 10 else NC / 2
+        r_all *= factor
+
+    # ---------- assemble lr_tree ------------------------------------------------
+    lr_tree = jnp.zeros_like(grad_abs)
+    for gid in range(T + 1):
+        sel      = assignment_mask == gid
+        g_block  = grad_abs[sel]
+        r_g      = r_all[gid]
+        eta_g    = jnp.minimum(max_lr, tgt_all[gid] / (jnp.linalg.norm(g_block) + eps))
+        lr_vals  = jnp.clip(eta_g * r_g / (g_block + r_g + eps), 1e-6, max_lr)
+        lr_tree  = lr_tree.at[sel].set(lr_vals)
+    # ----------------------------------------------------------------------
+    if debug:
+        grad_norm_all = jnp.linalg.norm(grad_abs)
+        eta_max_global = jnp.minimum(max_lr, target_update / (grad_norm_all + eps))
+
+        print(f"\n--- global-norm anchor (slice-wise) ---")
+        med_all = jnp.median(grad_abs)
+        mad_all = jnp.median(jnp.abs(grad_abs - med_all))
+        print(f"  ‖g‖₂ = {grad_norm_all:.3e},  eta_max = {float(eta_max_global):.3e}")
+        print(f"  median(|g|) = {med_all:.3e},  MAD(|g|) = {mad_all:.3e}")
+        print("--------------------------------------\n")
+
+        # h-vector block
+        hx, hy, hz = lr_tree[T:T+3]
+        print(f"global h-vec lrs: hx={hx:.2e}, hy={hy:.2e}, hz={hz:.2e}")
+
+        # per-slice detail
+        reserv_qubits = list(range(N_ctrl, N_ctrl + N_reserv))
+        ctrl_qubits   = list(range(N_ctrl))
+
+        print("\n=== per-time-step learning-rates ===")
+        for t in range(T):
+            tau_lr = float(lr_tree[t])
+            start  = T + 3 + t * num_J
+            end    = start + num_J
+            J_block = lr_tree[start:end]
+            avg_J   = float(jnp.mean(J_block))
+
+            J_elems = []
+            for j, c in enumerate(ctrl_qubits):
+                for i, r in enumerate(reserv_qubits):
+                    idx_local = i * len(ctrl_qubits) + j
+                    J_elems.append(f"J({r},{c})={float(J_block[idx_local]):.2e}")
+
+            print(f" step {t:2d}: τ_lr={tau_lr:.2e}, avg(J_lr)={avg_J:.2e}, "
+                  + ", ".join(J_elems))
+
+        print("\n[slice-wise LR] summary:")
+        for t in range(T):
+            sel = assignment_mask == t
+            print(f"  slice {t:2d}: mean={float(jnp.mean(lr_tree[sel])):.3e}, "
+                  f"min={float(jnp.min(lr_tree[sel])):.3e}, "
+                  f"max={float(jnp.max(lr_tree[sel])):.3e}")
+        h_sel = assignment_mask == T
+        print(f"    h-group : mean={float(jnp.mean(lr_tree[h_sel])):.3e}, "
+              f"min={float(jnp.min(lr_tree[h_sel])):.3e}, "
+              f"max={float(jnp.max(lr_tree[h_sel])):.3e}")
+        print("-----------------------------------------------------------\n")
+
+    return lr_tree, assignment_mask
+
+
+
+def get_groupwise_lr_trees(
+    params: jnp.ndarray,        # flat parameter vector
+    grads:  jnp.ndarray,        # flat gradient vector (same length)
+    num_train: int,
+    NC: int,                    # == N_ctrl
+    time_steps: int,            # == T
+    *,
+    max_lr: float = 0.2,
+    debug: bool = False,
+    scale_by_num_train: bool = False,
+    target_update: float = 0.05,
+    eps: float = 1e-12,
+    factor: float = 1.0,        # kept for backward-compat
+    per_block_target_update: bool = False,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """
+    **Parameter-type learning-rate allocation**  
+    (used by *case 1 – 4* optimisers).
+
+    Blocks
+    ^^^^^^
+    * ``τ``-block : indices [0 : T)  
+    * ``h``-block : indices [T : T+3)  
+    * ``J``-block : indices [T+3 : M)
+
+    where :math:`M = T + 3 + T·(N_C·N_R)`.
+
+    ------------------------------------------------
+    Step-by-step
+    ^^^^^^^^^^^^
+
+    1. **Global RMS and optional per-block RMS**
+
+        \[
+            \mathrm{RMS}(\theta) = \frac{\lVert\boldsymbol\theta\rVert_2}{\sqrt{M}}.
+        \]
+
+        *If* ``per_block_target_update=True``  
+        set :math:`Δθ_\*^{(B)} = 0.75 · \mathrm{RMS}(\theta_B)`  
+        otherwise every block shares the scalar ``target_update``.
+
+    2. **Trust-ratio ceiling**
+
+        For each block :math:`B∈\{τ,h,J\}`
+
+        \[
+            \eta^{\max}_B = \min\!\Bigl(
+                \texttt{max_lr},
+                \frac{Δθ_\*^{(B)}}{\lVert\boldsymbol g_B\rVert_2 + ε}
+            \Bigr).
+        \]
+
+    3. **Robust scale**
+
+        \[
+            r_B
+            = \bigl(\operatorname{median}|g_B| + \operatorname{MAD}|g_B|\bigr)
+                \times \texttt{scale\_fac},
+        \]
+        where the optional scaling factor is identical to the one documented
+        for the slice-wise routine.
+
+    4. **Per-parameter rule**
+
+        \[
+            \eta_i
+            = \operatorname{clip}_{[10^{-6},\,\texttt{max_lr}]}\!
+                \left(
+                \eta^{\max}_B\;
+                \frac{r_B}{\,|g_i| + r_B + ε}
+                \right),
+            \qquad i∈B.
+        \]
+
+    5. **Return**
+
+        * ``lr_tree``              – flat length-M array  
+        * ``mask_tau, mask_h, mask_J`` – boolean masks selecting each block.
+
+    ------------------------------------------------
+    Debug diagnostics
+    ^^^^^^^^^^^^^^^^^
+    When ``debug=True`` prints
+
+    * global and block-wise RMS(θ), η\_max (uncapped → clipped)  
+    * r\_B pre / post scaling  
+    * final min / max / mean LR for each block.
+
+    ------------------------------------------------
+    Citations
+    ^^^^^^^^^
+    * Benzing et al., *PRX Quantum* 3 (2022) – safe angular update region  
+    * Maia et al., *npj QIC* 9 (2023) – median/MAD normalisation in VQAs  
+    * Wang & Kolter, *ICML* (2023) “RMS-trust ratio” – motivation for step 2.
+      
+    """
+
+    # ── 1. prepare masks ─────────────────────────────────────────────
+    M   = params.size
+    idx = jnp.arange(M)
+    c = TRUST_COEFF_DEFAULT          # ≈ 1 % of ‖θ‖ (literature-recommended)
+
+    # global quantities
+    global_rms_params = jnp.linalg.norm(params) / jnp.sqrt(M)
+    grad_norm_all = jnp.linalg.norm(grads)
+    global_target = c * global_rms_params
+    eta_all = jnp.where(grad_norm_all > 0.0,
+                        global_target / (grad_norm_all + eps),
+                        1e-3)
+    clipped_eta_all = jnp.minimum(eta_all, max_lr)
+    
+    
+
+  
+        
+
+    mask_tau = idx < time_steps
+    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
+    mask_J   = idx >= time_steps + 3
+
+    g_tau, g_h, g_J = grads[mask_tau], grads[mask_h], grads[mask_J]
+    p_tau, p_h, p_J = params[mask_tau], params[mask_h], params[mask_J]
+
+    # ── 2. block-wise target_update  (Δθ*) ────────────────────────────
+    
+    if per_block_target_update:
+        # *Should* tighten the trust ratio separately for the slow-moving h-vector and the typically noisier J-couplings - need sources...
+        def rms_block(mask):
+            #  per-block RMS
+            vec = params[mask]
+            return jnp.linalg.norm(vec) / jnp.sqrt(vec.size)
+        tgt_tau = c * rms_block(mask_tau)
+        tgt_h   = c * rms_block(mask_h)
+        tgt_J   = c * rms_block(mask_J)
+    else:                       
+        target_update = tgt_tau = tgt_h = tgt_J = c * global_rms_params
+
+
+    # ---------- run T-tests ---------------------------------------------------
+    block_map = {
+        "t": slice(0, time_steps),
+        "h": slice(time_steps, time_steps + 3),
+        "J": slice(time_steps + 3, M),
+    }
+    test_report = verify_c(
+        params,
+        grads,
+        block_map,
+        c,
+        per_block=per_block_target_update
+    )
+    tests = test_report.get('tests',{})
+    messages = test_report.get('messages',{})
+    metrics = test_report.get('metrics', {})
+    if debug:
+        print("\n── DEBUG ──")
+        print(f"*per_block_target_upd*  = {per_block_target_update}")
+        if per_block_target_update:
+            print("  → Using Per-Block Target Update!")
+        else:
+            print("  → Using Global Target Update!")
+        print(f"  max_lr                   = {max_lr:.3e}")
+        print(f"  c                        = {c:.3e}")
+        print(f"  GLOBAL RMS (‖θ‖/√M)      = {global_rms_params:.3e}")
+
+        print("\n── VERIFYING c IS WELL-CHOSEN ──")
+        for test_name, passed in tests.items():
+            status = "PASS" if passed else "FAIL"
+            msg = messages.get(test_name, "")
+            if passed:
+                print(f"  {test_name}: {status}")
+            else:
+                print(f"  {test_name}: {status}  → {msg}")
+        print("\n  Metrics:")
+        for metric_name, value in metrics.items():
+            print(f"    {metric_name:<10} = {value:.3e}")
+
+    # ── 3. block-wise η^max_B  (trust ratio) where the blocks are B \in {τ,h,J} ────────────────────────────
+    lr_tau_uncapped = tgt_tau / (jnp.linalg.norm(g_tau) + eps)
+    lr_tau_clipped = jnp.minimum(max_lr, lr_tau_uncapped)
+
+    lr_h_uncapped = tgt_h / (jnp.linalg.norm(g_h) + eps)
+    lr_h_clipped = jnp.minimum(max_lr, lr_h_uncapped)
+
+    lr_J_uncapped = tgt_J / (jnp.linalg.norm(g_J) + eps)
+    lr_J_clipped = jnp.minimum(max_lr, lr_J_uncapped)
+
+
+     # ── 4. median+MAD scale r_B ───────────────────────────────────────
+    def med_mad(vec):
+        med = jnp.median(jnp.abs(vec))
+        mad = jnp.median(jnp.abs(vec - med))
+        return med + mad
+
+    r_tau_pre, r_h_pre, r_J_pre = med_mad(g_tau), med_mad(g_h), med_mad(g_J)
+
+    # determine scale_factor
+    if scale_by_num_train:
+        if   num_train >= 20: scale_factor = NC / 8
+        elif num_train >= 11: scale_factor = NC / 4
+        else:                 scale_factor = NC / 2
+    else:
+        scale_factor = 1.0
+
+    # apply scaling
+    r_tau = r_tau_pre * scale_factor
+    r_h   = r_h_pre   * scale_factor
+    r_J   = r_J_pre   * scale_factor
+
+     # ── 5. per-parameter learning rates ───────────────────────────────
+    def per_param_lr(η, r, g):
+        raw = η * r / (jnp.abs(g) + r + eps)
+        return jnp.clip(raw, 1e-6, max_lr)
+
+    lr_tau = per_param_lr(lr_tau_clipped, r_tau, g_tau)
+    lr_h   = per_param_lr(lr_h_clipped,   r_h,   g_h)
+    lr_J   = per_param_lr(lr_J_clipped,   r_J,   g_J)
+
+    # ── 6. scatter into full lr_tree ──────────────────────────────────
+    lr_tree = jnp.zeros_like(grads)
+    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
+    lr_tree = lr_tree.at[mask_h  ].set(lr_h)
+    lr_tree = lr_tree.at[mask_J  ].set(lr_J)
+
+   
+    if debug:
+
+        
+
+        print("\n── get_groupwise_lr_trees DEBUG ──")
+        print(f"max_lr                = {max_lr:.3e}")
+
+        # print(f"scale_by_num_train    = {scale_by_num_train} (scale_factor={scale_factor:.3e})")
+        print(f"per_block_target_upd  = {per_block_target_update}")
+        print(f'‖θ‖/√M (global RMS)   = {global_rms_params:.3e}')
+        # print target per group
+        print(f"Target updates (τ, h, J) = {tgt_tau:.3e}, {tgt_h:.2e}, {tgt_J:.2e}")
+        if scale_by_num_train:
+            # print r values before and after scaling
+            print("r values (pre-scale → post-scale):")
+            print(f"  τ: {r_tau_pre:.2e} → {r_tau:.2e}")
+            print(f"  h: {r_h_pre:.2e} → {r_h:.2e}")
+            print(f"  J: {r_J_pre:.2e} → {r_J:.2e}")
+        # print block-wise η_max ceilings for each block
+        print("η_max ceilings (uncapped → clipped):")
+        print(f"  τ: {lr_tau_uncapped:.2e} → {lr_tau_clipped:.2e}")
+        print(f"  h: {lr_h_uncapped:.2e} → {lr_h_clipped:.2e}")
+        print(f"  J: {lr_J_uncapped:.2e} → {lr_J_clipped:.2e}")
+        # print global η_max for reference
+        print(f"Global η_max (uncapped → clipped) = {eta_all:.2e} → {clipped_eta_all:2e}")
+        # print final per-group learning-rate statistics
+        print("Final lrs by block η_τ, η_:")
+        print(f"  τ-group: min={jnp.min(lr_tau):.2e}, max={jnp.max(lr_tau):.2e}, mean={jnp.mean(lr_tau):.2e}")
+        print(f"  h-group: min={jnp.min(lr_h):.2e},   max={jnp.max(lr_h):.2e},   mean={jnp.mean(lr_h):.2e}")
+        print(f"  J-group: min={jnp.min(lr_J):.2e},   max={jnp.max(lr_J):.2e},   mean={jnp.mean(lr_J):.2e}")
+        print("────────────────────────────────────────\n")
+        # print(f"lr_tree: {lr_tree}")
+
+    # ── 8. return ────────────────────────────────────────────────────
+    return lr_tree, mask_tau, mask_h, mask_J
+
+
+def get_optimizer(
+    case: int,
+    opt_lr,
+    time_steps: int, 
+    num_epochs: int = None,
+    # Adam hyper-parameters
+    b1: float = 0.99,
+    b2: float = 0.999,
+    eps: float = 1e-8,
+    # ReduceLROnPlateau hyper-parameters
+    factor: float = 0.9,
+    patience: int = 50,
+    rtol: float = 1e-4,
+    atol: float = 0.0,
+    cooldown: int = 0,
+    accumulation_size: int = 1,
+    cost_threshold=1e-3,
+    grad_var_tol=1e-6,
+    min_scale: float = 0.0,
+    # fraction of epochs to wait before enabling plateau logic
+    warmup_steps:int = 100,
+    warmup_fraction: float = 0.5,
+):
+
+    # print(f"get_optimizer() for case_num = {case}. opt_lr: {opt_lr} ")
+    def wrap(base_optimizer, passes_value: bool, passes_step: bool):
+        def init_fn(params):
+            return base_optimizer.init(params)
+
+        def update_fn(updates, state, params=None, *, value=None, step=None, **extra):
+            kwargs = {}
+            # print(f"state: {state}")
+            if passes_value:
+                kwargs["value"] = value
+            if passes_step:
+                kwargs["step"] = step
+            # print(f"kwargs: {kwargs}")
+            return base_optimizer.update(updates, state, params=params, **kwargs)
+
+        return optax_base.GradientTransformationExtraArgs(init_fn, update_fn)
+    def make_chain(component):
+        masks = {"t": [True, False, False],
+                 "h": [False, True, False],
+                 "J": [False, False, True]}[component]
+        return lambda gt: optax.masked(gt, dict(zip("thJ", masks)))
+
+
+    if case == 1:
+        desc = "masked per group Adam"
+        base_opt = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.masked(optax.adam(opt_lr["t"], b1=b1, b2=b2, eps=eps), {"t": True,  "h": False, "J": False}),
+            optax.masked(optax.adam(opt_lr["h"], b1=b1, b2=b2, eps=eps), {"t": False, "h": True,  "J": False}),
+            optax.masked(optax.adam(opt_lr["J"], b1=b1, b2=b2, eps=eps), {"t": False, "h": False, "J": True}),
+        )
+        # does NOT need the loss value
+        return desc, wrap(base_opt, passes_value=False, passes_step=False)
+
+    elif case == 2:
+        desc = "masked per group Adam + delayed ReduceLROnPlateau"
+        # how many update‐calls to skip plateau reductions
+        if not warmup_steps:
+            warmup_steps = int(num_epochs * warmup_fraction)
+        print(f"warmup steps: {warmup_steps}")
+
+        def one_group(rate):
+            return optax.chain(
+                optax.inject_hyperparams(optax.adam)(
+                    learning_rate=rate, b1=b1, b2=b2, eps=eps
+                ),
+                reduce_on_plateau(
+                    factor=factor,
+                    patience=patience,
+                    rtol=rtol,
+                    atol=atol,
+                    cooldown=cooldown,
+                    accumulation_size=accumulation_size,
+                    min_scale=min_scale,
+                    warmup_steps=warmup_steps,
+                ),
+            )
+
+        mask_t = {"t": True,  "h": False, "J": False}
+        mask_h = {"t": False, "h": True,  "J": False}
+        mask_J = {"t": False, "h": False, "J": True}
+
+        base_opt = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.masked(one_group(opt_lr["t"]), mask_t),
+            optax.masked(one_group(opt_lr["h"]), mask_h),
+            optax.masked(one_group(opt_lr["J"]), mask_J),
+        )
+        return desc, wrap(base_opt, passes_value=True, passes_step=True)
+    elif case == 3:
+        desc = "group Adam + cost-threshold shrink"
+        sched = reduce_on_cost_threshold(cost_threshold, factor, min_scale)
+        def g(rate): return optax.chain(adam(rate), sched)
+        base = optax.chain(
+            optax.clip_by_global_norm(1.),
+            make_chain("t")(g(opt_lr["t"])),
+            make_chain("h")(g(opt_lr["h"])),
+            make_chain("J")(g(opt_lr["J"])),
+        )
+        return desc, wrap(base, passes_value=True, passes_step=False)
+
+
+    elif case == 4:
+        desc = "group Adam + grad-variance shrink"
+        sched = reduce_on_grad_variance(factor, patience, 50,
+                                        grad_var_tol, min_scale)
+        def g(rate): return optax.chain(adam(rate), sched)
+        base = optax.chain(
+            optax.clip_by_global_norm(1.),
+            make_chain("t")(g(opt_lr["t"])),
+            make_chain("h")(g(opt_lr["h"])),
+            make_chain("J")(g(opt_lr["J"])),
+        )
+        return desc, wrap(base, passes_value=False, passes_step=True)
+    # ------------------------------------------------------------------
+    # case == 5  →  slice-wise masked Adam  +  per-param scaling
+    # ------------------------------------------------------------------
+    elif case == 5:
+        """
+        case 5 – slice-wise independent Adam (τᵗ ∪ Jᵗ) + per-param LR scaling.
+        Expects:
+            opt_lr = (lr_tree, assignment_mask) from get_groupwise_lr_trees_slicewise
+              lr_tree         : flat [M] array
+              assignment_mask : flat [M] ints in {0,…,T}  (T labels the h-block)
+        """
+        desc = "slice-wise Adam (multi_transform) + per-param LR"
+        lr_tree, assignment_mask = opt_lr      # unpack
+        T          = time_steps
+        lr_pytree  = {                         # for the final element-wise scaling
+            "t": lr_tree[:T],
+            "h": lr_tree[T:T+3],
+            "J": lr_tree[T+3:],
+        }
+
+        # 1) build a label-pytree matching the param structure
+        #
+        #    t-leaf  : [0, 1, …, T−1]
+        #    h-leaf  : [T, T, T]
+        #    J-leaf  : labels copied from assignment_mask[T+3:]
+        #
+        t_labels = jnp.arange(T, dtype=jnp.int32)
+        h_labels = jnp.full((3,), T, dtype=jnp.int32)
+        j_labels = assignment_mask[T+3:].astype(jnp.int32)
+        label_pytree = {"t": t_labels, "h": h_labels, "J": j_labels}
+
+        # 2) optimiser dict   {label:int → Adam(1.0)}
+        opt_dict = {gid: optax.adam(learning_rate=1.0, b1=b1, b2=b2, eps=eps)
+                    for gid in range(T + 1)}       # 0..T
+
+        # 3) final element-wise LR multiplier (unchanged helper)
+        def per_param_lr(tree_lr):
+            def init_fn(_): return ()
+            def upd_fn(upd, state, params=None):
+                scaled = jax.tree_util.tree_map(lambda g, lr: g * lr, upd, tree_lr)
+                return scaled, state
+            return optax.GradientTransformation(init_fn, upd_fn)
+
+        base_opt = optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.multi_transform(opt_dict, label_pytree),
+            per_param_lr(lr_pytree)
+        )
+        return desc, wrap(base_opt, passes_value=False, passes_step=False)
+    elif case == 6:
+        """
+        case 6 ─ slice-wise median/MAD LR  →  masked Adam
+        --------------------------------------------------
+        opt_lr == (lr_tree, assignment_mask)
+
+          lr_tree         : flat [M] array
+          assignment_mask : flat [M] ints in {0,1,…,T}, where T labels the h-block
+        """
+       
+        desc = "slice-wise (median/MAD) Adam + per-param scaling"
+        # ----------------------------------------------------------------------
+        # element-wise learning-rate: multiply each update by lr_tree_pytree
+        # ----------------------------------------------------------------------
+        def per_param_lr(lr_pytree):
+            """Return a GradientTransformation that scales updates by lr_pytree."""
+            def init_fn(_):
+                return ()                         # stateless
+
+            # NOTE: must accept the unused `params` positional arg!
+            def update_fn(updates, state, params=None):
+                scaled = jax.tree_util.tree_map(
+                    lambda g, lr: g * lr, updates, lr_pytree
+                )
+                return scaled, state
+
+            return optax.GradientTransformation(init_fn, update_fn)
+
+        lr_tree, _ = opt_lr                    # assignment_mask is no longer needed
+        # reshape the flat lr_tree into the same pytree structure as `params`
+        lr_pytree = {
+            "t": lr_tree[:time_steps],                       # shape [T]
+            "h": lr_tree[time_steps:time_steps + 3],         # shape [3]
+            "J": lr_tree[time_steps + 3:]                    # shape [T * num_J]
+        }
+
+        base_opt = optax.chain(
+            optax.clip_by_global_norm(1.0),                  # safety first
+            optax.adam(learning_rate=1.0, b1=b1, b2=b2, eps=eps),
+            per_param_lr(lr_pytree)                          # ← element-wise LR
+        )
+        return desc, wrap(base_opt, passes_value=False, passes_step=False)
+
+        
+    # default fallback
+    desc = "per-param Adam"
+    base_opt = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.inject_hyperparams(optax.adam)(
+            learning_rate=opt_lr, b1=b1, b2=b2, eps=eps
+        ),
+    )
+    return desc, wrap(base_opt, passes_value=False)
 
 
 class Sim_QuantumReservoir:
@@ -637,552 +1664,6 @@ class Sim_QuantumReservoir:
 
         return total_H
     
-
-
-
-
-def get_groupwise_lr_trees(
-    params: jnp.ndarray,
-    grads:  jnp.ndarray,
-    num_train: int,
-    NC: int,
-    time_steps: int,
-    *,
-    max_lr: float = 0.2,
-    
-    debug: bool = False,
-    scale_by_num_train: bool = False,
-    target_update: float = 0.05,
-    eps: float = 1e-12,
-    factor: float = 1.0,
-    per_block_target_update: bool = False,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """
-    TODO: Update to include per_block_target_update flag. Make scaling flag better, I hate that it just picks numbers. Meanwhile, I always keep L the same for N_C = {1,2,3}, L = 20
-    Parameter Type-based Learning Rate Scaling
-
-    Compute a per-parameter learning rate "tree" as follows:
-        1) Split parameters into three contiguous blocks:
-           - indices [0 : time_steps)           --> the "τ" (time‐durations) block
-           - indices [time_steps : time_steps+3) --> the "h" (global field) block
-           - indices [time_steps+3 : D)          --> the "J" (couplings) block
-         Let grad_magnitudes = |grads| + 1e-12, so we never divide by zero exactly.
-
-        2) Take the *global* 2-norm of all gradients:  grad_norm_all = ||grads||₂ and compute a
-            global ceiling \eta_max so that no parameter‐update in the first-step
-            update is larger than 'target_update' (in norm‐sense):
-                eta_max = target_update / (grad_norm_all + eps)
-        3) For each block $B\!\in\!\{\tau,h,J\}$ compute
-                \[
-                    r_B = \bigl(\mathrm{median}|g_B| + \mathrm{MAD}|g_B|\bigr)
-                        \times \texttt{scale\_fac}.
-                \]
-                If \texttt{scale\_by\_num\_train} is \textsc{True} the scale factor is
-                \[
-                    \texttt{scale\_fac}=
-                    \begin{cases}
-                    N_C/8 & N_{\text{train}}\!\ge 20,\\[2pt]
-                    N_C/4 & 11\!\le N_{\text{train}}\!\le 15,\\[2pt]
-                    N_C/2 & N_{\text{train}}\!\le 10,
-                    \end{cases}
-                \]
-                otherwise $\texttt{scale\_fac}=1$.
-        4) Finally, assign each parameter i in block 'B' it's individual learning rate:
-                    \[
-                    \eta_i =
-                    \eta_{\max}\;
-                    \frac{r_B}{|g_i|+r_B+\varepsilon},
-                    \qquad
-                    \eta_i\in[10^{-6},\; \texttt{max\_lr}].
-                \]
-            The 2-norm normalises the effect of a single outlier gradient (which would otherwise shrink every \eta_i),
-            yielding a larger usable \eta_max even when the gradient vector is sparse. 
-
-        5) Return the full vector lr_tree of shape [D], plus the three masks
-         (mask_tau, mask_h, mask_J) so you know which indices belonged to which group.
-      
-    """
-
-    # ── 1. prepare masks ─────────────────────────────────────────────
-    D   = params.size
-    idx = jnp.arange(D)
-    global_rms = jnp.linalg.norm(params) / jnp.sqrt(D)
-    c = 0.75
-  
-        
-
-    mask_tau = idx < time_steps
-    mask_h   = (idx >= time_steps) & (idx < time_steps + 3)
-    mask_J   = idx >= time_steps + 3
-
-    g_tau, g_h, g_J = grads[mask_tau], grads[mask_h], grads[mask_J]
-    p_tau, p_h, p_J = params[mask_tau], params[mask_h], params[mask_J]
-
-    # ── 2. block-wise target_update  (Δθ*) ────────────────────────────
-    
-    if per_block_target_update:
-        # *Should* tighten the trust ratio separately for the slow-moving h-vector and the typically noisier J-couplings - need sources...
-        def rms_block(mask):
-            #  per-block RMS
-            vec = params[mask]
-            return jnp.linalg.norm(vec) / jnp.sqrt(vec.size)
-        tgt_tau = c * rms_block(mask_tau)
-        tgt_h   = c * rms_block(mask_h)
-        tgt_J   = c * rms_block(mask_J)
-    else:                         # single scalar from caller (already RMS-aware)
-        target_update=tgt_tau = tgt_h = tgt_J = c * jnp.linalg.norm(params) / jnp.sqrt(D)
-
-
-    
-
-    
-    # ── 3. block-wise η_max  (trust ratio) ────────────────────────────
-    lr_tau_uncapped = tgt_tau / (jnp.linalg.norm(g_tau) + eps)
-    lr_tau_clipped = jnp.minimum(max_lr, lr_tau_uncapped)
-
-    lr_h_uncapped = tgt_h / (jnp.linalg.norm(g_h) + eps)
-    lr_h_clipped = jnp.minimum(max_lr, lr_h_uncapped)
-
-    lr_J_uncapped = tgt_J / (jnp.linalg.norm(g_J) + eps)
-    lr_J_clipped = jnp.minimum(max_lr, lr_J_uncapped)
-
-
-     # ── 4. median+MAD scale r_B ───────────────────────────────────────
-    def med_mad(vec):
-        med = jnp.median(jnp.abs(vec))
-        mad = jnp.median(jnp.abs(vec - med))
-        return med + mad
-
-    r_tau_pre, r_h_pre, r_J_pre = med_mad(g_tau), med_mad(g_h), med_mad(g_J)
-
-    # determine scale_factor
-    if scale_by_num_train:
-        if   num_train >= 20: scale_factor = NC / 8
-        elif num_train >= 11: scale_factor = NC / 4
-        else:                 scale_factor = NC / 2
-    else:
-        scale_factor = 1.0
-
-    # apply scaling
-    r_tau = r_tau_pre * scale_factor
-    r_h   = r_h_pre   * scale_factor
-    r_J   = r_J_pre   * scale_factor
-
-     # ── 5. per-parameter learning rates ───────────────────────────────
-    def per_param_lr(η, r, g):
-        raw = η * r / (jnp.abs(g) + r + eps)
-        return jnp.clip(raw, 1e-6, max_lr)
-
-    lr_tau = per_param_lr(lr_tau_clipped, r_tau, g_tau)
-    lr_h   = per_param_lr(lr_h_clipped,   r_h,   g_h)
-    lr_J   = per_param_lr(lr_J_clipped,   r_J,   g_J)
-
-    # ── 6. scatter into full lr_tree ──────────────────────────────────
-    lr_tree = jnp.zeros_like(grads)
-    lr_tree = lr_tree.at[mask_tau].set(lr_tau)
-    lr_tree = lr_tree.at[mask_h  ].set(lr_h)
-    lr_tree = lr_tree.at[mask_J  ].set(lr_J)
-
-    # ── 7. optional debug print ──────────────────────────────────────
-    if debug:
-        # global quantities
-        rms_params    = jnp.linalg.norm(params) / jnp.sqrt(D)
-        grad_norm_all = jnp.linalg.norm(grads)
-        global_target = c * rms_params
-        eta_all = jnp.where(grad_norm_all > 0.0,
-                            global_target / (grad_norm_all + eps),
-                            1e-3)
-        clipped_eta_all = jnp.minimum(eta_all, max_lr)
-
-        print("\n── get_groupwise_lr_trees DEBUG ──")
-        print(f"max_lr                = {max_lr:.3e}")
-        print(f"scale_by_num_train    = {scale_by_num_train} (scale_factor={scale_factor:.3e})")
-        print(f"per_block_target_upd  = {per_block_target_update}")
-        # print target per group
-        print(f"Target updates (τ, h, J) = {tgt_tau:.3e}, {tgt_h:.3e}, {tgt_J:.3e}")
-        # print r values before and after scaling
-        print("r values (pre-scale → post-scale):")
-        print(f"  τ: {r_tau_pre:.3e} → {r_tau:.3e}")
-        print(f"  h: {r_h_pre:.3e} → {r_h:.3e}")
-        print(f"  J: {r_J_pre:.3e} → {r_J:.3e}")
-        # print η_max ceilings for each block
-        print("η_max ceilings (uncapped → clipped):")
-        print(f"  τ: {lr_tau_uncapped:.3e} → {lr_tau_clipped:.3e}")
-        print(f"  h: {lr_h_uncapped:.3e} → {lr_h_clipped:.3e}")
-        print(f"  J: {lr_J_uncapped:.3e} → {lr_J_clipped:.3e}")
-        # print global η_max for reference
-        print(f"Global η_max (uncapped → clipped) = {eta_all:.3e} → {clipped_eta_all:.3e}")
-        # print final per-group learning-rate statistics
-        print("Final per-group learning-rate stats:")
-        print(f"  τ-group: min={jnp.min(lr_tau):.3e}, max={jnp.max(lr_tau):.3e}, mean={jnp.mean(lr_tau):.3e}")
-        print(f"  h-group: min={jnp.min(lr_h):.3e},   max={jnp.max(lr_h):.3e},   mean={jnp.mean(lr_h):.3e}")
-        print(f"  J-group: min={jnp.min(lr_J):.3e},   max={jnp.max(lr_J):.3e},   mean={jnp.mean(lr_J):.3e}")
-        print("────────────────────────────────────────\n")
-
-    # ── 8. return ────────────────────────────────────────────────────
-    return lr_tree, mask_tau, mask_h, mask_J
-
-def get_groupwise_lr_trees_slicewise(
-    params:        jnp.ndarray,   # flat vector of length D = T + 3 + T*(N_ctrl*N_reserv)
-    grads:         jnp.ndarray,   # flat gradient vector of length D
-    num_train:     int,
-    NC:            int,
-    time_steps:    int,
-    N_ctrl:        int,
-    N_reserv:      int,
-    max_lr:        float = 0.2,
-    debug:         bool  = False,
-    target_update: float = 0.05,
-    eps:           float = 1e-12,
-    scale_by_num_train: bool = False,
-    per_block_target_update: bool = False,) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """
-    Like get_groupwise_lr_trees, but split into (T) slice‐groups + 1 h‐group:
-       • slice t = { index t (tauₜ) } ∪ { indices for J^{(t)} } 
-       • h‐group = indices [time_steps .. time_steps+2]
-    
-    Returns:
-      lr_tree:          shape [D], one per-param learning rate
-      assignment_mask:  shape [D], ints ∈ [0..T] telling which group each index belongs to:
-                          0..(T−1) → slice 0..slice T−1,
-                          T         → the “h” group.
-    """
-    D = grads.shape[0]
-    idx = jnp.arange(D)
-    num_J = N_ctrl * N_reserv
-    T         = time_steps
-    
-    grad_abs = jnp.abs(grads) + 1e-12
-    
-    # ——— 2) Build an “assignment_mask” in [0..T] for each index i ∈ [0..D−1] ———
-    #    If i < time_steps:          group_id = i   (so slice i)
-    #    If time_steps ≤ i < time_steps+3: group_id = T  (the “h” group)
-    #    Else:                        group_id = (i−(T+3)) // num_J  (i.e. which J‐block)
-    # --- helper to turn index → group-id -------------------------------------
-    def _assign(i):
-        return jax.lax.cond(
-            i < T,
-            lambda k: k,                                           # τ_t
-            lambda k: jax.lax.cond(
-                k < T + 3,
-                lambda _: T,                                       # global ⃗h
-                lambda q: (q - (T + 3)) // num_J,                  # J^{(t)}
-                k
-            ),
-            i
-        )
-
-    assignment_mask = jax.vmap(_assign)(idx)          # [D] int32
-    # ---------- per-group target_update ----------------------------------------
-     # block-specific target_update ------------------------------------
-    if per_block_target_update:
-        tgt_all = jnp.asarray([
-            0.75 * _rms(params[assignment_mask == gid])  # gid 0..T
-            for gid in range(T + 1)
-        ])
-    else:
-        tgt_all = jnp.full((T + 1,), float(target_update))
-
-    grad_norm_all = jnp.linalg.norm(grad_abs)
-    eta_max = jnp.minimum(max_lr,
-                          target_update / (grad_norm_all + eps))
-
-    # ---------- r_g per group ---------------------------------------------------
-    # block med+MAD
-    def _med_mad(x):
-        med = jnp.median(x)
-        mad = jnp.median(jnp.abs(x - med))
-        return med + mad
-    r_all = jnp.asarray([
-        _med_mad(grad_abs[assignment_mask == gid])
-        for gid in range(T + 1)
-    ])
-    if scale_by_num_train:
-        factor = NC / 8 if num_train >= 20 else NC / 4 if num_train > 10 else NC / 2
-        r_all *= factor
-
-    # ---------- assemble lr_tree ------------------------------------------------
-    lr_tree = jnp.zeros_like(grad_abs)
-    for gid in range(T + 1):
-        sel      = assignment_mask == gid
-        g_block  = grad_abs[sel]
-        r_g      = r_all[gid]
-        eta_g    = jnp.minimum(max_lr, tgt_all[gid] / (jnp.linalg.norm(g_block) + eps))
-        lr_vals  = jnp.clip(eta_g * r_g / (g_block + r_g + eps), 1e-6, max_lr)
-        lr_tree  = lr_tree.at[sel].set(lr_vals)
-    # ----------------------------------------------------------------------
-    if debug:
-        grad_norm_all = jnp.linalg.norm(grad_abs)
-        eta_max_global = jnp.minimum(max_lr, target_update / (grad_norm_all + eps))
-
-        print(f"\n--- global-norm anchor (slice-wise) ---")
-        med_all = jnp.median(grad_abs)
-        mad_all = jnp.median(jnp.abs(grad_abs - med_all))
-        print(f"  ‖g‖₂ = {grad_norm_all:.3e},  eta_max = {float(eta_max_global):.3e}")
-        print(f"  median(|g|) = {med_all:.3e},  MAD(|g|) = {mad_all:.3e}")
-        print("--------------------------------------\n")
-
-        # h-vector block
-        hx, hy, hz = lr_tree[T:T+3]
-        print(f"global h-vec lrs: hx={hx:.2e}, hy={hy:.2e}, hz={hz:.2e}")
-
-        # per-slice detail
-        reserv_qubits = list(range(N_ctrl, N_ctrl + N_reserv))
-        ctrl_qubits   = list(range(N_ctrl))
-
-        print("\n=== per-time-step learning-rates ===")
-        for t in range(T):
-            tau_lr = float(lr_tree[t])
-            start  = T + 3 + t * num_J
-            end    = start + num_J
-            J_block = lr_tree[start:end]
-            avg_J   = float(jnp.mean(J_block))
-
-            J_elems = []
-            for j, c in enumerate(ctrl_qubits):
-                for i, r in enumerate(reserv_qubits):
-                    idx_local = i * len(ctrl_qubits) + j
-                    J_elems.append(f"J({r},{c})={float(J_block[idx_local]):.2e}")
-
-            print(f" step {t:2d}: τ_lr={tau_lr:.2e}, avg(J_lr)={avg_J:.2e}, "
-                  + ", ".join(J_elems))
-
-        print("\n[slice-wise LR] summary:")
-        for t in range(T):
-            sel = assignment_mask == t
-            print(f"  slice {t:2d}: mean={float(jnp.mean(lr_tree[sel])):.3e}, "
-                  f"min={float(jnp.min(lr_tree[sel])):.3e}, "
-                  f"max={float(jnp.max(lr_tree[sel])):.3e}")
-        h_sel = assignment_mask == T
-        print(f"    h-group : mean={float(jnp.mean(lr_tree[h_sel])):.3e}, "
-              f"min={float(jnp.min(lr_tree[h_sel])):.3e}, "
-              f"max={float(jnp.max(lr_tree[h_sel])):.3e}")
-        print("-----------------------------------------------------------\n")
-
-    return lr_tree, assignment_mask
-
-
-
-def get_optimizer(
-    case: int,
-    opt_lr,
-    time_steps: int, 
-    num_epochs: int = None,
-    # Adam hyper-parameters
-    b1: float = 0.99,
-    b2: float = 0.999,
-    eps: float = 1e-8,
-    # ReduceLROnPlateau hyper-parameters
-    factor: float = 0.9,
-    patience: int = 50,
-    rtol: float = 1e-4,
-    atol: float = 0.0,
-    cooldown: int = 0,
-    accumulation_size: int = 1,
-    cost_threshold=1e-3,
-    grad_var_tol=1e-6,
-    min_scale: float = 0.0,
-    # fraction of epochs to wait before enabling plateau logic
-    warmup_steps:int = 100,
-    warmup_fraction: float = 0.5,
-):
-
-    # print(f"get_optimizer() for case_num = {case}. opt_lr: {opt_lr} ")
-    def wrap(base_optimizer, passes_value: bool, passes_step: bool):
-        def init_fn(params):
-            return base_optimizer.init(params)
-
-        def update_fn(updates, state, params=None, *, value=None, step=None, **extra):
-            kwargs = {}
-            # print(f"state: {state}")
-            if passes_value:
-                kwargs["value"] = value
-            if passes_step:
-                kwargs["step"] = step
-            # print(f"kwargs: {kwargs}")
-            return base_optimizer.update(updates, state, params=params, **kwargs)
-
-        return optax_base.GradientTransformationExtraArgs(init_fn, update_fn)
-    def make_chain(component):
-        masks = {"t": [True, False, False],
-                 "h": [False, True, False],
-                 "J": [False, False, True]}[component]
-        return lambda gt: optax.masked(gt, dict(zip("thJ", masks)))
-
-
-    if case == 1:
-        desc = "masked per group Adam"
-        base_opt = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.masked(optax.adam(opt_lr["t"], b1=b1, b2=b2, eps=eps), {"t": True,  "h": False, "J": False}),
-            optax.masked(optax.adam(opt_lr["h"], b1=b1, b2=b2, eps=eps), {"t": False, "h": True,  "J": False}),
-            optax.masked(optax.adam(opt_lr["J"], b1=b1, b2=b2, eps=eps), {"t": False, "h": False, "J": True}),
-        )
-        # does NOT need the loss value
-        return desc, wrap(base_opt, passes_value=False, passes_step=False)
-
-    elif case == 2:
-        desc = "masked per group Adam + delayed ReduceLROnPlateau"
-        # how many update‐calls to skip plateau reductions
-        if not warmup_steps:
-            warmup_steps = int(num_epochs * warmup_fraction)
-        print(f"warmup steps: {warmup_steps}")
-
-        def one_group(rate):
-            return optax.chain(
-                optax.inject_hyperparams(optax.adam)(
-                    learning_rate=rate, b1=b1, b2=b2, eps=eps
-                ),
-                reduce_on_plateau(
-                    factor=factor,
-                    patience=patience,
-                    rtol=rtol,
-                    atol=atol,
-                    cooldown=cooldown,
-                    accumulation_size=accumulation_size,
-                    min_scale=min_scale,
-                    warmup_steps=warmup_steps,
-                ),
-            )
-
-        mask_t = {"t": True,  "h": False, "J": False}
-        mask_h = {"t": False, "h": True,  "J": False}
-        mask_J = {"t": False, "h": False, "J": True}
-
-        base_opt = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.masked(one_group(opt_lr["t"]), mask_t),
-            optax.masked(one_group(opt_lr["h"]), mask_h),
-            optax.masked(one_group(opt_lr["J"]), mask_J),
-        )
-        return desc, wrap(base_opt, passes_value=True, passes_step=True)
-    elif case == 3:
-        desc = "group Adam + cost-threshold shrink"
-        sched = reduce_on_cost_threshold(cost_threshold, factor, min_scale)
-        def g(rate): return optax.chain(adam(rate), sched)
-        base = optax.chain(
-            optax.clip_by_global_norm(1.),
-            make_chain("t")(g(opt_lr["t"])),
-            make_chain("h")(g(opt_lr["h"])),
-            make_chain("J")(g(opt_lr["J"])),
-        )
-        return desc, wrap(base, passes_value=True, passes_step=False)
-
-
-    elif case == 4:
-        desc = "group Adam + grad-variance shrink"
-        sched = reduce_on_grad_variance(factor, patience, 50,
-                                        grad_var_tol, min_scale)
-        def g(rate): return optax.chain(adam(rate), sched)
-        base = optax.chain(
-            optax.clip_by_global_norm(1.),
-            make_chain("t")(g(opt_lr["t"])),
-            make_chain("h")(g(opt_lr["h"])),
-            make_chain("J")(g(opt_lr["J"])),
-        )
-        return desc, wrap(base, passes_value=False, passes_step=True)
-    # ------------------------------------------------------------------
-    # case == 5  →  slice-wise masked Adam  +  per-param scaling
-    # ------------------------------------------------------------------
-    elif case == 5:
-        """
-        case 5 – slice-wise independent Adam (τᵗ ∪ Jᵗ) + per-param LR scaling.
-        Expects:
-            opt_lr = (lr_tree, assignment_mask) from get_groupwise_lr_trees_slicewise
-              lr_tree         : flat [D] array
-              assignment_mask : flat [D] ints in {0,…,T}  (T labels the h-block)
-        """
-        desc = "slice-wise Adam (multi_transform) + per-param LR"
-        lr_tree, assignment_mask = opt_lr      # unpack
-        T          = time_steps
-        lr_pytree  = {                         # for the final element-wise scaling
-            "t": lr_tree[:T],
-            "h": lr_tree[T:T+3],
-            "J": lr_tree[T+3:],
-        }
-
-        # 1) build a label-pytree matching the param structure
-        #
-        #    t-leaf  : [0, 1, …, T−1]
-        #    h-leaf  : [T, T, T]
-        #    J-leaf  : labels copied from assignment_mask[T+3:]
-        #
-        t_labels = jnp.arange(T, dtype=jnp.int32)
-        h_labels = jnp.full((3,), T, dtype=jnp.int32)
-        j_labels = assignment_mask[T+3:].astype(jnp.int32)
-        label_pytree = {"t": t_labels, "h": h_labels, "J": j_labels}
-
-        # 2) optimiser dict   {label:int → Adam(1.0)}
-        opt_dict = {gid: optax.adam(learning_rate=1.0, b1=b1, b2=b2, eps=eps)
-                    for gid in range(T + 1)}       # 0..T
-
-        # 3) final element-wise LR multiplier (unchanged helper)
-        def per_param_lr(tree_lr):
-            def init_fn(_): return ()
-            def upd_fn(upd, state, params=None):
-                scaled = jax.tree_util.tree_map(lambda g, lr: g * lr, upd, tree_lr)
-                return scaled, state
-            return optax.GradientTransformation(init_fn, upd_fn)
-
-        base_opt = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.multi_transform(opt_dict, label_pytree),
-            per_param_lr(lr_pytree)
-        )
-        return desc, wrap(base_opt, passes_value=False, passes_step=False)
-    elif case == 6:
-        """
-        case 6 ─ slice-wise median/MAD LR  →  masked Adam
-        --------------------------------------------------
-        opt_lr == (lr_tree, assignment_mask)
-
-          lr_tree         : flat [D] array
-          assignment_mask : flat [D] ints in {0,…,T}, where T labels the h-block
-        """
-       
-        desc = "slice-wise (median/MAD) Adam + per-param scaling"
-        # ----------------------------------------------------------------------
-        # element-wise learning-rate: multiply each update by lr_tree_pytree
-        # ----------------------------------------------------------------------
-        def per_param_lr(lr_pytree):
-            """Return a GradientTransformation that scales updates by lr_pytree."""
-            def init_fn(_):
-                return ()                         # stateless
-
-            # NOTE: must accept the unused `params` positional arg!
-            def update_fn(updates, state, params=None):
-                scaled = jax.tree_util.tree_map(
-                    lambda g, lr: g * lr, updates, lr_pytree
-                )
-                return scaled, state
-
-            return optax.GradientTransformation(init_fn, update_fn)
-
-        lr_tree, _ = opt_lr                    # assignment_mask is no longer needed
-        # reshape the flat lr_tree into the same pytree structure as `params`
-        lr_pytree = {
-            "t": lr_tree[:time_steps],                       # shape [T]
-            "h": lr_tree[time_steps:time_steps + 3],         # shape [3]
-            "J": lr_tree[time_steps + 3:]                    # shape [T * num_J]
-        }
-
-        base_opt = optax.chain(
-            optax.clip_by_global_norm(1.0),                  # safety first
-            optax.adam(learning_rate=1.0, b1=b1, b2=b2, eps=eps),
-            per_param_lr(lr_pytree)                          # ← element-wise LR
-        )
-        return desc, wrap(base_opt, passes_value=False, passes_step=False)
-
-        
-    # default fallback
-    desc = "per-param Adam"
-    base_opt = optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.inject_hyperparams(optax.adam)(
-            learning_rate=opt_lr, b1=b1, b2=b2, eps=eps
-        ),
-    )
-    return desc, wrap(base_opt, passes_value=False)
 
 
 def run_test(params, 
@@ -1320,6 +1801,7 @@ def run_test(params,
     min_raw_lr = 0.
     # Initial training to determine appropriate learning rate
     if opt_lr == None:
+        print(f"Assessing optimal init lr vector for network with N_c (ctrl qubits) = {N_ctrl} and N_r (reservoir qubits) = {N_reserv}, T (time steps) = {time_steps} -->  M = (N_r X N_c X T) + T + 3 = {len(params)} trainable parameters, L (number of training states) = {N_train}")
         s = time.time()
         
         init_loss, init_grads = jax.value_and_grad(cost_func)(params, input_states, target_states)
@@ -1332,9 +1814,12 @@ def run_test(params,
         # opt_lr_tree, mask_tau, mask_h, mask_J = get_groupwise_lr_lars(
         #     params, flat_grads,N_train ,NC=N_ctrl, max_lr=max_lr, time_steps=time_steps, debug=True
         # )
-        D = params.size
-        rms = jnp.linalg.norm(params) / jnp.sqrt(D)
-        target_update = 0.75 * rms
+        cv0 = coef_variation_by_block(case_num, flat_grads,
+                              time_steps, N_ctrl, N_reserv)
+        cv_str = ", ".join(f"{k}: {v:.4f}" for k, v in cv0.items())
+        print("\nInitial coefficient of variation (CV_B) by block at step 0: ", cv_str)
+
+
         
         if case_num in (5, 6):
       
@@ -1349,7 +1834,7 @@ def run_test(params,
                 N_reserv         = N_reserv,
                 max_lr           = 0.2,
                 debug            = True,
-                target_update    = target_update,
+                target_update    = None,
                 eps              = 1e-12,
                 scale_by_num_train = scale_by_num_train,
                 per_block_target_update=per_block_target_update
@@ -1368,7 +1853,7 @@ def run_test(params,
                 time_steps     = time_steps,     # T
                 debug          = True,
                 scale_by_num_train = scale_by_num_train,
-                target_update  = target_update,
+                target_update  = None,
                 eps            = 1e-12,
                 per_block_target_update=per_block_target_update
             )
@@ -1380,10 +1865,7 @@ def run_test(params,
       
         
         lr_groups_init = lr_group_dict(case_num, lr_tree, time_steps, N_ctrl, N_reserv)
-        cv0 = coef_variation_by_block(case_num, flat_grads,
-                              time_steps, N_ctrl, N_reserv)
-        cv_str = ", ".join(f"{k}: {v:.4f}" for k, v in cv0.items())
-        print("\nInitial coefficient of variation (CV_B) by block at step 0: ", cv_str)
+        
         cost = init_loss
     
  
@@ -1489,6 +1971,7 @@ def run_test(params,
    
     print("________________________________________________________________________________")
     print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) T = {time_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
+    print("________________________________________________________________________________")
     # print(f"Initial Loss: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
     # print("sample rates:", lr_tree[:5].tolist())
     # print(f"per-param learning-rate tree: mean={mean:.3e}, var={var:.3e}")
@@ -1840,7 +2323,8 @@ def run_test(params,
             }
      
     now = datetime.now()
-    print(f"Saving results to {filename}. Date/time: ", now.strftime("%Y-%m-%d %H:%M:%S"))
+    print(f"Saving results to {filename}. \nDate/time: ", now.strftime("%Y-%m-%d %H:%M:%S"))
+    print(f"******************************************************************************************************************************\n\n")
     df = pd.DataFrame([data])
     while os.path.exists(filename):
         name, ext = filename.rsplit('.', 1)
@@ -1868,7 +2352,8 @@ if __name__ == '__main__':
     trots = [4,6,8,10,12,16,20,24,28]
     trots = [2,3,5,6]
     # trots = [8,12,20,24,28]
-    trots = [20]
+    trots = [1,2,3,4,5]
+    trots = [10,16,20]
     # trots = [4,8,10,12,14,16,18,20,24,28]
 
     # res = [1, 2, 3]
@@ -1917,7 +2402,7 @@ if __name__ == '__main__':
         folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/ATOL_1e-7/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/PATIENCE{patience}_ACCUMULATION{accum_size}/'
     else:
-        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}_new/tgt_granular_{per_block_target_update}/t={t_bound_key}/scale={scale_by_num_train}/'
+        folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}_check_c/tgt_granular_{per_block_target_update}/t={t_bound_key}/scale={scale_by_num_train}/'
         # folder = f'./analog_results_trainable_global/trainsize_{N_train+add}_epoch{num_epochs}/case_{case_num}/'
     # folder = f'./analog_results_trainable_global/trainsize_{N_train}_epoch{num_epochs}_gradientclip_beta0.999/'
 
@@ -1926,7 +2411,7 @@ if __name__ == '__main__':
     num_baths = [0]
 
 
-    for i in range(10):
+    for i in range(20):
         U = random_unitary(2**N_ctrl, i).to_matrix()
         #pprint(Matrix(np.array(U)))
         g = partial(qml.QubitUnitary, U=U)
@@ -1937,9 +2422,6 @@ if __name__ == '__main__':
   
     for gate_idx,gate in enumerate(gates_random):
 
-        if not gate_idx in [0,1,3]:
-
-            continue
 
 
         for time_steps in trots:
