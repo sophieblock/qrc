@@ -14,8 +14,8 @@ import struct
 
 from attrs import define, field, validators,frozen
 
-from ...util.log import logging
-logger = logging.getLogger(__name__)
+from ...util.log import get_logger,logging
+logger = get_logger(__name__)
 
 
 from typing import TypeVar
@@ -165,13 +165,6 @@ class DataType(abc.ABC):
         required to represent a single instance of this data type.
         """
 
-    @property
-    @abc.abstractmethod
-    def data_width(self) -> int:
-        """
-        Total number of bits needed to represent one full instance.
-        Could be `num_units` * 1 for qubits, or rows*cols*8 for a float64 matrix, etc.
-        """
 
     @abc.abstractmethod
     def to_bits(self, x) -> List[int]:
