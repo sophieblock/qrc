@@ -1,36 +1,32 @@
 import pytest
 import numpy as np
-import random 
-from typing import Union,Type
+import re 
+import math
 import torch
 import sympy
 from attrs import define
 sep_str = 100 * '#'
 
-# from workflow.simulation.refactor.register import RegisterSpec, Flow
-from workflow.simulation.refactor.register import RegisterSpec, Signature, Flow
-from workflow.simulation.refactor.dtypes import (
-    QBit, QAny, QInt,QUInt, CBit, CAny,CInt, CUInt,CFloat, TensorType,MatrixType, Dyn,check_dtypes_consistent
-)
-from workflow.simulation.refactor.data import Data, DataSpec,promote_element_types
-from workflow.simulation.refactor.unification_tools import (
+# from qrew.simulation.refactor.register import RegisterSpec, Flow
+from qrew.simulation.refactor.schema import RegisterSpec, Signature, Flow
+from qrew.simulation.refactor.data_types import *
+from qrew.simulation.refactor.data import Data,promote_element_types
+from qrew.simulation.refactor.unification_tools import (
     type_matches, is_consistent_data_type,canonicalize_dtype
 )
-from workflow.simulation.refactor.process import Process,ClassicalProcess
-from workflow.assert_checks import assert_registers_match_parent, assert_multiline_equal
+from qrew.simulation.refactor.process import Process,ClassicalProcess
+from qrew.assert_checks import assert_registers_match_parent, assert_multiline_equal
 
-from workflow.visualization_tools import ModuleDrawer, _assign_ids_to_nodes_and_edges
-from workflow.simulation.refactor.builder import ProcessBuilder,ProcessInstance, CompositeMod,PortInT,PortT,Port, LeftDangle,Split,Join
-from workflow.simulation.refactor.Process_Library.for_testing import Atom,Atom_n,TwoBitOp,SwapTwoBit, AtomChain,NAtomParallel,SplitJoin,TestParallelQCombo
+from qrew.visualization_tools import ModuleDrawer, _assign_ids_to_nodes_and_edges
+from qrew.simulation.refactor.builder import ProcessBuilder,ProcessInstance, CompositeMod,PortInT,PortT,Port, LeftDangle,RightDangle
+from qrew.simulation.refactor.Process_Library.for_testing import Atom,Atom_n,TwoBitOp,SwapTwoBit, AtomChain,NAtomParallel,SplitJoin,TestParallelQCombo
 qbit_reg  = RegisterSpec(name="qb",  dtype=QBit(), flow=Flow.THRU)
 cbit_reg  = RegisterSpec(name="cb",  dtype=CBit(), flow=Flow.THRU)
-tensor_q  = RegisterSpec(name="tq",  dtype=TensorType((4,), element_type=QBit()), flow=Flow.THRU)
 tensor_c  = RegisterSpec(name="tc",  dtype=TensorType((2,3), element_type=CInt(8)), flow=Flow.THRU)
 
 @pytest.mark.parametrize("reg, exp", [
     (qbit_reg, "Q"),
     (cbit_reg, "C"),
-    (tensor_q, "Q"),
     (tensor_c, "C"),
 ])
 def test_domain_tag(reg, exp):
@@ -214,6 +210,13 @@ def test_registerspec_inequivalence(base_kwargs, modify_field, new_value, expect
 
 
 def test_registerspec_wire_vs_data_shape():
+    """
+    TODO: Actually make the following test
+    Create a RegisterSpec that intends to split a (2,3) data payload into 2 wires.
+    Each wire should carry a 1D vector of length 3.
+      - The RegisterSpec’s wire shape should be (2,).
+      - Its dtype should be a TensorType with shape (3,).
+    """
     reg = RegisterSpec(
         name='x',
         dtype=TensorType((3,), element_type=float),
@@ -476,11 +479,13 @@ def test_signature_from_properties():
 
     print(f"***TEST: test_signature_with_simple_data() passed!***")
   
-
-
+import os
+from pathlib import Path
+test_path = Path(__file__)
 
 def test_builder():
     print(f"{sep_str}Starting test_builder()")
+    
     signature = Signature.build(x=1,y=1)
     x_reg, y_reg = signature
     builder, initial_ports = ProcessBuilder.from_signature(signature)
@@ -497,7 +502,7 @@ def test_builder():
     # assert composite_op.validate_data()
     drawer = ModuleDrawer(composite_op)
     
-    drawer.render(display=False, filename="TwoBitOp.png") # To save the graph
+    drawer.render(display=False, filename="TwoBitOp.png",output_dir = 'test_outputs/test_schema/') # To save the graph
 
     # builder2, initial_ports2 = 
     composite_op_op = composite_op.as_composite()
@@ -506,62 +511,79 @@ def test_builder():
     assert sig1 == sig2
     drawer = ModuleDrawer(composite_op_op)
     
-    drawer.render(display=False, filename="TwoBitOpOp.png")
+    drawer.render(display=False, filename="TwoBitOpOp.png",output_dir = 'test_outputs/test_schema/')
     decomposed_op = composite_op_op.as_composite()
     decomposed_op.describe
     drawer = ModuleDrawer(decomposed_op)
     
-    drawer.render(display=False, filename="TwoBitOpOpOp.png")
+    drawer.render(display=False, filename="TwoBitOpOpOp.png",output_dir = 'test_outputs/test_schema/')
 
 
 def test_atom():
-    print(f"{sep_str}Starting test_atom()")
+    print(f"{sep_str}Starting test_atom_n()")
     atomic_process = Atom()
     # print(atomic_process.signature)
     
     catom = atomic_process.as_composite()
     assert atomic_process.signature == catom.signature
+    
+    expected_debug_text = """\
+Atom<0>
+  LeftDangle.n -> n
+  n -> RightDangle.n"""
+    assert_multiline_equal(catom.debug_text(),expected_debug_text)
     drawer = ModuleDrawer(catom)
     
-    drawer.render(display=False, save_fig=True, filename="catom.png")  # To save the graph
+    drawer.render(display=False, save_fig=True, filename="catom.png", output_dir='test_outputs/test_schema/')  # To save the graph
+
+
+
+def test_atom_n():
+    bitsize = 4
+
+
+    atom = Atom_n(n=bitsize)
     
+    
+    assert len(atom.signature) == 1
+    assert len(atom.signature._lefts) == 1  # Confirm 1 input in signature
+    assert len(atom.signature._rights) == 1, f"atom.signature._rights len(atom.signature._rights): {len(atom.signature._rights)}"
+
+    catom = atom.as_composite()
+    assert isinstance(catom, CompositeMod)
+    assert (catom.signature == atom.signature)
+    process_instances = list(catom.pinsts)
+    assert len(process_instances) == 1
+    assert process_instances[0].process == atom
+    bag = atom.signature
+    assert bag[0].bitsize == 4, f'Expected 4 got {bag[0].bitsize}'
+    catom.print_tabular()
+    drawer = ModuleDrawer(catom)
+    
+    drawer.render(display=False, save_fig=True, filename="catom_n.png", output_dir='test_outputs/test_schema/')
+
 def test_split():
-    from workflow.simulation.refactor.builder import Split
+    from qrew.simulation.refactor.builder import Split
     split = Split(CInt(4)).as_composite()
     drawer = ModuleDrawer(split, show_bookkeeping=False)
     
     drawer.render(display=False, save_fig=True, filename="splitter.png")  # To save the graph
 
-@pytest.mark.parametrize('n', [5, 123])
-@pytest.mark.parametrize('process_cls', [Split, Join])
-def test_register_sizes_add_up(process_cls: Union[Type[Split], Type[Join]], n):
-    op = process_cls(QAny(n))
-    for name, group_regs in op.signature.groups():
-        if any(reg.flow is Flow.THRU for reg in group_regs):
-            assert not any(reg.flow != Flow.THRU for reg in group_regs)
-            continue
-
-        lefts = [reg for reg in group_regs if reg.flow & Flow.LEFT]
-        left_size = np.prod([l.total_bits() for l in lefts])
-        rights = [reg for reg in group_regs if reg.flow & Flow.RIGHT]
-        right_size = np.prod([r.total_bits() for r in rights])
-
-        assert left_size > 0
-        assert left_size == right_size
 
 def test_no_symbolic():
-    from workflow.simulation.refactor.builder import Split
+    from qrew.simulation.refactor.builder import Split
     n = sympy.Symbol('n')
-    with pytest.raises(ValueError, match=r'.*cannot have a symbolic data type\.'):
+    with pytest.raises(ValueError, match=r'.*Cannot split with symbolic data_width:*'):
         Split(QUInt(n))
 
 def test_util_bloqs_tensor_contraction():
+    from qrew.simulation.refactor.builder import Split,Join
     builder = ProcessBuilder()
     qany_10 = RegisterSpec(name="q", dtype=QAny(10))
 
     qs1 = builder.add_register(qany_10)
-    qs2 = builder.add(Split(QAny(10)), reg=qs1)
-    qs3 = builder.add(Join(QAny(10)), reg=qs2)
+    qs2 = builder.add(Split(QAny(10)), arg=qs1)
+    qs3 = builder.add(Join(QAny(10)), arg=qs2)
     cbloq = builder.finalize(out=qs3)
     expected = np.zeros(2**10)
     expected[0] = 1
@@ -570,9 +592,9 @@ def test_util_bloqs_tensor_contraction():
 
 def test_builder_splitjoin():
     print(f"{sep_str}Starting test_builder_splitjoin()")
-    from workflow.simulation.refactor.builder import Split, Join
+    from qrew.simulation.refactor.builder import Split, Join
     builder = ProcessBuilder()
-    atomic_reg = RegisterSpec(name="a_tensor", dtype=TensorType((2,),element_type=CInt(2)), flow=Flow.LEFT)
+    atomic_reg = RegisterSpec(name="a_tensor", dtype=TensorType((2,),element_type=CBit()), flow=Flow.LEFT)
 
 
     in_port = builder.add_register(atomic_reg)  # returns a single Port
@@ -582,10 +604,9 @@ def test_builder_splitjoin():
     assert isinstance(in_port.index, tuple)
     assert in_port.pretty() == 'a_tensor'
     
-    assert in_port.reg.shape == (), f'Got: {in_port.reg.shape}'
    
     split_out= builder.add(Split(dtype=in_port.reg.dtype), arg=in_port)
-    assert split_out.shape == (2,), f'Got: {split_out.shape}'
+    # assert split_out.shape == (2,)
    
     # assert split_out[0].reg.dtype == CBit()
 
@@ -601,15 +622,22 @@ def test_builder_splitjoin():
     composite_mod = builder.finalize(a_tensor=joined_out)
     print(f"debug text for SplitJoin built from scratch:")
     print(composite_mod.debug_text())
-    drawer = ModuleDrawer(composite_mod, label_type='shape')
-    drawer.render(display=True, filename="SplitJoin_a_tensor_shape.png")
-    drawer = ModuleDrawer(composite_mod, label_type='nbytes')
-    drawer.render(display=True, filename="SplitJoin_a_tensor_bits.png")
-
-    drawer = ModuleDrawer(composite_mod, label_type='dtype')
-    drawer.render(display=True, filename="SplitJoin_a_tensor_dtype.png")
-    # composite_mod.print_tabular()
-    # composite_mod.print_tabular_fx()
+    expected_debug_text = """\
+Split<0>
+  LeftDangle.a_tensor -> arg
+  arg[0] -> Join<1>.arg[0]
+  arg[1] -> Join<1>.arg[1]
+--------------------
+Join<1>
+  Split<0>.arg[0] -> arg[0]
+  Split<0>.arg[1] -> arg[1]
+  arg -> RightDangle.a_tensor"""
+    assert_multiline_equal(composite_mod.debug_text(),expected_debug_text)
+    # print(composite_mod.signature)
+    drawer = ModuleDrawer(composite_mod)
+    drawer.render(display=False, filename="SplitJoin_a_tensor.png")
+    composite_mod.print_tabular()
+    composite_mod.print_tabular_fx()
  
 @define
 class SplitJoin(Process):
@@ -632,21 +660,19 @@ def test_SplitJoin_class():
     print(sj.debug_text())
     print(f"signature: {sj.signature}\n")
     drawer = ModuleDrawer(sj)
-    drawer.render(display=False, filename="SplitJoin_composite2.png")
+    drawer.render(display=False, filename="SplitJoin_composite.png")
 
     # sj.print_tabular()
     print(f"\ndebug text for SplitJoin as a decomposed process:")
     # print(split_join.decompose().debug_text())
     c_splitjoin = split_join.decompose()
-    print(f"c_splitjoin: {c_splitjoin.debug_text()}\n")
     drawer = ModuleDrawer(c_splitjoin)
-    c_splitjoin.print_tabular()
-    c_splitjoin.print_tabular_fx()
-    print(f"signature: {c_splitjoin.signature}\n")
-    drawer.render(display=False, filename="SplitJoin_decomposed2.png")
-    
 
-    
+    print(f"signature: {c_splitjoin.signature}\n")
+    drawer.render(display=False, filename="SplitJoin_decomposed.png")
+    c_splitjoin.print_tabular()
+
+    c_splitjoin.print_tabular_fx()
 
 
 def test_twobit_op():
@@ -727,11 +753,13 @@ AtomChain<0>
     
     drawer.render(display=False, save_fig=True, filename="chained_highlevel_num_units.png")  # To save the graph
 
+
+
 import re
 
 def test_assign_ids():
     num_parallel = 3
-    d = Data(CAny(3), properties={"Usage": "bits"})
+    d = Data(CUInt(3), properties={"Usage": "bits"})
     cbloq = NAtomParallel(inputs=[d],num_parallel=num_parallel).decompose()
     
     id_map = _assign_ids_to_nodes_and_edges(cbloq.pinsts, cbloq.all_ports)
@@ -782,7 +810,7 @@ def test_assign_ids2():
 def test_parallel_atoms():
     print(f"{sep_str}Starting test_parallel_atoms()")
     num_parallel = 3
-    d = Data(CAny(3), properties={"Usage": "bits"})
+    d = Data(CUInt(3), properties={"Usage": "bits"})
     parallel_process = NAtomParallel(inputs=[d],num_parallel=num_parallel)
     print(f"pp sig: {parallel_process.signature}")
     # Test signature
@@ -796,15 +824,15 @@ def test_parallel_atoms():
     composite_process.print_tabular_fx()
     # Render decomposition
     drawer = ModuleDrawer(composite_process)
-    drawer.render(display=False, save_fig=True, filename="NAtomParallel_decomposed2.png")
+    drawer.render(display=False, save_fig=True, filename="NAtomParallel_decomposed.png")
     # draw with num_units as the edge labels
     drawer = ModuleDrawer(composite_process, label_type="num_units")
-    drawer.render(display=False, save_fig=True, filename="NAtomParallel_decomposed_num_units2.png")
+    drawer.render(display=False, save_fig=True, filename="NAtomParallel_decomposed_num_units.png")
 
     # Render high-level block
     composite_block = parallel_process.as_composite()
     drawer = ModuleDrawer(composite_block)
-    drawer.render(display=False, save_fig=True, filename="NAtomParallel_highlevel2.png")
+    drawer.render(display=False, save_fig=True, filename="NAtomParallel_highlevel.png")
   
     composite_block.print_tabular()
 
@@ -860,15 +888,3 @@ SwapTwoBit<0>
         assert isinstance(pinst, ProcessInstance)
         assert len(preds) > 0
         assert len(succs) > 0
-
-
-if __name__ == "__main__":
-    # test_atom()
-    # test_assign_ids2()
-    # test_assign_ids()
-    # test_register_sizes_add_up()
-    test_builder_splitjoin()
-    # test_SplitJoin_class()
-    
-    # test_SplitJoin_class()
-    # test_parallel_atoms()

@@ -405,6 +405,7 @@ class RegisterSpec:
         fan_out = prod(self.symbolic_shape or (1,))
         
         return payload_bits * fan_out
+    
     def __eq__(self, other):
         if not isinstance(other, RegisterSpec):
             return NotImplemented
@@ -597,6 +598,7 @@ class RegisterSpec:
         variadic_label = " (variadic)" if self.variadic else ""
 
         return f"{self.name}: {dtype_str} {shape_str} {self.flow} {variadic_label}"
+    
 
 from typing import Union
 
