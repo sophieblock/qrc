@@ -507,22 +507,28 @@ class ModuleDrawer:
     def get_svg(self) -> IPython.display.SVG:
         """Get an IPython SVG object displaying the graph."""
         return IPython.display.SVG(self.get_svg_bytes())
-    def save_graph(self, filename, display=False):
+    def save_graph(self, filename, display=False, output_dir=None):
         """
-        Saves the graph to the `figures` directory and optionally displays it.
-        """
-        graph = self.get_graph()
-        # dot_output = graph.to_string()
-        # print(f"Generated Graphviz DOT file:\n{dot_output}")
-        # with open("debug_graph.dot", "w") as f:
-        #     f.write(dot_output)
+        Saves the graph to the specified directory and optionally displays it.
 
-        # Ensure the 'figures' directory exists
-        dir_path = Path("figures")
+        Args:
+            filename (str): Name of the file to save (with extension, e.g., 'graph.png').
+            display (bool): If True, opens the saved file in the default viewer.
+            output_dir (str or Path, optional): Base directory to save the graph. If None, defaults to 'figures'.
+        """
+        # Determine base directory
+        if output_dir is None:
+            dir_path = Path("figures")
+        else:
+            dir_path = Path(output_dir)
+        # Ensure the directory exists
         dir_path.mkdir(parents=True, exist_ok=True)
 
         filepath = dir_path / filename
         ext = filepath.suffix.lower()
+
+        # Generate Graphviz graph
+        graph = self.get_graph()
 
         # Save the graph in the appropriate format
         if ext == ".svg":
@@ -542,24 +548,22 @@ class ModuleDrawer:
                 subprocess.run(["start", str(filepath)], shell=True)
             else:  # Linux/Unix
                 subprocess.run(["xdg-open", str(filepath)])
-    def render(self, filename=None, display=False, save_fig=True):
+
+    def render(self, filename=None, display=False, save_fig=True, output_dir=None):
         """
-        Render the graph. If `display` is True, it opens the graph in the default viewer.
-        If `filename` is provided, the graph is saved to the `figures` directory with the given filename unless `save_fig` is False.
+        Render the graph. Optionally save to a directory and/or display it
         """
         if filename and save_fig:
-            # Save the graph using the provided filename
-
-            self.save_graph(filename, display=display)
+            # Save the graph using the provided filename and output directory
+            self.save_graph(filename, display=display, output_dir=output_dir)
         elif display:
             # Display the graph without saving
             graph = self.get_graph()
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
                 tmpfile.close()
                 graph.write_png(tmpfile.name)
-                # print(f"Temporary graph saved to {tmpfile.name}")
 
-                # Open the temporary file in the default viewer
+                # Open the temporary file
                 if platform.system() == "Darwin":  # macOS
                     subprocess.run(["open", tmpfile.name])
                 elif platform.system() == "Windows":  # Windows
