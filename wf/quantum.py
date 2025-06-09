@@ -92,9 +92,10 @@ class QuantumCircuit:
 
     def valid_gate_indices(self, instruction: QuantumInstruction):
         indices_in_range = all(
-            qubit_index >= 0 and qubit_index <= self.qubit_count
+            0 <= qubit_index <= self.qubit_count
             for qubit_index in instruction.gate_indices
         )
+        # TODO: verify if it should be 0 <= qubit_index < self.qubit_count instead...
         indices_not_repeated = len(instruction.gate_indices) == len(
             list(set(instruction.gate_indices))
         )
@@ -142,7 +143,24 @@ class QuantumCircuit:
             f"depth={self.depth()}>"
         )
 
+from dataclasses import dataclass
+from typing import Sequence, Tuple
 
+@dataclass(frozen=True)
+class LayoutTrace:
+    """Snapshot of a solved layout‐synthesis instance.
+
+    * island        – π[:,0]         (initial logical→physical map)
+    * final_mapping – π[:,depth-1]
+    * swaps         – list[tuple[Tuple[int,int], int]]  (edge, finish-time)
+    """
+    island:         Tuple[int, ...]
+    final_mapping:  Tuple[int, ...]
+    swaps:          Sequence[Tuple[Tuple[int, int], int]]
+
+    def touches_only_island(self) -> bool:
+        """Return True iff every SWAP edge stays inside *island*."""
+        return all(u in self.island and v in self.island for (u, v), _ in self.swaps)
 
 class LayoutSynthesizer:
     """
@@ -697,20 +715,29 @@ class LayoutSynthesizer:
         Forbids relay SWAPs that touch *any* qubit outside the initial island
         defined by π[:,0].  Useful when the user wants strict locality.
         """
-        pi = self.variables["pi"]
+        pi    = self.variables["pi"]
         sigma = self.variables["sigma"]
+        L     = self.circuit.qubit_count
+        T     = self.depth_guess
+        island_elems = [pi[q][0] for q in range(L)]          # symbolic list
 
+        # helper  bool “InIsland(x)”
+        def in_island(x):
+            return Or(*[x == p0 for p0 in island_elems])
 
-        P0 = [pi[q][0] for q in range(self.circuit.qubit_count)]
+        # (a) mapping never leaves the island
+        for q in range(L):
+            for t in range(1, T):
+                self.solver.add(in_island(pi[q][t]))
 
-        for timestep in range(self.depth_guess - 1):
-            for (i, j) in self.available_connectivity.edges:
-                # symbolic “i ∉ P0  ∨  j ∉ P0”
-                i_out = And([i != p for p in P0])
-                j_out = And([j != p for p in P0])
+        # (b) every SWAP edge completely inside the island
+        for (u, v) in self.available_connectivity.edges:
+            for t in range(T):
                 self.solver.add(
-                    Implies( Or(i_out, j_out),  sigma[i][j][timestep] == False )
-                )    
+                    Implies(sigma[u][v][t],
+                            And(in_island(u), in_island(v)))
+                )
+       
 
     # -------------------------------------------------------------------------
     # Objective
@@ -779,13 +806,17 @@ class LayoutSynthesizer:
             "T": self.results["time"],
             "S": self.results["SWAPs"],
             "n_swaps":  self.results["n_swaps"],
+            "P0":        initial_qubit_map,
+            "Pf":        final_qubit_map,
 
         }
        
 
-        del self.results
+        
         # # reset self.depth_guess 
         # self.depth_guess = self.circuit_depth_guess
+        result_circuit.meta = meta
+        del self.results
         return (result_circuit, initial_qubit_map, final_qubit_map, objective_result, meta)
 
     def get_time_results(self):
