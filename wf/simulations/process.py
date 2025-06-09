@@ -11,15 +11,14 @@ from typing import List, TYPE_CHECKING, Optional, Tuple,Dict, Any, Union,Callabl
 from dataclasses import dataclass
 
 from numpy import inf as INFINITY
-
+from quimb.tensor import MatrixProductState
 import copy
 
-from .utilities import all_dict1_vals_in_dict2_vals
 from .unification_tools import is_consistent_data_type
 from .data import Data,DataSpec
 from .data_types import *
 from .schema import Flow,Signature
-from .utilities import InitError
+from .utilities import InitError,all_dict1_vals_in_dict2_vals
 from ...assert_checks import gen_mismatch_dict
 if TYPE_CHECKING:
 
@@ -34,8 +33,8 @@ if TYPE_CHECKING:
 from torch.fx.operator_schemas import type_matches
 import types
 from attrs import define, field
-from ...util.log import logging
-logger = logging.getLogger(__name__)
+from ...util.log import get_logger,logging
+logger = get_logger(__name__)
 
 
 def parse_metadata(properties: Optional[Dict[str, Any]]) -> DataSpec:
@@ -383,14 +382,16 @@ from torch._jit_internal import boolean_dispatched
 
 
 
+def get_arg_order(input_props):
 
+    pass
 def _decompose_helper(process: 'Process'):
     from .builder import ProcessBuilder
 
     builder, initial_ports = ProcessBuilder.from_signature(process.signature, immutable=False)
     out_ports = process.build_composite(builder=builder, **initial_ports)
     return builder.finalize(**out_ports)
-# @define
+
 class Process:
     """Abstract base class for process models.
 
@@ -424,7 +425,7 @@ class Process:
     """
 
     UNSTARTED = "UNSTARTED"
-
+    READY     = "READY" 
     ACTIVE = "ACTIVE"
     COMPLETED = "COMPLETED"
 
@@ -449,8 +450,23 @@ class Process:
         # self.input_data = {}
         # self.shape_env = kwargs.get("shape_env", ShapeEnv())
 
+        
+        # logger.debug(f'{self} provided inputs: {self.inputs}')
+
+        if self.inputs != None:
+            if not hasattr(self, 'input_data'):
+                self.input_data = self._build_legacy_input_mapping(self.inputs)
+                logger.debug("Legacy self.input_data automatically generated:")
+            
+            # logger.info(f"Input data: " + pretty_repr(self.input_data))
+            # logger.info(f"Inputs: " + pretty_repr(self.inputs))
+            
+
         if not self.expected_input_properties:
-            self.set_expected_input_properties()
+            try:
+                self.set_expected_input_properties()
+            except NotImplementedError:
+                self.expected_input_properties = self._derive_input_props_from_signature()
         if not self.output_properties:
             try:
                 self.set_output_properties()
@@ -459,17 +475,18 @@ class Process:
                 self.output_properties = self.infer_output_properties()
                 # logger.debug(f"Infering output from signature: {self.output_properties}")
         
-        logger.debug(f'{self} provided inputs: {self.inputs}')
-
         if self.inputs != None:
-            if not hasattr(self, 'input_data'):
-                self.input_data = self._build_legacy_input_mapping(self.inputs)
-                logger.debug("Legacy self.input_data automatically generated:")
-            
-                logger.info(pretty_repr(self.input_data))
+
             # self.normalized_map = self._build_normalized_mapping(self.inputs)
             # logger.debug("\nNormalized mapping (normalize_process_call() return) dict:")
             # logger.info(pretty_repr(self.normalized_map))
+            # self.normalized_inputs = self._build_ordered_normalized_inputs(self.signature, self.inputs)
+            # logger.debug("\nNormalized input (self.normalized_inputs) list:")
+            # logger.info(pretty_repr(self.normalized_inputs))
+            # self._build_mappings()
+            # We need to somehow check 
+            
+            # if not self.validate_data_properties():
             if not self.validate_data_properties():
                 raise InitError(
                     f"""Input data properties {[input.properties for input in self.inputs]} 
@@ -480,6 +497,7 @@ class Process:
 
             if not self.required_resources:
                 self.set_required_resources()
+        # logger.debug(f'Signature initialized: {self.signature}')
     @property
     def signature(self) -> Signature:
         """Allow lazy access to the signature."""
@@ -545,7 +563,7 @@ class Process:
     
     def _build_normalized_mapping(self, inputs: List[Data]) -> Dict[str, Data]:
         # Here we assume normalize_process_call() exists and returns a mapping by signature register names.
-        from .process import normalize_process_call
+        
         return normalize_process_call(target=self, args=tuple(inputs), kwargs={})
 
     def _build_ordered_normalized_inputs(self, signature: Signature, norm_map: Dict[str, Data], inputs: List[Data]) -> List[Data]:
@@ -606,7 +624,49 @@ class Process:
     
 
     ## --------------------------- VALIDATION ---------------------------------- ##
-    def validate_data_properties_new(self) -> bool:
+  
+    def validate_data_properties(self,show_debug_log=True) -> bool:
+        self.inputs_copy = copy.copy(self.inputs)
+        results: list[bool] = []
+        # iterate once, matching + logging in one go
+        for expected_property in self.expected_input_properties:
+            found, mismatches = self.expected_property_in_inputs_new(expected_property)
+            results.append(found)
+
+            if not found and mismatches and show_debug_log:
+                # build a friendly error message and raise
+                error_lines = ["Input data properties validation failed:"]
+                for (data_id, data_obj), detail in mismatches.items():
+                    error_lines.append(f"- Data id={data_id}, object={data_obj!r}")
+                    for prop, m in detail.items():
+                        error_lines.append(f"    • {prop}: expected={m['expected']} actual={m['actual']}")
+                del self.inputs_copy
+                raise InitError("\n".join(error_lines))
+
+        del self.inputs_copy
+        return all(results)
+    def expected_property_in_inputs_new(self, expected_property: dict) -> bool:
+        mismatches = {}
+
+        for data in self.inputs_copy:
+            results = []
+            for key, val in expected_property.items():
+                res = all_dict1_vals_in_dict2_vals(data.properties.get(key, None), val)
+                results.append(res)
+
+            if all(results):
+                self.inputs_copy.remove(data)
+                return True, None
+            else:
+                mismatch = gen_mismatch_dict(data, expected_property)
+            
+                input_id = (data.id, data) 
+                mismatches[input_id] = mismatch
+
+
+        return False, mismatches
+   
+    def validate_data_properties_test(self) -> bool:
         """
         Validate that each left-register in the process signature matches its corresponding input Data object.
         
@@ -645,39 +705,7 @@ class Process:
             logger.error("Data property validation failed:\n%s", full_error)
             raise InitError("Data property validation failed:\n" + full_error)
         return True
-   
-
-    def _raise_data_property_error(self, mismatches: Dict[str, Dict[str, Dict[str, Any]]]):
-        """
-        Raises an InitError with a detailed error message about mismatched data properties.
-        """
-        error_lines = ["Input data does not satisfy expected properties :"]
-        
-        for input_id, details in mismatches.items():
-            error_lines.append(f"\n- {input_id}:")
-            for prop, mismatch in details.items():
-                error_lines.append(f"    Property '{prop}': Expected {mismatch['expected']}, Actual {mismatch['actual']}")
-
-        raise InitError("\n".join(error_lines))
-    def validate_data_properties(self,show_debug_log=False) -> bool:
-        self.inputs_copy = copy.copy(self.inputs)
-        result = all(
-            self.expected_property_in_inputs(expected_property)
-            for expected_property in self.expected_input_properties
-        )
-        del self.inputs_copy
-        return result
     
-    def expected_property_in_inputs(self, expected_property: dict) -> bool:
-        for data in self.inputs_copy:
-            if all(
-                all_dict1_vals_in_dict2_vals(data.properties.get(key, None), val)
-                for key, val in expected_property.items()
-            ):
-                self.inputs_copy.remove(data)
-                return True
-        return False
-
     # --- Abstract methods to be implemented by subclasses ---
     def validate_data(self) -> bool:
         """Process specific verification that ensures input data has
@@ -862,6 +890,7 @@ class ClassicalProcess(Process):
         # ), f"Expected classical allocation for process {self}"
 
         time_till_completion = self.flops / allocation.clock_frequency
+        logger.debug(f'{repr(self)} requires {self.flops} (clock_freq={allocation.clock_frequency:.2e})\n   time until completion set to {time_till_completion:.2e}')
         return time_till_completion
     
 
