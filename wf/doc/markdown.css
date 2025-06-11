@@ -1,0 +1,61 @@
+body {
+    font-family: Arial, sans-serif;
+    line-height: 1.6;
+    margin: 20px;
+    background-color: #f9f9f9;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+    color: #222;
+}
+
+/* Paragraphs */
+p {
+    color: #444;
+}
+
+/* Code blocks */
+pre {
+    background-color: #f0f0f0;
+    border-left: 4px solid #007acc;
+    padding: 10px;
+    overflow: auto;
+    border-radius: 5px;
+}
+
+/* Inline code */
+code {
+    background-color: #f0f0f0;
+    padding: 2px 4px;
+    border-radius: 3px;
+}
+
+/* Python code block specific styles */
+pre code.language-python {
+    color: #d14;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+/* Links */
+a {
+    color: #007acc;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Lists */
+ul, ol {
+    margin-left: 20px;
+}
+
+/* Blockquotes */
+blockquote {
+    border-left: 4px solid #007acc;
+    padding: 10px;
+    color: #555;
+    background-color: #f9f9f9;
+}
