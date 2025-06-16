@@ -223,6 +223,22 @@ def display_mod(process, type: str="dtype",  show_bookkeeping=True):
         IPython.display.display(ModuleDrawer(process, label_type="shape", show_bookkeeping=show_bookkeeping))
 
 
+def display_mod(process, type: str="dtype",  show_bookkeeping=True):
+    edge_label = type.lower()
+    IPython.display.display(ModuleDrawer(process, label_type=edge_label, show_bookkeeping=show_bookkeeping))
+    # if type.lower() == 'dtype':
+    #     IPython.display.display(ModuleDrawer(process, label_type="dtype", show_bookkeeping=show_bookkeeping))
+    # elif type.lower() == 'nbytes':
+    #     IPython.display.display(ModuleDrawer(process, label_type="nbytes", show_bookkeeping=show_bookkeeping))
+    # elif type.lower() == 'shape':
+    #     IPython.display.display(ModuleDrawer(process, label_type="shape", show_bookkeeping=show_bookkeeping))
+
+
+def save_mod(process, label_type: str="dtype",  show_bookkeeping=True, filename = None, output_dir = None):
+    edge_label = label_type.lower()
+    drawer = ModuleDrawer(process, label_type=edge_label,show_bookkeeping=show_bookkeeping,)
+    drawer.render(display=False, save_fig=True, filename=filename,output_dir=output_dir)
+
 class ModuleDrawer:
     """A class to encapsulate methods for displaying or saving a Workflow as a graph using pydot."""
 
