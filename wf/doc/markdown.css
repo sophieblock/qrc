@@ -1,61 +1,275 @@
+/* ------------------------------------------------------------------ *
+ * markdown.css  –  Pastel‑Python docs theme (refactored)              *
+ * ------------------------------------------------------------------ */
+@import url("./nnfx-light.min.css");
+/* Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600&family=Fira+Code:wght@400;600&display=swap');
+
+/* ------------------------------------------------------------------ */
+/*  CSS Variables                                                     */
+/* ------------------------------------------------------------------ */
+:root {
+  /* Colour palette */
+  --text-color:      #333;
+  --muted-color:     #555;
+  --debug-color:     #642008;
+  --link-color:      #0066cc;
+
+  --bg-page:         #fffcfc;
+  --bg-code:         #fff9d4;         /* pastel code‑box */
+  --code-text:       #2d2d2d;
+
+  --inline-code-bg:  #f5f5f5;         /* python‑docs light grey */
+  --inline-code:     #f14949;         /* python‑docs muted red  */
+
+  --font-code:       'Fira Code', monospace;
+  --border-radius:   4px;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Global typography & layout                                        */
+/* ------------------------------------------------------------------ */
+html { font-size: 10px; }             /* 1 rem ≈ 17 px */
+
 body {
-    font-family: Arial, sans-serif;
-    line-height: 1.6;
-    margin: 20px;
-    background-color: #f9f9f9;
+  font-family: 'Open Sans', sans-serif;
+  color: var(--text-color);
+  background: var(--bg-page);
+  line-height: 1.75;
+  max-width: 840px;
+  margin: 2rem auto;
+  padding: 0 1rem;
+  counter-reset: h2counter h3counter;   /* for auto‑numbering */
 }
 
-/* Headings */
-h1, h2, h3, h4, h5, h6 {
-    color: #222;
+/* ------------------------------------------------------------------ */
+/*  Headings                                                          */
+/* ------------------------------------------------------------------ */
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.02em; }
+
+h1 { font-size: 2.25rem; margin-bottom: .5rem; }
+h2 { font-size: 1.75rem; margin: 2rem 0 .5rem; }
+h3 { font-size: 1.40rem; margin: 1.5rem 0 .5rem; }
+h4 { font-size: 1.2rem; margin: 1.25rem 0 .25rem; }
+/* Section numbering */
+h2 { counter-increment: h2counter; counter-reset: h3counter; }
+h2::before { content: counter(h2counter) ". "; margin-right: .25em; color: #888; }
+h3 { counter-increment: h3counter; }
+h3::before { content: counter(h2counter) "." counter(h3counter) " "; margin-right: .25em; color: #aaa; }
+
+/* Deep‑link anchors */
+h2, h3, h4 { position: relative; }
+.anchor { position: absolute; left: -1.25rem; top: 50%; transform: translateY(-50%); font-size: .8em; opacity: 0; text-decoration: none; transition: opacity .15s; }
+h2:hover .anchor, h3:hover .anchor, h4:hover .anchor { opacity: 1; }
+
+/* Code chips inside headings --------------------------------------- */
+h1 > code:not(.filepath),
+h2 > code:not(.filepath),
+h3 > code:not(.filepath),
+h4 > code:not(.filepath) {
+  background: var(--inline-code-bg);
+  color: var(--code-text);
+  font-family: var(--font-code);
+  padding: .15em .4em;
+  border-radius: var(--border-radius);
+  border: 1px solid rgba(0,0,0,.05);
 }
 
-/* Paragraphs */
-p {
-    color: #444;
+/* ------------------------------------------------------------------ */
+/*  Links, paragraphs, lists                                          */
+/* ------------------------------------------------------------------ */
+a { color: var(--link-color); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+p  { margin: 1rem 0; }
+ul, ol { margin: .5rem 0 1rem 1.5rem; }
+ul ul, ol ul { list-style-type: circle; }
+
+dl { margin: 1rem 0 2rem; }
+dt { font-weight: 700; }
+dd { margin: 0 0 .6rem 1.5rem; color: var(--muted-color); }
+
+
+/* ------------------------------------------------------------------ */
+/*  TOC & Tables                                                      */
+/* ------------------------------------------------------------------ */
+nav.toc { border-left: 3px solid var(--border-radius); padding-left: 1rem; margin-bottom: 2rem; }
+nav.toc ul { list-style: none; padding-left: 0; }
+
+.table, table { width: 100%; border-collapse: collapse; margin: 1rem 0 2rem; font-size: .94rem; }
+th, td { border: 1px solid #d3d3d3; padding: .55rem .75rem; }
+tbody tr:nth-child(odd) { background: #fafafa; }
+tbody tr:nth-child(even){ background: #fff; }
+th { background: #fff7f7; font-weight: 600; text-align: left; }
+
+/* ------------------------------------------------------------------ */
+/*  Inline code                                                       */
+/* ------------------------------------------------------------------ */
+code { 
+  background: var(--inline-code-bg); 
+  color: var(--inline-code); 
+  font-family: var(--font-code); 
+  padding: .2em .4em; 
+  border-radius: var(--border-radius); 
+  border: 1px solid #e1e1e8; 
 }
 
-/* Code blocks */
+/* Python-style tokens for inline snippets */
+code.token.keyword   { color: #d73a49 !important; font-weight:bold; }
+code.token.type      { color: #6f42c1 !important; }      /* classes, types */
+code.token.func      { color: #005cc5 !important; }      /* functions */
+code.token.literal   { color: #005cc5 !important; }      /* numbers, bools */
+code.token.comment   { color: #6a737d !important; font-style:italic; }
+/* Special: inline file‑path snippet */
+code.filepath {
+  font-size: .8em;
+  color: var(--muted-color);
+  background: none;
+  padding: 0;
+  font-weight: 400;
+}
+
+/* Signature block under headings ----------------------------------- */
+code.signature {
+  display: block;
+  background: var(--inline-code-bg);
+  color: var(--code-text);
+  font-family: var(--font-code);
+  padding: .6rem .9rem;
+  border: 1px solid rgba(0,0,0,.05);
+  border-radius: var(--border-radius);
+  font-size: .9rem;
+  margin: .4rem 0 1rem;
+  line-height: 1.5;
+  white-space: pre-wrap;      /* wrap nicely */
+  word-break: break-word;
+
+  /* optional: emphasise the `class` keyword */
+}
+
+/* ------------------------------------------------------------------ */
+/*  Block‑level code (pre)                                            */
+/* ------------------------------------------------------------------ */
 pre {
-    background-color: #f0f0f0;
-    border-left: 4px solid #007acc;
-    padding: 10px;
-    overflow: auto;
-    border-radius: 5px;
+  position: relative;
+  background: var(--bg-code);
+  padding: 1rem;
+  border-radius: 6px;
+  box-shadow:
+    inset 0 1px 2px rgba(0,0,0,.08),
+    0 2px 4px rgba(0,0,0,.08);
+  border: 1px solid rgba(0,0,0,.05);
+  font-family: var(--font-code);
+  font-size: .95rem;
+  overflow: auto;
 }
 
-/* Inline code */
-code {
-    background-color: #f0f0f0;
-    padding: 2px 4px;
-    border-radius: 3px;
+pre code {
+  color: var(--code-text);
+  display: block;
+  font-family: var(--font-code);
 }
 
-/* Python code block specific styles */
-pre code.language-python {
-    color: #d14;
-    font-family: 'Courier New', Courier, monospace;
+/* Language badge */
+pre[data-lang]           { position: relative; }
+pre[data-lang]::after {
+  content: attr(data-lang);
+  position: absolute; top: -.7rem; right: .75rem;
+  font-size: .7rem; font-weight: 600;
+  padding: .15rem .45rem;
+  background: var(--bg-code);
+  border: 1px solid rgba(0,0,0,.07);
+  border-radius: var(--border-radius) var(--border-radius) 0 0;
+  text-transform: uppercase; letter-spacing: .05em;
 }
 
-/* Links */
-a {
-    color: #007acc;
-    text-decoration: none;
+
+/* Copy‑button (requires JS that injects .copy-btn) */
+.copy-btn {
+  position: absolute; top: .4rem; right: .5rem;
+  font-size: .65rem; padding: .15rem .4rem;
+  border: 1px solid #aaa; background: #fff; cursor: pointer;
 }
 
-a:hover {
-    text-decoration: underline;
-}
+/* Admonitions & blockquotes */
+.admonition { border-left: 4px solid #2980b9; background: #eef5fd; padding: .75rem 1rem; margin: 1.5rem 0; border-radius: 3px; }
+.admonition.warning { border-color: #c0392b; background: #fdeeee; }
+.admonition > p:first-child { margin-top: 0; font-weight: 600; }
 
-/* Lists */
-ul, ol {
-    margin-left: 20px;
-}
-
-/* Blockquotes */
 blockquote {
-    border-left: 4px solid #007acc;
-    padding: 10px;
-    color: #555;
-    background-color: #f9f9f9;
+  border-left: 4px solid var(--link-color);
+  padding: .5rem 1rem;
+  color: var(--debug-color);
+  background: #cefff3d6;
+  /* margin: 1.5rem 0; */
 }
+/* ------------------------------------------------------------------ */
+/*  Syntax-highlight colours                                          */
+/* ------------------------------------------------------------------ */
+
+/* ---------- 1) highlight.js selectors ---------------------------- */
+
+/* Core tokens (see docs)            https://highlightjs.org/examples */  /*  [oai_citation:2‡highlightjs.org](https://highlightjs.org/examples?utm_source=chatgpt.com) */
+/* .hljs-keyword         { color:#d73a49 !important; font-weight:bold; }  
+.hljs-built_in,
+.hljs-type            { color:#6f42c1 !important; }                   
+.hljs-string          { color:#032f62 !important; }                  
+.hljs-number,
+.hljs-literal         { color:#005cc5 !important; }                   
+.hljs-attr            { color:#6f42c1 !important; }                   
+.hljs-function .hljs-title,
+.hljs-title.function_ { color:#005cc5 !important; }                
+.hljs-comment         { color:#6a737d !important; font-style:italic; }
+.hljs-operator        { color:#d73a49 !important; }
+.hljs-symbol          { color:#005cc5 !important; }
+.hljs-punctuation     { color:#24292e !important; } */
+
+/* ---------- 2) Pygments (GitHub / Sphinx) short-class selectors -- */
+/* Full token list: https://pygments.org/docs/tokens/ */  /*  */
+
+/* keywords --------------------------------------------------------- */
+.highlight .k,b code.k
+      { color:#6f42c1 !important; }
+.highlight .kd, code.kd   /* Keyword.Declaration   */
+      { color:#6f42c1 !important; }
+.highlight .kc, code.kc   /* Keyword.Constant      */
+      { color:#6f42c1 !important; }
+.highlight .kn, code.kn   /* Keyword.Namespace     */
+      { color:#6f42c1 !important; }
+.highlight .kp, code.kp   /* Keyword.Pseudo        */
+      { color:#6f42c1 !important; }
+.highlight .kt, code.kt    /* Keyword.Type          */ 
+      { color:#d73a49 !important; font-weight:bold; }
+
+/* names / identifiers --------------------------------------------- */
+.highlight .nc, code.nc   /* Name.Class            */
+      { color:#6f42c1 !important; }
+.highlight .nn, code.nn   /* Name.Namespace        */ 
+      { color:#6f42c1 !important; text-decoration:underline; }
+.highlight .na, code.na   /* Name.Attribute        */ 
+      { color:#6f42c1 !important; }
+.highlight .nb, code.nb    /* Name.Builtin          */ 
+      { color:#6f42c1 !important; }
+      
+
+.highlight .nf, code.nf,   /* Name.Function         */
+.highlight .py, code.py    /* Name.Property         */
+      { color:#005cc5 !important; }
+
+.highlight .nv, code.nv,
+.highlight .vc, code.vc,
+.highlight .vg, code.vg,
+.highlight .vi, code.vi    /* variables             */
+      { color:#3d342d !important; }
+
+/* constants / literals -------------------------------------------- */
+.highlight .no, code.no,   /* Name.Constant         */
+.highlight .m,  code.m,    /* Number                */
+.highlight .s,  code.s,    /* String                */
+.highlight .ss, code.ss    /* String.Symbol         */
+      { color:#005cc5 !important; }
+
+/* comments --------------------------------------------------------- */
+.highlight .c, code.c,
+.highlight .c1, code.c1    /* Comment, Comment.Single */
+      { color:#6a737d !important; font-style:italic; }
