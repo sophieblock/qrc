@@ -12,284 +12,13 @@ from enum import Enum
 import abc
 import struct
 
-from attrs import define, field, validators,frozen
+from attrs import define,field, frozen, validators, converters,Factory,setters
+from ..util.log import get_logger
 
-from ...util.log import get_logger,logging
 logger = get_logger(__name__)
-
 
 from typing import TypeVar
 
-SymbolicFloat = Union[float, sympy.Expr]
-"""A floating point value or a sympy expression."""
-
-SymbolicInt = Union[int, sympy.Expr]
-"""An integer value or a sympy expression."""
-
-SymbolicComplex = Union[complex, sympy.Expr]
-"""A complex value or a sympy expression."""
-
-
-T = TypeVar('T')
-from typing_extensions import TypeIs
-@frozen
-class Shaped:
-    """Symbolic value for an object that has a shape.
-
-    A Shaped object can be used as a symbolic replacement for any object that has an
-    attribute `shape`, for example numpy `NDArrays`. Each dimension can be either
-    a positive integer value or a sympy expression.
-
-    For the symbolic variant of a tuple or sequence of values, see `HasLength`.
-
-    This is useful to do symbolic analysis of Bloqs whose call graph only depends on the shape
-    of the input, but not on the actual values. For example, T-cost of the `QROM` Bloq depends
-    only on the iteration length (shape) and not on actual data values. In this case, for the
-    bloq attribute `data`, we can use the type:
-
-    source: qualtran
-    """
-
-    shape: tuple[SymbolicInt, ...] = field(validator=validators.instance_of(tuple))
-
-    def is_symbolic(self):
-        return True
-
-
-@frozen
-class HasLength:
-    """Symbolic value for an object that has a length.
-
-    This is used as a "symbolic" tuple. The length can either be a positive integer
-    or a sympy expression. For example, if a bloq attribute is a tuple of ints,
-    we can use the type:
-
-    ```py
-    values: Union[tuple, HasLength]
-    ```
-
-    For the symbolic variant of a NDArray, see `Shaped`.
-
-    Note that we cannot override __len__ and return a sympy symbol because Python has
-    special treatment for __len__ and expects you to return a non-negative integers.
-
-    See https://docs.python.org/3/reference/datamodel.html#object.__len__ for more details.
-    source: qualtran
-    """
-
-    n: SymbolicInt
-
-    def is_symbolic(self):
-        return True
-@overload
-def is_symbolic(
-    arg: Union[T, sympy.Expr, Shaped, HasLength], /
-) -> TypeIs[Union[sympy.Expr, Shaped, HasLength]]: ...
-
-
-@overload
-def is_symbolic(*args) -> bool: ...
-
-
-def is_symbolic(*args) -> Union[TypeIs[Union[sympy.Expr, Shaped, HasLength]], bool]:
-    """Returns whether the inputs contain any symbolic object.
-
-    Returns:
-        True if any argument is either a sympy object,
-        or implements the `is_symbolic` method which returns True.
-    """
-
-    if len(args) != 1:
-        return any(is_symbolic(arg) for arg in args)
-
-    (arg,) = args
-    if isinstance(arg, sympy.Basic):
-        return True
-
-    checker = getattr(arg, 'is_symbolic', None)
-    if checker is not None:
-        return checker()
-
-    return False
-
-
-SymbolicT = TypeVar('SymbolicT', SymbolicInt, SymbolicFloat, SymbolicComplex)
-
-
-
-def prod(args: Iterable[SymbolicT]) -> SymbolicT:
-    ret: SymbolicT = 1
-    for arg in args:
-        ret = ret * arg
-    return ret
-
-
-
-class _DynType:
-    """
-    _DynType defines a type which stands for the absence of type information.
-    """
-    def __init__(self) -> None:
-        self.__name__ = "_DynType"
-    def __eq__(self, other):
-        return isinstance(other, self.__class__)
-    def __str__(self):
-        return "Dyn"
-    def __repr__(self):
-        return "Dyn"
-    def __hash__(self):
-        return hash("_DynType")
-
-Dyn = _DynType()
-
-
-class DataType(abc.ABC):
-    """
-    Abstract parent for all data types (classical or quantum).
-
-    Each subclass must implement:
-    - num_units -> int: The total “element count” or bit/qubit count (depending on the type).
-    - data_width: Total bits required to store one instance of this data type.
-    - to_bits(...) / from_bits(...): For converting this data type to and from a bit-level representation.
-    - get_classical_domain(): If feasible, yields all possible values (e.g., for small classical types).
-    - to_units(...) / from_units(...): Splits or reconstructs the data into smaller “units.”
-
-    This design ensures that the shape or size of the data is primarily stored here, making
-    the `Data` class in `data.py` simpler in handling dynamic aspects like symbolic shapes.
-    """
-    @property
-    @abc.abstractmethod
-    def data_width(self) -> int:
-        """
-        Number of "fundamental units" (bits, qubits, or something else)
-        required to represent a single instance of this data type.
-        """
-
-
-    @abc.abstractmethod
-    def to_bits(self, x) -> List[int]:
-        """Convert a single value x to its bit representation."""
-
-    def to_bits_array(self, x_array: NDArray[Any]) -> NDArray[np.uint8]:
-        """Yields an NDArray of bits corresponding to binary representations of the input elements.
-
-        Often, converting an array can be performed faster than converting each element individually.
-        This operation accepts any NDArray of values, and the output array satisfies
-        `output_shape = input_shape + (self.data_width,)`.
-        """
-        return np.vectorize(
-            lambda x: np.asarray(self.to_bits(x), dtype=np.uint8), signature='()->(n)'
-        )(x_array)
-    @abc.abstractmethod
-    def from_bits(self, bits: Sequence[int]) -> Any:
-        """Combine bits to form a single value x."""
-    
-    def from_bits_array(self, bits_array: NDArray[np.uint8]):
-
-        """Combine individual bits to form classical values.
-
-        Often, converting an array can be performed faster than converting each element individually.
-        This operation accepts any NDArray of bits such that the last dimension equals `self.data_width`,
-        and the output array satisfies `output_shape = input_shape[:-1]`.
-        """
-        return np.vectorize(self.from_bits, signature='(n)->()')(bits_array)
-
-    @abc.abstractmethod
-    def get_classical_domain(self) -> Iterable[Any]:
-        """Yield all possible values representable by this type (if feasible)."""
-
-    
-
-    @abc.abstractmethod
-    def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
-        """Raises an exception if `val` is not a valid classical value for this type.
-
-        Args:
-            val: A classical value that should be in the domain of this QDType.
-            debug_str: Optional debugging information to use in exception messages.
-        """
-    def assert_valid_classical_val_array(self, val_array: NDArray[Any], debug_str: str = 'val'):
-        """Validates an array of values; by default, validates each element."""
-        for val in val_array.reshape(-1):
-            self.assert_valid_classical_val(val, debug_str)
-    
-    def is_symbolic(self) -> bool:
-        """Returns True if this data type is parameterized with symbolic objects."""
-        if hasattr(self, "num_qubits"):
-            return is_symbolic(self.num_qubits)
-        if hasattr(self,"bit_width"):
-            return is_symbolic(self.bit_width)
-        return False
-    def iteration_length_or_zero(self) -> SymbolicInt:
-        """Returns the iteration length if defined, or else 0."""
-        return getattr(self, 'iteration_length', 0)
-    
-    def __str__(self):
-        return f"{self.__class__.__name__}({self.data_width})"
-    def __format__(self, spec: str) -> str:          # <-- add this
-        """Delegate formatting to the string representation."""
-        return format(str(self), spec)    
-
-# ----------------------------------------------------------------
-# Classical Data Types
-# These types are intended to represent classical values and registers.
-# They inherit from DataType and implement all required methods.
-
-def _bits_for_dtype(dt) -> int:
-    """
-    Return the bit-width for a scalar dtype:
-        - torch.dtype (via torch.iinfo/finfo)
-        - numpy dtypes or scalar classes
-        - Python built-ins (float => 64, int => 64)
-    """
-    import torch, numpy as np
-    if isinstance(dt, torch.dtype):
-        if dt.is_floating_point:
-            return torch.finfo(dt).bits
-        if dt == torch.bool:
-            return 1
-        return torch.iinfo(dt).bits
-    if isinstance(dt, np.dtype):
-        return dt.itemsize * 8
-    try:
-        npdt = np.dtype(dt)
-        return npdt.itemsize * 8
-    except Exception:
-        pass
-    
-    # Possibly default to 64 (or 32)
-    if dt is float:
-        return 32
-    if dt is int: 
-        return 32
-    
-    return 32  
-
-
-
-def _element_type_converter(et: Any) -> 'DataType':
-    """
-    Field converter for `element_type`.
-    If user does not supply one (None), default to CFloat(32).
-    Otherwise, if already a DataType, return it.
-    Else, raise TypeError.
-    """
-
-    if isinstance(et, DataType):
-        return et
-    # raise TypeError(f"element_type must be a DataType or None, got {et}")
-    et_size = _bits_for_dtype(et)
-    
-    return CFloat(et_size)
-
-
-def _to_symbolic_int(v):
-    """Accept int, SymPy, Dyn, or str → SymPy.Symbol."""
-    if isinstance(v, str):
-        return sympy.symbols(v, positive=True, integer=True)
-    return v
-
-from enum import Enum
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  Light-weight VALUE helper – orthogonal to the dtype hierarchy
@@ -297,11 +26,6 @@ from enum import Enum
 class BitNumbering(Enum):
     MSB = 0          # bit-0 is most-significant (big-endian bit order)
     LSB = 1         # bit-0 is least-significant (little-endian bit order)
-
-
-from attrs import define,field, validate, validators, converters,Factory,setters
-
-
 
 def validate_dtype(instance,attribute, value):
     instance.assert_valid_classical_val(instance.integer, "BitStringView.integer")
@@ -502,8 +226,19 @@ class BitStringView:
 
 
     def widen_to_dtype(self, dtype: "DataType") -> "BitStringView":
+        """
+        Mutates object's (in-place) number of bits, sets dtype
+        We can add an optional pure widened() function which would leave the original untouched and
+        returns a fresh object. This would cause extra allocation & hashing though... TBD.
+        """
         dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
-        object.__setattr__(self, "nbits", max(self.nbits, dtype.data_width))
+        width = dtype.data_width
+        object.__setattr__(self, "nbits", max(self.nbits, width))
+        if isinstance(dtype, NumericType):
+            mask = (1 << width) - 1
+            object.__setattr__(self, "integer", self.integer & mask)
+
+        object.__setattr__(self, "dtype", dtype)
         return self
 
     def __eq__(self, other) -> bool:
@@ -544,18 +279,267 @@ class BitStringView:
     def __int__(self) -> int:
         return self.integer
 
-    def __repr__(self) -> str:
+    def info(self) -> str:
         return (
             f"BitStringView({self.integer}, "
             f"nbits={self.nbits}, order={self.numbering.name})"
         )
 
+SymbolicFloat = Union[float, sympy.Expr]
+"""A floating point value or a sympy expression."""
 
+SymbolicInt = Union[int, sympy.Expr]
+"""An integer value or a sympy expression."""
+
+SymbolicComplex = Union[complex, sympy.Expr]
+"""A complex value or a sympy expression."""
+
+
+T = TypeVar('T')
+from typing_extensions import TypeIs
+
+SymbolicT = TypeVar('SymbolicT', SymbolicInt, SymbolicFloat, SymbolicComplex)
+
+
+
+@overload
+def is_symbolic(
+    arg: Union[T, sympy.Expr, SymInt,SymbolicT], /
+) -> TypeIs[Union[sympy.Expr, SymInt,SymbolicT]]: ...
+
+
+@overload
+def is_symbolic(*args) -> bool: ...
+
+
+def is_symbolic(*args) -> Union[TypeIs[Union[sympy.Expr, SymInt,SymbolicT]], bool]:
+    """Returns whether the inputs contain any symbolic object.
+
+    Returns:
+        True if any argument is either a sympy object,
+        or implements the `is_symbolic` method which returns True.
+    """
+
+    if len(args) != 1:
+        return any(is_symbolic(arg) for arg in args)
+
+    (arg,) = args
+    if isinstance(arg, sympy.Basic):
+        return True
+
+    checker = getattr(arg, 'is_symbolic', None)
+    if checker is not None:
+        return checker()
+
+    return False
+
+
+
+def prod(args: Iterable[SymbolicT]) -> SymbolicT:
+    ret: SymbolicT = 1
+    for arg in args:
+        ret = ret * arg
+    return ret
+
+
+
+class _DynType:
+    """
+    _DynType defines a type which stands for the absence of type information.
+    """
+    def __init__(self) -> None:
+        self.__name__ = "_DynType"
+    def __eq__(self, other):
+        return isinstance(other, self.__class__)
+    def __str__(self):
+        return "Dyn"
+    def __repr__(self):
+        return "Dyn"
+    def __hash__(self):
+        return hash("_DynType")
+
+Dyn = _DynType()
+
+# -------------------------------- Helper methods --------------------------------
+
+def _bits_for_dtype(dt) -> int:
+    """
+    Return the bit-width for a scalar dtype:
+        - torch.dtype (via torch.iinfo/finfo)
+        - numpy dtypes or scalar classes
+        - Python built-ins (float => 64, int => 64)
+    """
+    import torch, numpy as np
+    if isinstance(dt, torch.dtype):
+        if dt.is_floating_point:
+            return torch.finfo(dt).bits
+        if dt == torch.bool:
+            return 1
+        return torch.iinfo(dt).bits
+    if isinstance(dt, np.dtype):
+        return dt.itemsize * 8
+    try:
+        npdt = np.dtype(dt)
+        return npdt.itemsize * 8
+    except Exception:
+        pass
+    
+    # Possibly default to 64 (or 32)
+    if dt is float:
+        return 32
+    if dt is int: 
+        return 32
+    
+    return 32  
+
+def _is_float_like(dt) -> bool:
+    """Return True when *dt* denotes a floating-point scalar.
+
+    Accepted inputs:
+        • Python built-in  : float
+        • NumPy scalar type: np.float16 / 32 / 64 / longdouble …
+        • NumPy dtype obj  : np.dtype('float32'), etc.
+        • torch.dtype      : torch.float16 / 32 / 64 / bfloat16  (if torch present)
+    """
+    import numbers
+    import numpy as np
+
+    # 1) Built-in float -------------------------------------------------
+    if dt is float:
+        return True
+
+    # 2) NumPy scalar class or dtype -----------------------------------
+    try:
+        np_dtype = np.dtype(dt)           # works for both class and dtype instances
+        if np_dtype.kind == 'f':          # 'f' means floating-point
+            return True
+    except TypeError:
+        pass  # not something NumPy understands
+
+    # 3) torch.dtype ----------------------------------------------------
+    try:
+        import torch
+        if isinstance(dt, torch.dtype) and dt.is_floating_point:
+            return True
+    except ImportError:
+        pass  # torch not available; ignore
+
+    # 4) Anything else --------------------------------------------------
+    return False
+
+def _element_type_converter(et: Any) -> 'DataType':
+    """
+    Field converter for `element_type`.
+    If user does not supply one (None), default to CFloat(32).
+    Otherwise, if already a DataType, return it.
+    Else, raise TypeError.
+    """
+
+    # Already a DataType instance → keep
+    if isinstance(et, DataType):
+        return et
+
+    # Non-numeric Python built-ins we recognise up-front
+    if et in (str, bool):
+        return et                     # <──■ simply keep `str` (or `bool`)
+
+    # Everything numeric falls back to CType logic
+    et_size = _bits_for_dtype(et)
+    return CFloat(et_size) if _is_float_like(et) else CUInt(et_size)
+
+
+def _to_symbolic_int(v):
+    """Accept int, SymPy, Dyn, or str → SymPy.Symbol."""
+    if isinstance(v, str):
+        return sympy.symbols(v, positive=True, integer=True)
+    return v
+
+class DataType(abc.ABC):
+    """ 
+    Abstract parent for all data types (classical and quantum).
+    """
+    @property
+    @abc.abstractmethod
+    def data_width(self) -> int:
+        """
+        Number of "fundamental units" (bits, qubits, or something else)
+        required to represent a single instance of this data type.
+        """
+
+    @abc.abstractmethod
+    def to_bits(self, x) -> List[int]:
+        """Convert a single value x to its bit representation."""
+
+    def to_bits_array(self, x_array: NDArray[Any]) -> NDArray[np.uint8]:
+        """Yields an NDArray of bits corresponding to binary representations of the input elements.
+
+        Often, converting an array can be performed faster than converting each element individually.
+        This operation accepts any NDArray of values, and the output array satisfies
+        `output_shape = input_shape + (self.data_width,)`.
+        """
+        return np.vectorize(
+            lambda x: np.asarray(self.to_bits(x), dtype=np.uint8), signature='()->(n)'
+        )(x_array)
+    
+    @abc.abstractmethod
+    def from_bits(self, bits: Sequence[int]) -> Any:
+        """Combine bits to form a single value x."""
+    
+    def from_bits_array(self, bits_array: NDArray[np.uint8]):
+
+        """Combine individual bits to form classical values.
+
+        Often, converting an array can be performed faster than converting each element individually.
+        This operation accepts any NDArray of bits such that the last dimension equals `self.data_width`,
+        and the output array satisfies `output_shape = input_shape[:-1]`.
+        """
+        return np.vectorize(self.from_bits, signature='(n)->()')(bits_array)
+
+    @abc.abstractmethod
+    def get_classical_domain(self) -> Iterable[Any]:
+        """Yield all possible values representable by this type (if feasible)."""
+
+    
+
+    @abc.abstractmethod
+    def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
+        """Raises an exception if `val` is not a valid classical value for this type.
+
+        Args:
+            val: A classical value that should be in the domain of this QDType.
+            debug_str: Optional debugging information to use in exception messages.
+        """
+    def assert_valid_classical_val_array(self, val_array: NDArray[Any], debug_str: str = 'val'):
+        """Validates an array of values; by default, validates each element."""
+        for val in val_array.reshape(-1):
+            self.assert_valid_classical_val(val, debug_str)
+    
+    def is_symbolic(self) -> bool:
+        """Returns True if this data type is parameterized with symbolic objects."""
+        if hasattr(self, "num_qubits"):
+            return is_symbolic(self.num_qubits)
+        if hasattr(self,"bit_width"):
+            return is_symbolic(self.data_width)
+        return False
+    def iteration_length_or_zero(self) -> SymbolicInt:
+        """Returns the iteration length if defined, or else 0."""
+        return getattr(self, 'iteration_length', 0)
+    
+    def __str__(self):
+        return f"{self.__class__.__name__}({self.data_width})"
+    def __format__(self, spec: str) -> str:          # <-- add this
+        """Delegate formatting to the string representation."""
+        return format(str(self), spec)    
+
+
+# ----------------------------------------------------------------
+# Classical Data Types
+# These types are intended to represent classical values and registers.
+# They inherit from DataType and implement all required methods.
 
 
 class CType(DataType, metaclass=abc.ABCMeta):
     """Parent for purely classical data types.
-    - element_size (in bytes) = data_width / 8.
     """
 
     @abc.abstractmethod
@@ -578,8 +562,10 @@ class CType(DataType, metaclass=abc.ABCMeta):
         numbering: BitNumbering = BitNumbering.MSB,
     ) -> "BitStringView":
         """
-        Return a BitStringView initialised with *value* and widened
-        to *this* dtype.  Works for every classical subtype.
+        Return a `BitStringView` object initialised with *value* and widened
+        to *this* dtype (width & ordering metadata travel with the value; 
+        downstream code can re-emit bits with the correct endianness.
+  
         """
         if isinstance(value, BitStringView):
             return value.widen_to_dtype(self)
@@ -594,6 +580,7 @@ class CType(DataType, metaclass=abc.ABCMeta):
 
     def __str__(self):
         return f"{self.__class__.__name__}({self.data_width})"
+
 @define
 class NumericType(CType, metaclass=abc.ABCMeta):
     """
@@ -897,6 +884,7 @@ class CFloat(NumericType):
     def __attrs_post_init__(self):
         if self.bit_width not in (8, 16, 32, 64):
             raise ValueError(f"Unsupported float size: {self.bit_width}")
+    _fmt_map = {16: '>e', 32: '>f', 64: '>d'}     # network-byte-order
 
     @property
     def data_width(self) -> int:
@@ -1003,8 +991,8 @@ class TensorType(NumericType):
 
     @property
     def bytes_per_element(self) -> int:
-        """bits_per_element // 8 if you want a direct integer # of bytes."""
-        return self.bit_width // 8
+
+        return self.element_size()
     @property
     def num_units(self) -> int:
         """Total number of elements = product of all dims."""
@@ -1017,9 +1005,57 @@ class TensorType(NumericType):
     
     def multiply(self, other: "TensorType") -> "TensorType":
         """
-        Example of a naive "broadcast multiply" shape logic (like an Einstein summation).
+        NumPy-style broadcast multiply that also works with SymPy symbols
+        and the sentinel Dyn.
+
+        Broadcasting rules for each aligned dimension (d1, d2):
+
+            d1 == 1          → result = d2
+            d2 == 1          → result = d1
+            d1 == d2         → result = d1
+            d1 is Dyn        → result = d2
+            d2 is Dyn        → result = d1
+            otherwise        → ValueError
         """
-        new_shape = np.broadcast_shapes(self.shape, other.shape)
+        import itertools
+        import sympy
+
+        # ---------------- matrix-multiply path -----------------
+        if self.rank == 2 and other.rank == 2:
+            a_M, a_N = self.shape
+            b_N, b_K = other.shape
+
+            dims_match = (
+                a_N == b_N or a_N is Dyn or b_N is Dyn
+                or (isinstance(a_N, sympy.Basic) and isinstance(b_N, sympy.Basic) and a_N.equals(b_N))
+            )
+            if dims_match:
+                new_shape = (a_M, b_K)
+                return TensorType(shape=new_shape, element_type=self.element_type)
+
+        # ---------------- broadcast path (element-wise) --------
+        def _is_one(dim):
+            return dim == 1 or (isinstance(dim, sympy.Integer) and dim == 1)
+
+        def _combine(d1, d2):
+            if d1 is Dyn:
+                return d2
+            if d2 is Dyn:
+                return d1
+            if _is_one(d1):
+                return d2
+            if _is_one(d2):
+                return d1
+            if d1 == d2:
+                return d1
+            raise ValueError(f"incompatible broadcast dims: {d1!r} vs {d2!r}")
+
+        rev1, rev2 = self.shape[::-1], other.shape[::-1]
+        out_rev = []
+        for d1, d2 in itertools.zip_longest(rev1, rev2, fillvalue=1):
+            out_rev.append(_combine(d1, d2))
+
+        new_shape = tuple(reversed(out_rev))
         return TensorType(shape=new_shape, element_type=self.element_type)
     def to_bits(self, x) -> List[int]:
         """
@@ -1060,36 +1096,35 @@ class TensorType(NumericType):
             return [build_nested(flat_list, shape_dims[1:]) for _ in range(dim)]
         shape_copy = self.shape
         return build_nested(flat_elems, shape_copy)
-   
-    def to_units(self, x) -> List[int]:
+    
+    def is_symbolic(self) -> bool:
         """
-        'Units' might mean each element of the ND array, as an int.
-        Or a more advanced representation. We'll do a naive approach:
-        """
-        if not isinstance(x, np.ndarray):
-            x = np.array(x)
-        return x.flatten().tolist()
+        Return **True** when either
+        • at least one dimension in ``self.shape`` is symbolic, or
+        • the nested ``element_type`` reports itself as symbolic.
 
-    def from_units(self, bits: Sequence[int]) -> np.ndarray:
-        """
-        Reconstruct ND array from a flat list of elements.
-        """
-        # This is extremely naive, purely demonstrative
-        arr_size = self.num_units
-        element_bit_size = self.data_width
+        A dimension is considered symbolic when
 
-        if len(bits) != arr_size * element_bit_size:
-            raise ValueError(
-                f"Expected {arr_size * element_bit_size} bits; got {len(bits)}"
-            )
+        * it is the sentinel ``Dyn``,
+        * it is a SymPy expression / symbol (``sympy.Basic``), or
+        * it is a Torch **SymInt** (detected by duck-type: it has a ``node`` attr).
 
-        arr = np.zeros(arr_size, dtype=np.int32)  # default int, just for example
-        for i in range(arr_size):
-            chunk = bits[i * element_bit_size : (i + 1) * element_bit_size]
-            as_str = "".join(str(b) for b in chunk)
-            as_int = int(as_str, 2)
-            arr[i] = as_int
-        return arr.reshape(self.shape)
+        This mirrors the logic used by ``nelement`` and ``total_bits``.
+        """
+        import sympy
+
+        def _is_sym_dim(dim):
+            # Torch's SymInt: avoid hard import by duck-typing
+            torch_symint = hasattr(dim, "node") and getattr(dim, "is_symbolic", False)
+            return dim is Dyn or isinstance(dim, sympy.Basic) or torch_symint
+
+        # shape-level symbolism
+        if any(_is_sym_dim(d) for d in self.shape):
+            return True
+
+        # delegate to nested element_type (e.g. TensorType-of-TensorType)
+        et = self.element_type
+        return isinstance(et, DataType) and getattr(et, "is_symbolic", lambda: False)()
     def assert_valid_classical_val(self, val: Any, debug_str: str = 'val'):
         """
         Validates if `val` is a valid classical value for this data type.
