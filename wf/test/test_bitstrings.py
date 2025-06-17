@@ -3,7 +3,7 @@ import numpy as np
 import random 
 import math
 
-from qrew.simulation.refactor.data_types import *
+from qrew.simulation.data_types import *
 
 
 
@@ -148,6 +148,63 @@ def test_from_binary_lsb(binary, expected_int):
     expected_bin = formatted[::-1]
     assert bs.binary() == expected_bin
 
+def test_bitstring_cbit_msb():
+    dt      = CBit()
+    bs      = dt.to_bitstring(1, numbering=BitNumbering.MSB)
+    assert isinstance(bs, BitStringView)
+    assert bs.integer == 1,  f"MSB integer should be 1, got {bs.integer}"
+    assert bs.nbits == 1,  f"MSB nbits should be 1, got {bs.nbits}"
+    assert bs.dtype == dt, f"dtype not set after widen_to_dtype. bs.dtype: {bs.dtype}"
+
+def test_bitstring_cuint8_roundtrip():
+    dt  = CUInt(8)
+    val = 0b10110011
+
+    msb = dt.to_bitstring(val, numbering=BitNumbering.MSB)
+    assert msb.binary() == "10110011", f"MSB binary wrong: {msb.binary()}"
+    
+    lsb = dt.to_bitstring(val, numbering=BitNumbering.LSB)
+    assert lsb.binary() == "11001101", f"LSB binary wrong: {lsb.binary()}"
+    
+    # round-trip via .bits()
+    rebuilt = int("".join(map(str, reversed(lsb.bits()))), 2)
+    assert rebuilt == val, f"Round-tripped val {rebuilt} != original {val}"
+
+
+def test_bitstring_cint4_min():
+    # signed min value (-8) in 4-bit CInt
+    dt, val = CInt(4), -8
+    bs = dt.to_bitstring(val)
+    assert bs.binary() == "1000"
+    assert dt.from_bits(bs.bits()) == val
+
+
+def test_bitstring_no_change_if_positive():
+    # widen unsigned value that already fits the dtype
+    dt = CInt(4)
+    bs = dt.to_bitstring(5)          
+    assert bs.integer == 5
+    assert bs.binary() == "0101"
+
+def test_bitstring_cint4_negative():
+    dt  = CInt(4)    
+    val = -3
+    bs  = dt.to_bitstring(val)         
+    assert bs.nbits == 4, f"nbits should widen to 4. Got: {bs.nbits}"
+    assert bs.binary() == "1101", f"Two’s-complement −3 is 1101, got {bs.binary()}. bs.info(): {bs.info()}"
+    
+    decoded = dt.from_bits(bs.bits())
+
+    assert decoded == val, f"Roundtrip failed: Decoded value should equal original value: {val}. Got: {decoded}"
+
+def test_bitstring_from_list():
+    dt   = CUInt(5)
+    bits = [1,0,1,0,1]                 # MSB order
+    bs   = dt.to_bitstring(bits)
+    assert bs.integer == 0b10101, f"Expected 0b10101, got {bs.integer:b}"
+    assert bs.nbits == 5, f"nbits should be 5 after widen. Got: {bs.nbits}"
+
+
 def test_widen_to_dtype(tmp_path):
     class FakeType:
         data_width = 5
@@ -158,6 +215,22 @@ def test_widen_to_dtype(tmp_path):
     bs2 = bs.widen_to_dtype(FakeType)
     assert bs2.nbits == 5
 
+def test_bitstring_reuse():
+    initial = BitStringView.from_int(6, nbits=3) # 110
+    dt      = CUInt(4)
+    widened = dt.to_bitstring(initial) # in-place widen
+    assert widened is initial, "widen_to_dtype should mutate, i.e., same object"
+    assert widened.nbits == 4
+    assert widened.dtype == dt
+
+def test_widen_to_cuint():
+    b_msb = BitStringView.from_int(13, nbits=4, numbering=BitNumbering.MSB)
+    assert b_msb.binary() == '1101'
+    assert int(b_msb) == 13
+    assert len(b_msb) == b_msb.nbits == 4
+
+    b_msb.widen_to_dtype(CUInt(8))
+    assert b_msb.dtype.data_width == b_msb.nbits == 8
 
 
 
