@@ -85,7 +85,10 @@ class BitStringView:
             object.__setattr__(self, "nbits", max(self.nbits, self.dtype.data_width))
 
     def binary(self) -> str:
-        bits = format(self.integer, f"0{self.nbits}b")
+        # bits = format(self.integer, f"0{self.nbits}b")
+        masked = self.integer & ((1 << self.nbits) - 1)
+
+        bits = format(masked, f"0{self.nbits}b")
         return bits[::-1] if self.numbering is BitNumbering.LSB else bits
 
     def bits(self) -> list[int]:
@@ -130,7 +133,7 @@ class BitStringView:
             return cls.from_int(
                 integer=binary.integer,
                 nbits=nbits or binary.nbits,
-                numbering=binary.numbering,
+                numbering=numbering,
                 dtype=binary.dtype,
             )
         b = binary[2:] if binary.startswith("0b") else binary
@@ -155,7 +158,7 @@ class BitStringView:
             return cls.from_int(
                 integer=array.integer,
                 nbits=nbits or array.nbits,
-                numbering=array.numbering,
+                numbering=numbering,
                 dtype=array.dtype,
             )
         seq = list(array)
@@ -278,6 +281,14 @@ class BitStringView:
 
     def __int__(self) -> int:
         return self.integer
+    def __getitem__(self, idx):
+        return self.array()[idx]
+    def __setitem__(self, idx, value):
+        buf        = self.array()
+        buf[idx]   = int(bool(value))
+        new_bits   = buf if self.numbering is BitNumbering.MSB else buf[::-1]
+        object.__setattr__(self, "integer", int("".join(map(str, new_bits)), 2))
+        return self
 
     def info(self) -> str:
         return (
