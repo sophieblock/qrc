@@ -232,49 +232,215 @@ def test_widen_to_cuint():
     b_msb.widen_to_dtype(CUInt(8))
     assert b_msb.dtype.data_width == b_msb.nbits == 8
 
+@pytest.mark.parametrize("dtype,value", [
+    (CInt(4),      -3),
+    (CUInt(5),     19),
+    (QBit(),        1),
+    (QInt(6),     -17),
+    (BQUInt(4,8),   7),
+])
+def test_to_bitstring_single_impl(dtype, value):
+    bs = dtype.to_bitstring(value)
+    # round-trip
+    assert dtype.from_bits(bs.bits()) == value
+    # width is fixed by dtype
+    assert bs.nbits == dtype.data_width
 
-
-# def test_bitstringview_cross_conversion():
-#     for i in range(15):
-#         bs_msb = BitStringView.from_int(integer=i)
-#         # default numbering is MSB
-#         assert bs_msb.numbering == BitNumbering.MSB
-
-#         bs_lsb = BitStringView.from_int(integer=i, numbering=BitNumbering.LSB)
-#         assert bs_lsb.numbering == BitNumbering.LSB
-#         assert bs_msb.with_numbering(BitNumbering.LSB) == bs_lsb
-#         bs_round = BitStringView.from_bitstring(bs_lsb)
-#         assert bs_round == bs_msb
-
-#     # round-trip through array → bitstringLSB → back
-#     arr = [1,0,1,0,1]
-#     bs_lsb = BitStringViewLSB.from_array(arr)
-#     bs_back = BitStringView.from_bitstring(bs_lsb)
-#     assert bs_back.bits[::-1] == bs_lsb.bits
-
+def test_widen_to_dtype_quint():
+    dtype = QUInt(8)
+    bs = BitStringView.from_int(255).widen_to_dtype(dtype)
+    resource_ok = dtype.to_bits(bs.integer)
+    assert all(resource_ok), f'resource_ok: {resource_ok}'
+    # bs = dtype.bitstring(255)   # same thing
 
 def test_constructor():
     for i in range(15):
         bita = BitStringView.from_int(integer=i)
-        bita_lsb = BitStringView.from_int(integer=i, numbering=BitNumbering.LSB)
+        # print(f"BitA: {bita.info()}")
+        # bita_lsb = BitStringView.from_int(integer=i, numbering=BitNumbering.LSB)
+        bita_lsb = bita.with_numbering(BitNumbering.LSB)
         bitb = BitStringView.from_int(integer=bita)
+        # print(f"BitB: {bitb.info()}")
         bitc = BitStringView.from_int(integer=bita_lsb)
+        # print(f"BitC: {bitc.info()}")
         bitd = BitStringView.from_array(array=bita)
-        bite = BitStringView.from_array(array=bita_lsb)
+        # print(f"BitD: {bitd.info()}")
+        bite = BitStringView.from_array(array=bita_lsb, numbering=BitNumbering.MSB)
+        # print(f"BitE: {bite.info()}")
         bitf = BitStringView.from_binary(binary=bita)
-        bitg = BitStringView.from_binary(binary=bita_lsb)
+        # print(f"BitF: {bitf.info()}")
+        bitg = BitStringView.from_binary(binary=bita_lsb, numbering=BitNumbering.MSB)
+        # print(f"BitG: {bitg.info()}")
         assert (bita == bitb)
         assert (bita == bitc)
         assert (bita == bitd)
-        # assert (bita == bite)
+        assert (bita == bite)
         assert (bita == bitf)
-        # assert (bita == bitg)
+        assert (bita == bitg)
+
+def test_bitstrings():
+   
+    for i in range(15):
+        bit = BitStringView.from_int(integer=i)     
+        assert bit.integer == i,             f"stored integer should be {i}"
+        # binary() is zero-padded to bit.nbits, strip leading zeros 
+        assert bit.binary().lstrip("0") or "0" == format(i, 'b')
+        assert bit.binary().lstrip("0") or "0" == bin(i)[2:]
 
 
-# def test_lsb_subclass_numbering():
-#     lsb = BitStringViewLSB(integer=1, nbits=3)
-#     assert lsb.numbering == BitNumbering.LSB
+    arrays    = [
+        [0, 0, 1],
+        [1, 0, 0],
+        [1, 0, 1],
+        [1, 0, 1, 1, 1, 0],
+        [1, 0, 0, 1, 1, 1, 0, 0, 1, 0],
+    ]
+    integers  = [
+        1,
+        4,
+        5,
+        32 + 8 + 4 + 2,              # 0b1001110
+        2 + 16 + 32 + 64 + 512,      # 0b1001001110
+    ]
 
+    for idx, arr in enumerate(arrays):
+        nbits = len(arr)
+
+        bita = BitStringView.from_array(array=arr, nbits=nbits)                
+        bitb = BitStringView.from_int(integer=integers[idx], nbits=nbits)    
+
+        assert bita == bitb, f"obj equality failed at idx={idx}"
+        assert bita.integer == integers[idx]
+        assert int(bita) == bita.integer
+        assert bita.array() == arr
+        assert bitb.integer == integers[idx]
+        assert bitb.array() == arr
+
+@pytest.mark.parametrize("value", range(15))
+def test_bitstring_lsb_basic(value: int):
+    bit_msb = BitStringView.from_int(integer=value)                    
+    bit_lsb = BitStringView.from_int(integer=value,
+                                     numbering=BitNumbering.LSB)        
+
+   
+    assert bit_msb.integer == value
+    assert (bit_msb.binary().lstrip("0") or "0") == format(value, "b")    
+    assert (bit_msb.binary().lstrip("0") or "0") == bin(value)[2:]       
+    assert bit_lsb.integer == bit_msb.integer         
+    assert bit_msb != bit_lsb                                           
+
+cases = [
+    ([0, 0, 1],                    1,   4),
+    ([1, 0, 0],                    4,   1),
+    ([1, 0, 1],                    5,   5),
+    ([1, 0, 1, 1, 1, 0],          46,  29),   # 0b101110 – MSB vs LSB
+    ([1, 0, 0, 1, 1, 1, 0, 0, 1, 0], 626, 313),
+]
+#                ↑arr                 ↑int (MSB view)   ↑int (LSB view)
+
+@pytest.mark.parametrize("bits_msb,int_msb,int_lsb", cases)
+def test_bitstring_lsb_arrays(bits_msb, int_msb, int_lsb):
+    nbits = len(bits_msb)
+
+
+    bita = BitStringView.from_array(bits_msb, nbits=nbits)
+    bitb = BitStringView.from_int(int_msb, nbits=nbits)
+
+    bitc = BitStringView.from_array(
+        bits_msb,
+        nbits=nbits,
+        numbering=BitNumbering.LSB
+    )
+    assert bita == bitb                    
+    assert bita.integer == int_msb
+    assert bita.array() == bits_msb
+    assert bitb.integer == int_msb
+    assert bitb.array() == bits_msb
+
+    assert bitc.integer == int_lsb
+    assert bitc.array() == bits_msb               
+    assert bitc.binary() == bita.binary()         
+@pytest.mark.parametrize("value", range(15))
+def test_conversion_ints(value):
+    bita = BitStringView.from_int(value)                       
+    bita_lsb = BitStringView.from_int(value, numbering=BitNumbering.LSB)
+    bita_converted = BitStringView.from_bitstring(bita_lsb,numbering=BitNumbering.MSB)       
+    assert bita == bita_converted, f'bita: {bita.info()}, bita_converted: {bita_converted.info()}'
+
+
+array_cases = [
+    [0, 0, 1],
+    [1, 0, 0],
+    [1, 0, 1],
+    [1, 0, 1, 1, 1, 0],
+    [1, 0, 0, 1, 1, 1, 0, 0, 1, 0],
+]
+
+@pytest.mark.parametrize("bits", array_cases)
+def test_conversion_arrays(bits):
+    nbits = len(bits)
+    bita = BitStringView.from_array(bits, nbits=nbits)     
+    bita_lsb = BitStringView.from_bitstring(bita, numbering=BitNumbering.LSB)
+
+    assert bita_lsb.array() == list(reversed(bits)), f'bitsa_lsb: {bita_lsb.info()}, array: {bita_lsb.array()}'   
+    assert bita.binary() == bita_lsb.binary()[::-1]           
+    assert bita.integer == bita_lsb.integer                         
+
+# def test_bitstringview_conversion_helpers():
+#     """
+#     Convert LSB -> MSB via from_bitstring
+#     Convert MSB -> LSB via with_numbering
+#     """
+#     for i in range(15):
+#         b_msb = BitStringView.from_int(integer=i)
+#         assert b_msb.integer == i, f"integer mismatch @ {i}"
+       
+#         assert b_msb.numbering == BitNumbering.MSB
+
+#         b_lsb = b_msb.with_numbering(BitNumbering.LSB)         
+#         b_round = BitStringView.from_bitstring(b_lsb, numbering=BitNumbering.MSB)
+#         assert b_round.numbering is BitNumbering.MSB
+#         assert b_round == b_msb
+
+#     # round-trip through array example
+   
+
+#     arr = [1,0,1,0,1]
+#     b_msb = BitStringView.from_array(arr, numbering=BitNumbering.MSB)
+
+#     b_lsb = BitStringView.from_bitstring(b_msb, numbering=BitNumbering.LSB)
+#     assert b_lsb.array() == arr[::-1]            # order flipped logically
+#     assert b_msb.binary() == b_lsb.binary()[::-1]
+#     assert b_msb.integer == b_lsb.integer
+#     # assert b_back.bits[::-1] == b_lsb.bits()
+
+# @pytest.mark.parametrize("arr,int_msb,int_lsb", [
+#     ([0,0,1],                    1,   4),
+#     ([1,0,0],                    4,   1),
+#     ([1,0,1],                    5,   5),
+#     ([1,0,1,1,1,0],             46,  23),
+#     ([1,0,0,1,1,1,0,0,1,0],    0b1001110010, 0b0100111001),
+# ])
+# def test_bitstringview_lsb(arr, int_msb, int_lsb):
+#     nbits = len(arr)
+
+#     b_msb = BitStringView.from_array(arr, nbits=nbits, numbering=BitNumbering.MSB)
+#     b_lsb = BitStringView.from_array(arr, nbits=nbits, numbering=BitNumbering.LSB)
+
+#     # MSB ↔ expected integer
+#     assert b_msb.integer == int_msb
+#     # LSB interprets same *visual* array reversed in weight
+#     assert b_lsb.integer == int_lsb
+
+#     # Array order is identical by construction
+#     assert b_msb.array() == arr
+#     assert b_lsb.array() == arr
+
+#     # Binary strings match when you reverse the LSB one
+#     assert b_msb.binary() == b_lsb.binary()[::-1]
+
+#     # Numbering difference ⇒ objects are *not* equal
+#     assert b_msb != b_lsb
 # def test_bitstringview_lsb():
 #     for i in range(15):
 #         b = BitStringView.from_int(integer=i)
@@ -324,46 +490,11 @@ def test_constructor():
 #         assert bitc.array() == arr
 #         assert bitc.binary() == bita.binary()
 
-# ----------------------------------------------------------------------
-# to_bitstring is inherited once, no per-subclass boilerplate needed
-# ----------------------------------------------------------------------
-# def test_widen_to_dtype2(tmp_path):
-#     class FakeType:
-#         data_width = 5
-#         @staticmethod
-#         def assert_valid_classical_val(val, name):
-#             assert isinstance(val, int)
-#     bs = BitString.from_int(1, nbits=2)
-#     bs2 = bs.widen_to_dtype(FakeType)
-#     assert bs2.nbits == 5
-
-
-# def test_lsb_subclass_numbering2():
-#     lsb = BitStringLSB(integer=1, nbits=3)
-#     assert lsb.numbering == BitNumbering.LSB
-
-# @pytest.mark.parametrize("dtype,value", [
-#     (CInt(4),      -3),
-#     (CUInt(5),     19),
-#     (QBit(),        1),
-#     (QInt(6),     -17),
-#     (BQUInt(4,8),   7),
-# ])
-# def test_to_bitstring_single_impl(dtype, value):
-#     bs = dtype.to_bitstring(value)
-#     # round-trip
-#     assert dtype.from_bits(bs.bits) == value
-#     # width is fixed by dtype
-#     assert bs.nbits == dtype.data_width
 
 
 
-# def test_widen_to_dtype_quint():
-#     dtype = QUInt(8)
-#     bs = BitString.from_int(255).widen_to_dtype(dtype)
-#     resource_ok = dtype.to_bits(bs.integer)
-#     assert all(resource_ok), f'resource_ok: {resource_ok}'
-#     # bs = dtype.bitstring(255)   # same thing
+
+
 
 # def test_bitstringview_msb_equivalence():
 #     for i in range(15):
@@ -411,52 +542,3 @@ def test_constructor():
 #         assert bs_lsb.integer == il
 #         # same visible binary string regardless of numbering
 #         assert bs_msb.binary == bs_lsb.binary
-
-# # def test_bitstringview_cross_conversion():
-# #     for i in range(15):
-# #         bs_msb = BitStringView.from_int(i)
-# #         bs_lsb = BitStringViewLSB.from_int(i)
-# #         bs_round = BitStringView.from_bitstring(bs_lsb)
-# #         assert bs_round == bs_msb
-
-# #     # round-trip through array → bitstringLSB → back
-# #     arr = [1,0,1,0,1]
-# #     bs_lsb = BitStringViewLSB.from_array(arr)
-# #     bs_back = BitStringView.from_bitstring(bs_lsb)
-# #     assert bs_back.bits[::-1] == bs_lsb.bits
-
-# # def test_bitstringview_constructor_overloads():
-# #     for i in range(15):
-# #         a = BitStringView.from_int(i)
-# #         l = BitStringViewLSB.from_int(i)
-
-# #         assert BitStringView.from_int(a) == a
-# #         assert BitStringView.from_int(l) == a
-
-# #         assert BitStringView.from_array(a.bits) == a
-# #         assert BitStringView.from_array(l.bits[::-1]) == a
-
-# #         assert BitStringView.from_binary(a.binary) == a
-# #         assert BitStringView.from_binary(l.binary[::-1]) == a
-
-# def test_cint_bitstring():
-#     # For signed int with MSB numbering:
-#     int4 = CInt(4)
-#     print(int4.data_width)
-#     print(int4.nbytes)
-    
-#     domain = list(int4.get_classical_domain())
-#     print(f"domain: {domain}")
-#     bitstring = int4.to_bitstring(-3)
-#     print(bitstring)
-    # bs = BitStringView.from_int(255).widen_to_dtype(dtype)
-    # resource_ok = dtype.to_bits(bs.integer)
-    # assert all(resource_ok), f'resource_ok: {resource_ok}'
-
-    
-
-  
-
-if __name__ == "__main__":
-    test_widen_to_dtype_quint()
-    test_cint_bitstring()
