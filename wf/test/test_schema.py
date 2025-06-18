@@ -2,24 +2,28 @@ import pytest
 import numpy as np
 import re 
 import math
+import json
+import sympy as sp
 import torch
 import sympy
 from attrs import define
 sep_str = 100 * '#'
 
-# from qrew.simulation.refactor.register import RegisterSpec, Flow
-from qrew.simulation.refactor.schema import RegisterSpec, Signature, Flow
-from qrew.simulation.refactor.data_types import *
-from qrew.simulation.refactor.data import Data,promote_element_types
-from qrew.simulation.refactor.unification_tools import (
+import re
+# from qrew.simulation.register import RegisterSpec, Flow
+from qrew.simulation.schema import RegisterSpec, Signature, Flow
+from qrew.simulation.data_types import *
+from qrew.simulation.data import Data,promote_element_types
+from qrew.simulation.unification_tools import (
     type_matches, is_consistent_data_type,canonicalize_dtype
 )
-from qrew.simulation.refactor.process import Process,ClassicalProcess
+from qrew.simulation.process import Process,ClassicalProcess
 from qrew.assert_checks import assert_registers_match_parent, assert_multiline_equal
 
-from qrew.visualization_tools import ModuleDrawer, _assign_ids_to_nodes_and_edges
-from qrew.simulation.refactor.builder import ProcessBuilder,ProcessInstance, CompositeMod,PortInT,PortT,Port, LeftDangle,RightDangle
-from qrew.simulation.refactor.Process_Library.for_testing import Atom,Atom_n,TwoBitOp,SwapTwoBit, AtomChain,NAtomParallel,SplitJoin,TestParallelQCombo
+from qrew.visualization_tools import ModuleDrawer, _assign_ids_to_nodes_and_edges,save_mod
+from qrew.simulation.builder import ProcessBuilder,ProcessInstance, CompositeMod,PortInT,PortT,Port, LeftDangle,RightDangle,Split,Join
+from qrew.simulation.Process_Library.for_testing import Atom,Atom_n,TwoBitOp,SwapTwoBit, AtomChain,NAtomParallel,SplitJoin,TestParallelQCombo
+figure_path = 'test_outputs/test_schema/'
 # ----------------------------------------------------------------
 # Compile-level tests 
 # ----------------------------------------------------------------
@@ -87,6 +91,29 @@ def test_symbolic_dims():
     # we can only check that the symbolic multiplier is present
     assert reg_dyn.bitsize == 4
     assert reg_dyn.total_bits().free_symbols  # contains Dyn symbol
+
+def test_multidim_register():
+    r = RegisterSpec("qreg", QBit(), shape=(2, 3), flow=Flow.RIGHT)
+    idxs = list(r.all_idxs())
+    assert len(idxs) == 2 * 3
+
+    assert not r.flow & Flow.LEFT
+    assert r.flow & Flow.THRU
+    assert r.total_bits() == 2 * 3
+
+    assert r.flip() == RegisterSpec("qreg", QBit(), shape=(2, 3), flow=Flow.LEFT)
+
+
+@pytest.mark.parametrize('n, N, m, M', [(4, 10, 5, 19), (4, 16, 5, 32)])
+def test_selection_registers_indexing(n, N, m, M):
+    dtypes = [BQUInt(n, N), BQUInt(m, M)]
+    regs = [RegisterSpec(sym, dtype) for sym, dtype in zip(['x', 'y'], dtypes)]
+    for x in range(int(dtypes[0].iteration_length)):
+        for y in range(int(dtypes[1].iteration_length)):
+            assert np.ravel_multi_index((x, y), (N, M)) == x * M + y
+            assert np.unravel_index(x * M + y, (N, M)) == (x, y)
+
+    assert np.prod(tuple(int(dtype.iteration_length) for dtype in dtypes)) == N * M
 
 
 @pytest.mark.parametrize("torch_dtype, element_bits", [
@@ -172,6 +199,7 @@ def test_equivalent_registerspec1():
         f'reg2: {reg2}\nreg3: {reg3}'
     )
 
+
 def test_equivalent_RegisterSpec_dtype():
     inhouse_tensor_spec = RegisterSpec('a', dtype=TensorType((2, 2)))
     should_pass = [
@@ -211,9 +239,14 @@ def test_registerspec_inequivalence(base_kwargs, modify_field, new_value, expect
         f'Field {modify_field} changed from {base_kwargs[modify_field]} to {new_value}'
     )
 
-
 def test_registerspec_wire_vs_data_shape():
-    
+    """
+    TODO: Actually make the following test
+    Create a RegisterSpec that intends to split a (2,3) data payload into 2 wires.
+    Each wire should carry a 1D vector of length 3.
+      - The RegisterSpec’s wire shape should be (2,).
+      - Its dtype should be a TensorType with shape (3,).
+    """
     reg = RegisterSpec(
         name='x',
         dtype=TensorType((3,), element_type=float),
@@ -267,6 +300,19 @@ def test_canonicalize_dtype_numpy():
     # assert dt.element_type == CFloat(64), f'Got: {dt.element_type}'
 
 
+# def test_instance_vs_class():
+#     tensor_instance = TensorType((2, 3))
+#     assert check_dtypes_consistent(TensorType, tensor_instance)
+
+#     matrix_instance = MatrixType()
+#     assert check_dtypes_consistent(MatrixType, matrix_instance)
+
+
+# def test_list_of_types():
+#     assert check_dtypes_consistent([MatrixType, TensorType], TensorType)
+#     assert check_dtypes_consistent([MatrixType, TensorType], MatrixType)
+#     assert not check_dtypes_consistent([MatrixType, TensorType], int)
+
 def test_is_consistent_data_type():
     t1 = TensorType((2, 4))
     t2 = TensorType((3, 4))
@@ -308,6 +354,54 @@ def test_tensortype_properties_and_bit_roundtrip():
     # reconstruct with from_bits
     nested = dt.from_bits(bits)
     assert nested == [[0,1],[1,0]]
+def test_tensor_uint8_3x1():
+    dt = TensorType(shape=(3, 1), element_type=CUInt(8))
+
+    assert dt.data_width == 8
+    assert dt.element_size() == 1            # 8 bits // 8
+    assert dt.nelement() == 3
+    assert dt.total_bits == 24
+    assert dt.rank == 2
+
+    value = [[5], [10], [255]]
+    bits  = dt.to_bits(value)
+    assert bits == [
+        0,0,0,0,0,1,0,1,
+        0,0,0,0,1,0,1,0,
+        1,1,1,1,1,1,1,1
+    ]
+    assert dt.from_bits(bits) == value
+
+
+def test_tensor_sint4_2x2x2():
+    dt = TensorType(shape=(2, 2, 2), element_type=CInt(4))
+
+    assert dt.data_width == 4
+    assert dt.element_size() == 0            # 4 bits // 8
+    assert dt.nelement() == 8
+    assert dt.total_bits == 32
+    assert dt.rank == 3
+
+    value = [
+        [[-1, 0], [1, 2]],
+        [[-4, -3], [3, 4]]
+    ]
+    bits = dt.to_bits(value)
+    assert dt.from_bits(bits) == value
+
+
+# def test_tensor_float32_vec4():
+#     dt = TensorType(shape=(4,), element_type=CFloat(32))
+
+#     assert dt.data_width == 32
+#     assert dt.element_size() == 4            # 32 bits // 8
+#     assert dt.nelement() == 4
+#     assert dt.total_bits == 128
+#     assert dt.rank == 1
+
+#     value = [0.0, 1.0, -1.0, 3.14]
+#     bits  = dt.to_bits(value)
+#     assert dt.from_bits(bits) == value
 
 def test_tensortype_assert_valid_classical_val():
     dt = TensorType(shape=(2,3), element_type=CBit())
@@ -330,6 +424,39 @@ def test_tensor_multiply_broadcast():
     # broadcast to (2,3)
     assert t3.shape == (2,3)
     assert isinstance(t3, TensorType)
+
+def test_matrixtype_multiply_symbolic():
+    M, N, K = sympy.symbols('m n k', positive=True, integer=True)
+    sym_A = MatrixType((M, N), element_type=CInt(8))
+    assert sym_A.nelement() == M*N
+    assert sym_A.nbytes == M*N
+    assert sym_A.total_bits == 8* M*N
+    assert sym_A.is_symbolic()
+
+    sym_B = MatrixType((N, K), element_type=CInt(8))
+
+    sym_C =  sym_A.multiply(sym_B)
+    assert sym_C.shape == (M,K), f"Expected (m,k). Got: {sym_C.shape}"
+    assert sym_C.nelement() == M*K
+    assert sym_C.nbytes == M*K
+    assert sym_C.total_bits == 8* M*K
+    assert sym_C.is_symbolic()
+
+
+def test_tensor_multiply_symbolic():
+    M, N, K = sympy.symbols('m n k', positive=True, integer=True)
+    sym_A = TensorType(shape=(M, N), element_type=CInt(16))
+    assert sym_A.nelement() == M*N
+    assert sym_A.nbytes == 2* M*N
+    assert sym_A.total_bits == 16* M*N
+    assert sym_A.is_symbolic()
+
+    sym_B = TensorType(shape=(N, K), element_type=CInt(16))
+
+    sym_C =  sym_A.multiply(sym_B)
+    assert sym_C.shape == (M,K), f"Expected (m,k). Got: {sym_C.shape}"
+
+
 
 @pytest.mark.parametrize('init_kwargs1, init_kwargs2', [
     (
@@ -361,10 +488,44 @@ def test_classical_register_spec_equivalence(init_kwargs1, init_kwargs2):
         f'Classical type equivalence failed:\n'
         f'reg1: {reg1}, dtype: {reg1.dtype}\nreg2: {reg2}, dtype: {reg2.dtype}'
     )
+# TensorType vs MatrixType equality path -----------------------------------
+def test_registerspec_equivalence_tensor_vs_matrix():
+    reg_tensor = RegisterSpec("m", dtype=TensorType((2, 2)))
+    reg_matrix = RegisterSpec("m", dtype=MatrixType(2, 2))
+
+    assert reg_tensor == reg_matrix
+
+
+# 3) Nested quantum element type drives domain --------------------------------
+def test_tensor_of_qbit_has_quantum_domain():
+    """
+    Even a classical TensorType wrapper becomes quantum if its
+    element_type is quantum.
+    """
+    dt_qtensor = TensorType((4,), element_type=QBit())   # 4-element tensor
+    reg = RegisterSpec("qvec", dtype=dt_qtensor)
+
+    assert reg.domain == "Q"
+    assert reg.total_bits() == 4                        # 4 qubits total
+
+
+# 4) Auto-instantiation happens only for fan-out wires ------------------------
+def test_dtype_auto_instantiation_scalar_vs_vector():
+    """
+    RegisterSpec with _shape == () keeps the dtype *class* un-instantiated.
+    Non-empty shape instantiates the dtype with that fan-out.
+    """
+    # scalar wire
+    reg_scalar = RegisterSpec("x", dtype=TensorType, shape=())
+    assert isinstance(reg_scalar.dtype, type), "dtype should still be a class for scalar"
+
+    # vector wire (fan-out)
+    reg_vec = RegisterSpec("y", dtype=TensorType, shape=(3,))
+    assert isinstance(reg_vec.dtype, TensorType), "dtype should be an instance after fan-out"
 
 
 # ----------------------------------------------------------------
-# Signature
+# `Signature` tests 
 # ----------------------------------------------------------------
 
 def test_signature_build():
@@ -373,6 +534,49 @@ def test_signature_build():
     for reg in sig:
         # For registers built from simple ints, we keep shape=() atomic
         assert reg.shape == (), f'Expected shape=(), got {reg.shape}'
+
+# 1) THRU-flow partitioning ---------------------------------------------------
+def test_signature_flow_partitioning():
+    # Explicitly construct the three registers first
+    a_reg = RegisterSpec("a", dtype=CBit())        # THRU (default flow)
+    b_reg = RegisterSpec("b", dtype=CUInt(8))      # THRU
+    c_reg = RegisterSpec("c", dtype=QBit(), flow=Flow.RIGHT)
+
+    # Build the Signature from a list, not with the kwargs helper
+    sig = Signature([a_reg, b_reg, c_reg])
+
+    assert [r.name for r in sig.lefts()]  == ["a", "b"]
+    assert [r.name for r in sig.rights()] == ["a", "b", "c"]
+
+
+# 2) Literal-to-dtype promotion rules ----------------------------------------
+def test_literal_promotion_rules():
+    """
+    Signature.build() should upgrade numeric literals:
+      • 1  -> CBit()
+      • n>1 -> CUInt(n)
+    """
+    sig = Signature.build(one=1, five=5, neg_five=-5)
+    one_reg, five_reg, neg_five = sig
+
+    assert isinstance(one_reg.dtype, CBit)
+    assert isinstance(five_reg.dtype, CUInt) and five_reg.dtype.bit_width == 5
+    assert isinstance(neg_five.dtype, CInt) and neg_five.dtype.bit_width == 5, f'Got dtype: {neg_five.dtype}'
+
+
+def test_variadic_register_matches_list():
+    var_reg   = RegisterSpec("args", dtype=CBit(), variadic=True)
+    fixed_reg = RegisterSpec("ret",  dtype=CBit(), flow=Flow.RIGHT)
+
+    sig = Signature([var_reg, fixed_reg])
+
+    data_in  = [Data(CBit(), {}) for _ in range(5)]   # 5 inputs for variadic slot
+    data_out = [Data(CBit(), {})]                     # 1 output
+    data_all = data_in + data_out
+
+    # Should validate without raising
+    sig.validate_data_with_register_specs(data_all)
+
 
 
 
@@ -399,22 +603,6 @@ def test_signature_with_simple_data():
 
     assert signature_from_data == signature_from_properties, f"Signatures do not match! \n{signature_from_data}\n{signature_from_properties}"
 
-def test_promote_element_types_string():
-    """
-    Verify that promoting a NumPy string dtype results in the Python type 'str'.
-    """
-    import numpy as np
-    result = promote_element_types(np.dtype('<U1'))
-    assert result == str, f"Expected promotion of np.dtype('<U1') to be str, got {result}"
-
-def test_promote_element_types_mixed_numbers():
-    """
-    Verify that promoting a mix of integer and floating NumPy dtypes results in a floating dtype.
-    """
-    import numpy as np
-    result = promote_element_types(np.dtype('int32'), np.dtype('float64'))
-    expected = np.dtype('float64')
-    assert result == expected, f"Expected promotion to be {expected}, got {result}"
 
 def test_signature_from_properties():
     
@@ -436,325 +624,113 @@ def test_signature_from_properties():
     assert signature_from_data == signature_from_properties, f"Signatures do not match! \n{signature_from_data}\n{signature_from_properties}"
 
 
-# ----------------------------------------------------------------
-# tests for builder.py
-# ----------------------------------------------------------------
-
-def test_builder():
-    
-    signature = Signature.build(x=1,y=1)
-    x_reg, y_reg = signature
-    builder, initial_ports = ProcessBuilder.from_signature(signature)
-    assert initial_ports == {'x': Port(LeftDangle, x_reg), 'y': Port(LeftDangle, y_reg)}
-    x, y = initial_ports['x'],initial_ports['y']
-    x, y = builder.add(TwoBitOp(),a = x, b = y)
-    x, y = builder.add(TwoBitOp(),a = x, b = y)
-    composite_op = builder.finalize(x=x,y=y)
-    inds = {process_instances.i for process_instances in composite_op.pinsts}
-    assert len(inds) == 2
-    assert len(composite_op.pinsts) == 2
-    # composite_op.describe
-    sig1 = composite_op.signature
-    # assert composite_op.validate_data()
-
-    # builder2, initial_ports2 = 
-    composite_op_op = composite_op.as_composite()
-    composite_op_op.describe
-    sig2 = composite_op_op.signature
+def test_signature_roundtrip_scalar():
+    #  simple classical + default THRU flow
+    sig1 = Signature(
+        [
+            RegisterSpec("a", dtype=CBit()),
+            RegisterSpec("b", dtype=CUInt(8), flow=Flow.RIGHT),
+        ]
+    )
+    blob = sig1.to_dict()
+    sig2 = Signature.from_dict(json.loads(json.dumps(blob)))   # simulate disk round-trip
     assert sig1 == sig2
-    
-    decomposed_op = composite_op_op.as_composite()
-    # decomposed_op.describe
 
-    save_mod(decomposed_op, label_type='dtype', filename='TwoBitOp_dtype.png', output_dir=figure_path+'Atomic_Examples/')
-    save_mod(decomposed_op, label_type='num_units', filename='TwoBitOp_num_units.png', output_dir=figure_path+'Atomic_Examples/')
+def test_signature_roundtrip_tensor():
     
-def test_TwoBitOp_process():
-    
-    twobit_process = TwoBitOp()
-    assert len(twobit_process.signature) == 2
-    composite_twobit_process = twobit_process.as_composite()
+    dt = TensorType((2, 3), element_type=np.float32)
+    sig1 = Signature(
+        [
+            RegisterSpec("x", dtype=dt, flow=Flow.LEFT),
+            RegisterSpec("y", dtype=CBit()),
+        ]
+    )
+    sig2 = Signature.from_dict(sig1.to_dict())   # direct, no JSON stringify
+    assert sig1 == sig2
+
    
-    actual_output = composite_twobit_process.debug_text()
+    input_only_reg = sig2.get_left('x')
+    # assert input_only_reg.dtype == dt
+    assert input_only_reg.flow is Flow.LEFT, f'Expect Flow.LEFT. Got: {input_only_reg.flow}'
 
-    expected_output = """\
-TwoBitOp<0>
-  LeftDangle.a -> a
-  LeftDangle.b -> b
-  a -> RightDangle.a
-  b -> RightDangle.b"""
+    assert [r.name for r in sig2.rights()] == ["y"]
+    # same check but via different method
+    out_reg = sig2.get_right('y')
+    assert out_reg.dtype == CBit()
+    assert out_reg.flow is Flow.THRU, f'Expect Flow.THRU. Got: {out_reg.flow}'
+    # assert [r.flow for r in sig2.lefts()] == [Flow.LEFT], f'Signature: {sig2} –– lefts: {list(sig2.lefts())}'
+    assert [r.flow for r in sig2.rights() if r.name == "x"] == []   # x is not RIGHT
+    # same check but via different method
+    with pytest.raises(KeyError):
+        sig2.get_right('x')
 
-
-    assert_multiline_equal(actual_output, expected_output)
-
-
-
-def test_atom():
-    
-    atomic_process = Atom()
-    
-    catom = atomic_process.as_composite()
-    assert atomic_process.signature == catom.signature
-    expected_debug_text = """\
-Atom<0>
-  LeftDangle.n -> n
-  n -> RightDangle.n"""
-    assert_multiline_equal(catom.debug_text(),expected_debug_text)
-
-    save_mod(catom,  filename="CAtom()_dtype.png",output_dir=figure_path+'Atomic_Examples/')
-
-def test_atom_n():
-    bitsize = 4
-
-    atom = Atom_n(n=bitsize)
-    
-    assert len(atom.signature) == 1
-    assert len(atom.signature._lefts) == 1  # Confirm 1 input in signature
-    assert len(atom.signature._rights) == 1, f"atom.signature._rights len(atom.signature._rights): {len(atom.signature._rights)}"
-
-    catom = atom.as_composite()
-    assert isinstance(catom, CompositeMod)
-    assert (catom.signature == atom.signature)
-    process_instances = list(catom.pinsts)
-    assert len(process_instances) == 1
-    assert process_instances[0].process == atom
-    bag = atom.signature
-    assert bag[0].bitsize == 4, f'Expected 4 got {bag[0].bitsize}'
-    # catom.print_tabular()
-    
-    save_mod(catom,  filename="CAtom_n()_dtype.png",output_dir=figure_path+'Atomic_Examples/')
-    save_mod(catom, label_type='num_units', filename="CAtom_n()_num_units.png",output_dir=figure_path+'Atomic_Examples/')
-
-def test_iter_process_connections():
-    op = SwapTwoBit()
-    c_op = op.decompose() 
-
-    save_mod(c_op,  filename="SwapTwoBit_dtype.png",output_dir=figure_path+'Atomic_Examples/')
-    save_mod(c_op, label_type='num_units', filename="SwapTwoBit_num_units.png",output_dir=figure_path+'Atomic_Examples/')
+def test_signature_roundtrip_quantum_symbolic():
+    # Case 3 – quantum dtype & symbolic tensor shape
+    n = sp.symbols("n", positive=True, integer=True)
+    sig1 = Signature(
+        [
+            RegisterSpec("ctrl", dtype=QBit()), # flow defauls to Flow.THRU
+            RegisterSpec(
+                "psi",
+                dtype=TensorType((n, 2), element_type=QInt(4)),
+            ),
+        ]
+    )
+    sig2 = Signature.from_dict(sig1.to_dict())
+    assert sig1 == sig2
+    # confirm symbolic shape survives
+    psi1 = sig1["psi"]
+    psi2 = sig2["psi"]
+    assert psi1.dtype.shape == psi2.dtype.shape == (n, 2)
 
 
-    c_op2 = op.as_composite() # composited operation
-    
-    c_op_output = c_op.debug_text()
-    
-    expected_output = """\
-TwoBitOp<0>
-  LeftDangle.d1 -> a
-  LeftDangle.d2 -> b
-  b -> TwoBitOp<1>.a
-  a -> TwoBitOp<1>.b
---------------------
-TwoBitOp<1>
-  TwoBitOp<0>.b -> a
-  TwoBitOp<0>.a -> b
-  a -> RightDangle.d1
-  b -> RightDangle.d2"""
+def test_signature_roundtrip_with_props():
+
+    # Case 4 – custom .properties payload persists
+    regs = [
+        RegisterSpec("data", dtype=torch.Tensor, shape=(Dyn,), flow=Flow.THRU),
+        RegisterSpec("sum",  dtype=torch.Tensor, flow=Flow.RIGHT),
+    ]
+    sig1 = Signature(regs)
+    # manually attach an auxiliary property dict as many Process builders do
+    sig1.properties = {"stage": "reduce", "author": "alice"}
+
+    sig2 = Signature.from_dict(sig1.to_dict())
+    assert sig2.properties == {"stage": "reduce", "author": "alice"}
+    assert sig1 == sig2
+
+# ----------------------------------------------------------------
+# `Data` tests (runtime level)
+# ----------------------------------------------------------------
+def test_promote_element_types_string():
+    """
+    Verify that promoting a NumPy string dtype results in the Python type 'str'.
+    """
+    import numpy as np
+    result = promote_element_types(np.dtype('<U1'))
+    assert result == str, f"Expected promotion of np.dtype('<U1') to be str, got {result}"
+
+def test_promote_element_types_mixed_numbers():
+    """
+    Verify that promoting a mix of integer and floating NumPy dtypes results in a floating dtype.
+    """
+    import numpy as np
+    result = promote_element_types(np.dtype('int32'), np.dtype('float64'))
+    expected = np.dtype('float64')
+    assert result == expected, f"Expected promotion to be {expected}, got {result}"
 
 
-    assert_multiline_equal(c_op_output, expected_output)
-    c_op2_output = c_op2.debug_text()
-    
-    expected_output2 = """\
-SwapTwoBit<0>
-  LeftDangle.d1 -> d1
-  LeftDangle.d2 -> d2
-  d1 -> RightDangle.d1
-  d2 -> RightDangle.d2"""
+def test_data_string_array_element_type():
+    """
+    Create a Data object from a NumPy array of strings and check that
+    the TensorType element_type is correctly set to str.
+    """
+    import numpy as np
+    str_array = np.array([['1', '2'], ['3', '4']])
+    # Using "Matrix" usage so the hint is set to "Matrix" (your test uses that)
+    data_obj = Data(str_array, {"Usage": "Matrix"})
+    # The inferred data type is a TensorType. We need to check its element_type.
+    element_type = data_obj.metadata.dtype.element_type
+    assert element_type == str, f"Expected element_type to be str, got {element_type}"
 
 
-    assert_multiline_equal(c_op2_output, expected_output2)
-    
-    save_mod(c_op2,  filename="composite_SwapTwoBit_dtype.png",output_dir=figure_path+'Atomic_Examples/')
-    save_mod(c_op2, label_type='num_units', filename="composite_SwapTwoBit_num_units.png",output_dir=figure_path+'Atomic_Examples/')
-
-
-    c_op.print_tabular()
-    c_op.print_tabular_fx()
-    # c_op2.print_tabular()
-    assert len(list(c_op.iter_process_connections())) == len(c_op.pinsts)
-    for pinst, preds, succs in c_op.iter_process_connections():
-        print(pinst)
-        print(f' - preds: {preds}')
-        print(f' - succs: {succs}')
-        assert isinstance(pinst, ProcessInstance)
-        assert len(preds) > 0
-        assert len(succs) > 0
-
-def test_chained_atoms():
-    save_path = figure_path + 'Atomic_Examples/'
-    chained_process = AtomChain()
-    # print(chained_process)
-    # print(str(chained_process))
-    # print(repr(chained_process))
-
-
-    # chained_process.describe
-    
-    decomposed_chained = assert_registers_match_parent(chained_process)
-
-    debug_output = decomposed_chained.debug_text()
-    
-
-    expected_output = """\
-Atom<0>
-  LeftDangle.reg -> n
-  n -> Atom<1>.n
---------------------
-Atom<1>
-  Atom<0>.n -> n
-  n -> Atom<2>.n  
---------------------
-Atom<2>
-  Atom<1>.n -> n
-  n -> RightDangle.reg"""
-
-    assert_multiline_equal(debug_output,expected_output)
-    sig1 = decomposed_chained.signature
-
-    # assert decomposed_chained.validate_data()
-    # print(decomposed_chained.signature)
-
-    save_mod(decomposed_chained,  filename="chained_atom_decomposed_dtype.png",output_dir=save_path + 'Series/')
-    save_mod(decomposed_chained, label_type='num_units', filename="chained_atom_decomposed_num_units.png",output_dir=save_path + 'Series/')
-
-
-    composite_chained = chained_process.as_composite()
-
-    expected_output2 = """\
-AtomChain<0>
-  LeftDangle.reg -> reg
-  reg -> RightDangle.reg"""
-    assert_multiline_equal(composite_chained.debug_text(),expected_output2)
-    sig2 = composite_chained.signature
-
-    assert sig1==sig2, f"sig1: {sig1} != to sig2: {sig2}"
-    
-    # Draw high level of the process
-    save_mod(composite_chained,  filename="highlevel_chained_atom_dtype.png",output_dir=save_path + 'Series/')
-    
-    # Draw high level of the process with edge labels showing data size as labels
-    save_mod(composite_chained, label_type='num_units', filename="highlevel_chained_atom_num_units.png",output_dir=save_path + 'Series/')
-
-
-
-
-bookkeeping_path = figure_path + 'Bookeeping_Examples/'
-def test_split():
-    spec = CInt(4)
-    
-    assert isinstance(spec,CType)
-    split = Split(spec).as_composite()
-    save_mod(split, label_type='dtype', filename="split_cuint4_dtype.png",output_dir=bookkeeping_path)
-
-    save_mod(split, label_type='num_units', filename="split_cuint4_num_units.png",output_dir=bookkeeping_path)
-
-def test_builder_splitjoin():
-
-    builder = ProcessBuilder()
-    atomic_reg = RegisterSpec(name="a_tensor", dtype=TensorType((2,),element_type=CBit()), flow=Flow.LEFT)
-
-    in_port = builder.add_register(atomic_reg)  # returns a single Port
-    assert isinstance(in_port, Port), f".add_register() should return a Port if reg.flow is LEFT/THRU. Instead, we got type(in_port) = {type(in_port)}"
-    
-    assert in_port.process_instance is LeftDangle
-    assert isinstance(in_port.index, tuple)
-    assert in_port.pretty() == 'a_tensor'
-    
-   
-    split_out= builder.add(Split(dtype=in_port.reg.dtype), arg=in_port)
-    # assert split_out.shape == (2,)
-   
-    # assert split_out[0].reg.dtype == CBit()
-
-    assert str(split_out[0].process_instance) == 'Split<0>', f'Got: {str(split_out[0].process_instance)}'
-    assert split_out[0].pretty() == 'arg[0]', f'Got: {split_out[0].pretty()}'
-    
-
-    join_process = Join(dtype=atomic_reg.dtype)
-
-    joined_out = builder.add(join_process, arg=split_out)
-
-
-    composite_mod = builder.finalize(a_tensor=joined_out)
-    
-    expected_debug_text = """\
-Split<0>
-  LeftDangle.a_tensor -> arg
-  arg[0] -> Join<1>.arg[0]
-  arg[1] -> Join<1>.arg[1]
---------------------
-Join<1>
-  Split<0>.arg[0] -> arg[0]
-  Split<0>.arg[1] -> arg[1]
-  arg -> RightDangle.a_tensor"""
-    assert_multiline_equal(composite_mod.debug_text(),expected_debug_text)
-    # print(composite_mod.signature)
-    save_mod(composite_mod, label_type='dtype', filename="splitjoin_tensor_(2,)_dtype.png",output_dir=bookkeeping_path)
-    save_mod(composite_mod, label_type='num_units', filename="splitjoin_tensor_(2,)_num_units.png",output_dir=bookkeeping_path)
-    
-    # Attempt to print tabular in a similar format as torch.graph_module.print_tabular()
-    composite_mod.print_tabular()
-    composite_mod.print_tabular_fx()
-
-@define
-class SplitJoin(Process):
-    n: int 
-
-    @property
-    def signature(self):
-        return Signature([RegisterSpec('x', dtype=TensorType((self.n,)))])
-    def build_composite(self, builder, *,x: 'Port'):
-        
-        xs = builder.split(x)
-        x =  builder.join(xs, dtype=x.reg.dtype)
-        return {'x':x}
-    
-def test_SplitJoin_class():
-    split_join = SplitJoin(n=2)
-    
-    sj = split_join.as_composite()
-    
-    drawer = ModuleDrawer(sj)
-    drawer.render(display=False, filename="composite_dtype.png",output_dir=figure_path + 'SplitJoin()/')
-
-    # print(split_join.decompose().debug_text())
-    c_splitjoin = split_join.decompose()
-    drawer = ModuleDrawer(c_splitjoin)
-
-    drawer.render(display=False, filename="decomposed_dtype.png",output_dir=figure_path + 'SplitJoin()/')
-    c_splitjoin.print_tabular()
-
-    c_splitjoin.print_tabular_fx()
-
-# def test_parallel_atoms():
-    
-#     num_parallel = 3
-#     d = Data(CUInt(3), properties={"Usage": "bits"})
-#     parallel_process = NAtomParallel(inputs=[d],num_parallel=num_parallel)
-    
-   
-#     assert len(parallel_process.signature) == 1
-    
-#     # Test decomposition
-#     cprocess = parallel_process.decompose()
-#     assert cprocess.signature == parallel_process.signature
-
-#     # for debugging
-#     cprocess.print_tabular()
-#     cprocess.print_tabular_fx()
-
-#     drawer = ModuleDrawer(cprocess)
-#     drawer.render(display=False, save_fig=True, filename="decomposed_dtype.png",output_dir=figure_path + 'NAtomParallel(Process)/')
-
-    # draw with num_units as the edge labels
-    # drawer = ModuleDrawer(cprocess, label_type="num_units")
-    # drawer.render(display=False, save_fig=True, filename="NAtomParallel_decomposed_num_units.png")
-
-    # # Render high-level block
-    # composite_block = parallel_process.as_composite()
-    # drawer = ModuleDrawer(composite_block)
-    # drawer.render(display=False, save_fig=True, filename="NAtomParallel_highlevel.png")
-  
-    # composite_block.print_tabular()
-
-    # composite_block.print_tabular_fx()

@@ -148,6 +148,63 @@ def test_from_binary_lsb(binary, expected_int):
     expected_bin = formatted[::-1]
     assert bs.binary() == expected_bin
 
+# ----------------------------------------------------------------------
+# 1) Indexing – MSB vs LSB order
+# ----------------------------------------------------------------------
+def test_getitem_msb_lsb():
+    """
+    Verify that indexing respects the chosen bit-ordering:
+
+        • MSB view  — index 0 is the most-significant bit
+        • LSB view  — index 0 is the least-significant bit
+    """
+    pattern = 0b1100_1010            # 0xCA
+    bs_msb  = BitStringView.msb(pattern, nbits=8)
+    bs_lsb  = bs_msb.with_numbering(BitNumbering.LSB)
+
+    # explicit spot checks
+    assert bs_msb[0] == 1, "MSB[0] should be the left-most ‘1’"
+    assert bs_msb[7] == 0, "MSB[7] should be the right-most ‘0’"
+
+    assert bs_lsb[0] == 0, "LSB[0] should be original LSB (right-most)"
+    assert bs_lsb[7] == 1, "LSB[7] should be original MSB (left-most)"
+
+    # order-reversal property: bs_lsb[i] == bs_msb[7-i]
+    for i in range(8):
+        assert bs_lsb[i] == bs_msb[7 - i], (
+            f"Index mismatch at {i}: MSB[{7-i}]={bs_msb[7-i]} vs "
+            f"LSB[{i}]={bs_lsb[i]}"
+        )
+
+# ----------------------------------------------------------------------
+# 2) Mutation – __setitem__ in both views
+# ----------------------------------------------------------------------
+def test_setitem_mutation():
+    """
+    • Clear the MSB in an 8-bit view
+    • Clear the LSB in a 4-bit LSB-ordered view
+      (shows that the same index touches a *different* physical bit)
+    """
+    # ---- MSB view: toggle the most-significant bit --------------------
+    bs = BitStringView.msb(0b1001_0011, nbits=8)   # 0x93 → 10010011
+    bs[0] = 0                                       # clear MSB
+    assert int(bs) == 0b0001_0011, (
+        f"Expected 0b00010011 after clearing MSB, got {bs.binary()}"
+    )
+    assert bs.binary() == "00010011", "Binary string not updated correctly"
+    assert bs.nbits == 8, "Width should stay constant after mutation"
+
+    # ---- LSB view: toggle the least-significant bit -------------------
+    bs_lsb = BitStringView.lsb(0b0101, nbits=4)     # value 5 → LSB view ‘1010’
+    bs_lsb[0] = 0                                   # clear LSB (index 0 in LSB mode)
+    assert int(bs_lsb) == 0b0100, (
+        f"Expected integer 4 after clearing LSB, got {int(bs_lsb)}"
+    )
+    assert bs_lsb.binary() == "0010", (
+        "LSB binary string should reflect bit-0 change"
+    )
+    assert bs_lsb.nbits == 4, "Width should remain 4 bits"
+
 def test_bitstring_cbit_msb():
     dt      = CBit()
     bs      = dt.to_bitstring(1, numbering=BitNumbering.MSB)
@@ -359,7 +416,8 @@ def test_bitstring_lsb_arrays(bits_msb, int_msb, int_lsb):
 
     assert bitc.integer == int_lsb
     assert bitc.array() == bits_msb               
-    assert bitc.binary() == bita.binary()         
+    assert bitc.binary() == bita.binary()      
+       
 @pytest.mark.parametrize("value", range(15))
 def test_conversion_ints(value):
     bita = BitStringView.from_int(value)                       
