@@ -5,7 +5,7 @@ from .graph import Node, DirectedEdge
 from .process import Process
 from .data_types import *
 
-from qrew.simulation.refactor.data_types import DataType
+from qrew.simulation.data_types import DataType
 
 import numpy as np
 from numpy.typing import NDArray
@@ -19,7 +19,7 @@ import networkx as nx
 from functools import cached_property
 
 
-from ...util.log import get_logger,logging
+from ..util.log import get_logger,logging
 
 logger = get_logger(__name__)
 
@@ -231,16 +231,16 @@ class Split(Process):
         """
       
         left_reg = RegisterSpec("arg", dtype=self.dtype, shape=(), flow=Flow.LEFT)
-        # total_wires = (
-        #     self.dtype.total_bits
-        #     if hasattr(self.dtype, "total_bits")
-        #     else self.dtype.data_width
-        # )
+        total_wires = (
+            self.dtype.total_bits
+            if hasattr(self.dtype, "total_bits")
+            else self.dtype.data_width
+        )
         shp          = _shape_of(self.dtype)
         elem_dt      = _element_dtype_of(self.dtype)
         elem_width   = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
         n_elems      = prod(shp) or 1
-        
+        logger.debug(f'dtype: {self.dtype}, elem_dt: {elem_dt} --> total_wires: {total_wires}\n - isinstance(self.dtype, CType): {isinstance(self.dtype, CType)} ')
         # pick out_dtype (one bit / qubit per split)
         if isinstance(self.dtype, (TensorType, MatrixType)):
             out_dtype = elem_dt
@@ -314,61 +314,94 @@ class Join(Process):
 
     dtype: DataType = field(converter=canonicalize_dtype)
 
-
     @cached_property
     def signature(self) -> Signature:
-        shp          = _shape_of(self.dtype)
-        elem_dt      = _element_dtype_of(self.dtype)
-        elem_width   = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
-        n_elems      = prod(shp) or 1
+        # Helper lambdas
+        shp       = _shape_of(self.dtype)              # tuple
+        elem_dt   = _element_dtype_of(self.dtype)      # DataType | type
+        elem_bits = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
 
-        # ---------- determine wire_dtype & in_shape --------------------
+        # ----------- decide wire_dtype and in_shape -------------------
         if isinstance(self.dtype, (TensorType, MatrixType)):
-            wire_dtype  = _element_dtype_of(self.dtype)
-            in_shape  = _shape_of(self.dtype) or ()
-
-            # if isinstance(elem_dt, CType) and elem_w > 1:
-            #     # one CBit per *bit* of every element
-            #     wire_dtype = CBit()
-            #     in_shape   = (*self.dtype.shape, elem_w) if n_elems != 1 else (elem_w,)
-            # else:
-            #     wire_dtype = elem_dt
-            #     in_shape   = self.dtype.shape
+            wire_dtype = elem_dt
+            in_shape   = shp or ()
 
         elif isinstance(self.dtype, CType):
-            in_dtype  = self.dtype.__class__(**getattr(self.dtype, "__dict__", {}))
+            # Re-instantiate the same CType with its bit_width
+            in_dtype   = self.dtype.__class__(bit_width=self.dtype.bit_width)
+
             if isinstance(self.dtype, CBit):
                 wire_dtype = CBit()
                 in_shape   = (self.dtype.data_width,)
             else:
-                wire_dtype = in_dtype
+                wire_dtype = in_dtype            # multi-bit classical scalar
                 in_shape   = (self.dtype.data_width,)
 
         elif isinstance(self.dtype, QType):
-
             wire_dtype = QBit()
             in_shape   = (self.dtype.data_width,)
 
         else:
             raise TypeError(f"Join cannot handle dtype {self.dtype!r}")
 
-        # ---------- LEFT array register --------------------------------
-        left_reg = RegisterSpec(
-            name="arg",
-            dtype=wire_dtype,
-            shape=in_shape,
-            flow=Flow.LEFT,
-        )
-
-        # ---------- RIGHT atomic register ------------------------------
-        right_reg = RegisterSpec(
-            name="arg",
-            dtype=self.dtype,
-            shape=(),
-            flow=Flow.RIGHT,
-        )
-
+        # ---------------- build Signature -----------------------------
+        left_reg  = RegisterSpec("arg", dtype=wire_dtype, shape=in_shape, flow=Flow.LEFT)
+        right_reg = RegisterSpec("arg", dtype=self.dtype,      flow=Flow.RIGHT)
         return Signature([left_reg, right_reg])
+    # @cached_property
+    # def signature(self) -> Signature:
+    #     shp          = _shape_of(self.dtype)
+    #     elem_dt      = _element_dtype_of(self.dtype)
+    #     elem_width   = elem_dt.data_width if isinstance(elem_dt, DataType) else 1
+    #     n_elems      = prod(shp) or 1
+
+    #     # ---------- determine wire_dtype & in_shape --------------------
+    #     if isinstance(self.dtype, (TensorType, MatrixType)):
+    #         wire_dtype  = _element_dtype_of(self.dtype)
+    #         in_shape  = _shape_of(self.dtype) or ()
+
+    #         # if isinstance(elem_dt, CType) and elem_w > 1:
+    #         #     # one CBit per *bit* of every element
+    #         #     wire_dtype = CBit()
+    #         #     in_shape   = (*self.dtype.shape, elem_w) if n_elems != 1 else (elem_w,)
+    #         # else:
+    #         #     wire_dtype = elem_dt
+    #         #     in_shape   = self.dtype.shape
+
+    #     elif isinstance(self.dtype, CType):
+    #         in_dtype  = self.dtype.__class__(**getattr(self.dtype, "__dict__", {}))
+    #         if isinstance(self.dtype, CBit):
+    #             wire_dtype = CBit()
+    #             in_shape   = (self.dtype.data_width,)
+    #         else:
+    #             wire_dtype = in_dtype
+    #             in_shape   = (self.dtype.data_width,)
+
+    #     elif isinstance(self.dtype, QType):
+
+    #         wire_dtype = QBit()
+    #         in_shape   = (self.dtype.data_width,)
+
+    #     else:
+    #         raise TypeError(f"Join cannot handle dtype {self.dtype!r}")
+
+    #     # ---------- LEFT array register --------------------------------
+    #     left_reg = RegisterSpec(
+    #         name="arg",
+    #         dtype=wire_dtype,
+    #         shape=in_shape,
+    #         flow=Flow.LEFT,
+    #     )
+
+    #     # ---------- RIGHT atomic register ------------------------------
+    #     right_reg = RegisterSpec(
+    #         name="arg",
+    #         dtype=self.dtype,
+    #         shape=(),
+    #         flow=Flow.RIGHT,
+    #     )
+
+    #     return Signature([left_reg, right_reg])
     @dtype.validator
     def _validate_dtype(self, attribute, value):
         if value.is_symbolic():
@@ -1030,6 +1063,8 @@ def _process_ports(registers: Iterable['RegisterSpec'],
     and map to the signature? Unsure.
     """
     unchecked_names: Set[str] = set(in_ports.keys())
+   
+    logger.debug(f"Processing port keys: {unchecked_names}")
 
     
     for reg in registers:
@@ -1049,7 +1084,7 @@ def _process_ports(registers: Iterable['RegisterSpec'],
 
         
         for left_index in reg.all_idxs():
-            # logger.debug(f"Processing index {left_index} for Data '{data_id}'")
+            logger.debug(f"Processing index {left_index} for reg '{reg}'")
             indexed_port = in_port[left_index]
             assert isinstance(indexed_port,Port), indexed_port
 

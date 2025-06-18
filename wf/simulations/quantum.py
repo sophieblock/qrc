@@ -1,5 +1,5 @@
 from typing import List, Tuple, Dict, TYPE_CHECKING
-from z3 import Optimize, Int, IntVector, And, Or, Bool, Implies, If, sat,Sum
+from z3 import Optimize, Int, IntVector, And, Or,Not, Bool, Implies, If, sat,Sum
 import datetime
 import copy
 from .quantum_gates import QuantumGate, SWAP,X,Y,Z,T,Tdg,CX,H,S,CZ,CZPow
@@ -8,14 +8,14 @@ from .utilities import adjacent_edges_from_edge, adjacent_edge_idxs_from_edge
 # import qiskit.circuit.quantumcircuit as QiskitCircuit
 from qiskit import QuantumCircuit as QiskitCircuit
 import qiskit.circuit.library as qiskit_library
-import qrew.simulation.refactor.quantum_gates as quantum_gateset
-from qrew.simulation.refactor.data_types import *
+import qrew.simulation.quantum_gates as quantum_gateset
+from qrew.simulation.data_types import *
+from qrew.simulation.quantum_util import QuantumOperand
 
-from ...util.log import get_logger,logging
+from ..util.log import get_logger,logging
 logger = get_logger(__name__)
 
-if TYPE_CHECKING:
-    from resources.quantum_resources import QuantumDevice
+
 
 
 class QuantumInstruction:
@@ -60,6 +60,7 @@ class QuantumCircuit:
             ), f"Gate indices invalid or out of bounds for instruction {instruction}"
             if instruction.gate not in self.gate_set:
                 self.gate_set.append(instruction.gate)
+        self.register_map: Dict = {}
 
     def add_instruction(
         self,
@@ -67,6 +68,7 @@ class QuantumCircuit:
         gate: QuantumGate = None,
         indices: tuple[int] = None,
     ):
+        
         if instruction is None:
             assert isinstance(
                 gate, QuantumGate
@@ -84,6 +86,25 @@ class QuantumCircuit:
         assert self.valid_gate_indices(
             circ_instrc
         ), f"Gate indices invalid or out of bounds for instruction {circ_instrc}"
+        # ─── resolve any QuantumOperand via register_map ─────────────────────────
+        resolved = []
+        for op in circ_instrc.gate_indices:
+            if isinstance(op, QuantumOperand):
+                # look up physical index
+                phys_list = self.register_map.get(op.register)
+                assert phys_list is not None, (
+                    f"No mapping for register {op.register}. "
+                    "Did you forget to attach register_map after allocate?"
+                )
+                resolved.append(phys_list[op.offset])
+            else:
+                resolved.append(op)
+        circ_instrc = QuantumInstruction(gate=circ_instrc.gate,
+                                         qubit_indices=tuple(resolved))
+
+        assert self.valid_gate_indices(circ_instrc), (
+            f"Gate indices invalid or out of bounds after resolution: {circ_instrc}"
+        )
 
         if circ_instrc.gate.name not in self.gate_set:
             self.gate_set.append(circ_instrc.gate.name)
@@ -92,9 +113,10 @@ class QuantumCircuit:
 
     def valid_gate_indices(self, instruction: QuantumInstruction):
         indices_in_range = all(
-            qubit_index >= 0 and qubit_index <= self.qubit_count
+            0 <= qubit_index <= self.qubit_count
             for qubit_index in instruction.gate_indices
         )
+        # TODO: verify if it should be 0 <= qubit_index < self.qubit_count instead...
         indices_not_repeated = len(instruction.gate_indices) == len(
             list(set(instruction.gate_indices))
         )
@@ -117,7 +139,7 @@ class QuantumCircuit:
         """Return a Cirq SVG diagram of the circuit, ready for Jupyter display."""
         from cirq.contrib.svg import SVGCircuit
         import cirq
-        from qrew.simulation.refactor.q_interop.cirq_interop import translate_qc_to_cirq
+        from qrew.simulation.q_interop.cirq_interop import translate_qc_to_cirq
         cirq_circ = translate_qc_to_cirq(self, save_measurements=save_measurements)
         # Delete the leading identity moment Cirq inserted (looks cleaner)
         if cirq_circ and isinstance(cirq_circ[0], cirq.Moment):
@@ -142,7 +164,24 @@ class QuantumCircuit:
             f"depth={self.depth()}>"
         )
 
+from dataclasses import dataclass
+from typing import Sequence, Tuple
 
+@dataclass(frozen=True)
+class LayoutTrace:
+    """Snapshot of a solved layout‐synthesis instance.
+
+    * island        – π[:,0]         (initial logical→physical map)
+    * final_mapping – π[:,depth-1]
+    * swaps         – list[tuple[Tuple[int,int], int]]  (edge, finish-time)
+    """
+    island:         Tuple[int, ...]
+    final_mapping:  Tuple[int, ...]
+    swaps:          Sequence[Tuple[Tuple[int, int], int]]
+
+    def touches_only_island(self) -> bool:
+        """Return True iff every SWAP edge stays inside *island*."""
+        return all(u in self.island and v in self.island for (u, v), _ in self.swaps)
 
 class LayoutSynthesizer:
     """
@@ -218,6 +257,7 @@ class LayoutSynthesizer:
         self.solver = Optimize()
         # unit-tests call *before* solve() runs
         self.depth_guess = self.compute_circuit_depth(quantum_circuit)
+        self.allow_parallel = True
 
     def compute_circuit_depth(self, quantum_circuit: QuantumCircuit) -> int:
         """
@@ -554,27 +594,59 @@ class LayoutSynthesizer:
         #         )) <= 1
         #     ) 
         sigma = self.variables["sigma"]
-        for timestep in range(self.swap_duration - 1, self.depth_guess):
-            for edge in self.available_connectivity.edges:
-                for swap_timestep in range(
-                    timestep - self.swap_duration + 1, timestep + 1
+        # adjacent-edge exclusion
+        for t in range(self.swap_duration - 1, self.depth_guess):
+            for (u, v) in self.available_connectivity.edges:
+                for (x, y) in adjacent_edges_from_edge(
+                    self.available_connectivity, u, v
                 ):
-                    for adjacent_edge in adjacent_edges_from_edge(
-                        self.available_connectivity, edge[0], edge[1]
-                    ):
-                        imply_operand1 = sigma[edge[0]][edge[1]][timestep] == True
-                        try:
-                            imply_operand2 = (
-                                sigma[adjacent_edge[0]][adjacent_edge[1]][swap_timestep]
-                                == False
+                    for τ in range(max(0, t - self.swap_duration + 1), t + 1):
+                        self.solver.add(
+                            Implies(
+                                sigma[u][v][t],
+                                Not(sigma[min(x,y)][max(x,y)][τ]),
                             )
-                        except KeyError:
-                            imply_operand2 = (
-                                sigma[adjacent_edge[1]][adjacent_edge[0]][swap_timestep]
-                                == False
-                            )
-                        constraint = Implies(imply_operand1, imply_operand2)
-                        self.solver.add(constraint)
+                        )
+        # optional global single-swap rule
+        if not self.allow_parallel:
+            for t in range(self.swap_duration - 1, self.depth_guess):
+                self.solver.add(
+                    Sum(*(If(sigma[u][v][t], 1, 0)
+                          for (u, v) in self.available_connectivity.edges)) <= 1
+                )
+    # def constraint_no_SWAP_overlap_adjacent_edge(self):
+    #     """Edges that overlap on the device cannot both have overlapping SWAP gates in time"""
+    #     # … unchanged body …
+    #     # ---- STRICT VERSION (uncomment if you want Eq. 11’s “one-swap” rule) -
+    #     # for t in range(self.swap_duration - 1, self.depth_guess):
+    #     #     self.solver.add(
+    #     #         Sum(*(
+    #     #             If(self.variables["sigma"][u][v][t], 1, 0)
+    #     #             for (u,v) in self.available_connectivity.edges
+    #     #         )) <= 1
+    #     #     ) 
+    #     sigma = self.variables["sigma"]
+    #     for timestep in range(self.swap_duration - 1, self.depth_guess):
+    #         for edge in self.available_connectivity.edges:
+    #             for swap_timestep in range(
+    #                 timestep - self.swap_duration + 1, timestep + 1
+    #             ):
+    #                 for adjacent_edge in adjacent_edges_from_edge(
+    #                     self.available_connectivity, edge[0], edge[1]
+    #                 ):
+    #                     imply_operand1 = sigma[edge[0]][edge[1]][timestep] == True
+    #                     try:
+    #                         imply_operand2 = (
+    #                             sigma[adjacent_edge[0]][adjacent_edge[1]][swap_timestep]
+    #                             == False
+    #                         )
+    #                     except KeyError:
+    #                         imply_operand2 = (
+    #                             sigma[adjacent_edge[1]][adjacent_edge[0]][swap_timestep]
+    #                             == False
+    #                         )
+    #                     constraint = Implies(imply_operand1, imply_operand2)
+    #                     self.solver.add(constraint)
 
     def constraint_no_SWAP_overlap_gates(self):
         """Eq. 8 & 9 — SWAP cannot overlap any gate touching its qubits."""
@@ -788,13 +860,17 @@ class LayoutSynthesizer:
             "T": self.results["time"],
             "S": self.results["SWAPs"],
             "n_swaps":  self.results["n_swaps"],
+            "P0":        initial_qubit_map,
+            "Pf":        final_qubit_map,
 
         }
        
 
-        del self.results
+        
         # # reset self.depth_guess 
         # self.depth_guess = self.circuit_depth_guess
+        result_circuit.meta = meta
+        del self.results
         return (result_circuit, initial_qubit_map, final_qubit_map, objective_result, meta)
 
     def get_time_results(self):

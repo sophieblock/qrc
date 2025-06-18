@@ -1,6 +1,6 @@
+
 import numpy as np
 from typing import Callable
-
 
 class QuantumGate:
     def __init__(self, name, num_qubits):
@@ -137,19 +137,58 @@ class CZ(QuantumGate):
 
 
 class CZPow(QuantumGate):
-    def __init__(self, exponent: float):
-        self.param = exponent
+    """
+    A CZ gate with arbitrary exponent α  (diag = [1,1,1,e^{iπ α}]).
+
+    The constructor now accepts
+        • a scalar exponent (float / int)               – old behaviour
+        • a qiskit Gate / ControlledGate / UnitaryGate
+        • a 4×4 numpy matrix
+    All of them are converted to the scalar   self.param  ∈ ℝ.
+    """
+    def __init__(self, exponent=1.0):
+        import numpy as np
+
+        def _extract_alpha(mat: np.ndarray) -> float:
+            """angle/π of the |11⟩ phase – robust to global phase"""
+            phase = np.angle(mat[3, 3])
+            return float(phase / np.pi)
+
+        # ------------------------------------------------------------
+        # 1) work out the numeric exponent  α
+        # ------------------------------------------------------------
+        if isinstance(exponent, (int, float)):                    # usual case
+            alpha = float(exponent)
+
+        else:                                                     # Gate / matrix
+            try:                                                  # qiskit Gate
+                mat = exponent.to_matrix()
+            except AttributeError:
+                mat = np.asarray(exponent)
+
+            if mat.shape != (4, 4):
+                raise ValueError("CZPow expects a 4×4 unitary or a scalar α")
+            alpha = _extract_alpha(mat)
+
+        # ------------------------------------------------------------
+        # 2) build the internal matrix & store α
+        # ------------------------------------------------------------
+        self.param = alpha
         self.gate = np.array(
             [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
                 [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, np.exp(1j * np.pi * exponent)],
-            ]
+                [0.0, 0.0, 0.0, np.exp(1j * np.pi * alpha)],
+            ],
+            dtype=complex,
         )
         super().__init__(name="CZPow", num_qubits=2)
 
-
+class I(QuantumGate):
+    def __init__(self):
+        self.gate = np.eye(2, dtype=float)
+        super().__init__(name="I", num_qubits=1)
 class ECR(QuantumGate):
     def __init__(self):
         self.gate = (
@@ -165,3 +204,45 @@ class ECR(QuantumGate):
             )
         )
         super().__init__(name="ECR", num_qubits=2)
+
+class U(QuantumGate):
+    """
+    Arbitrary single-qubit rotation  U(θ, φ, λ)  following the
+    OpenQASM / Qiskit convention.
+
+        U(θ, φ, λ) = RZ(φ) · RY(θ) · RZ(λ)
+
+    Parameters
+    ----------
+    theta, phi, lam : float
+        Rotation angles in radians.
+    """
+    def __init__(self, theta: float, phi: float, lam: float):
+        self.params: Tuple[float, float, float] = (theta, phi, lam)
+
+        c, s = np.cos(theta / 2), np.sin(theta / 2)
+        mat = np.array(
+            [[c, -np.exp(1j * lam) * s],
+             [np.exp(1j * phi) * s, np.exp(1j * (phi + lam)) * c]],
+            dtype=complex,
+        )
+        self.gate = mat
+        super().__init__(name="U", num_qubits=1)
+
+
+class U1(U):
+    """Phase gate  U1(λ) = U(0, 0, λ)."""
+    def __init__(self, lam: float):
+        super().__init__(0.0, 0.0, lam)
+
+
+class U2(U):
+    """√X-like gate  U2(φ, λ) = U(π/2, φ, λ)."""
+    def __init__(self, phi: float, lam: float):
+        super().__init__(np.pi / 2, phi, lam)
+
+
+class U3(U):
+    """Alias kept for Qiskit/Cirq compatibility."""
+    def __init__(self, theta: float, phi: float, lam: float):
+        super().__init__(theta, phi, lam)

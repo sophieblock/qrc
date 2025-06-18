@@ -21,15 +21,15 @@ import re
 from .symbolic_shape import ShapeEnv,create_symint, create_symfloat, create_symbool,create_symtype, SymInt, SymBool, SymFloat
 from .unification_tools import (ALLOWED_BUILTINS, 
                             canonicalize_dtype, 
-                            get_nested_shape_and_numeric, 
-                            dim_is_int_or_dyn,
-                            shape_is_tuple,
+                            # get_nested_shape_and_numeric, 
+                        
                             _extract_element_types,
                             create_data_type_hint
 )
 from .data_types import *
-from ...util.log import logging
-logger = logging.getLogger(__name__)
+
+from ..util.log import get_logger,logging
+logger = get_logger(__name__)
 
 SymbolicInt = Union[int, sympy.Expr]
 NEXT_AVAILABLE_DATA_ID = 0
@@ -62,29 +62,6 @@ fresh_bit = FreshSupply("b")
 fresh_qbit =FreshSupply("q")
 fresh_size = FreshSupply("s")
 
-
-
-def canonicalize_dtype(value):
-    """
-    Convert legacy or ambiguous dtype specifications to the canonical in‑house type.
-    For example, if value is np.ndarray or a list-of-floats type, return TensorType.
-    Otherwise, return value unmodified.
-    """
-    # If the provided type is a list (or a list of types), pick the first element.
-    if isinstance(value, list):
-        value = value[0]
-    # If the value is the numpy.ndarray type, convert to TensorType.
-    if value is np.ndarray:
-        return TensorType
-    # If the value is list[float] (using PEP 585 notation, for example),
-    # you might check by its __origin__ or __name__ if available.
-    try:
-        # If value has an __origin__ and it is list, then assume TensorType is desired.
-        if hasattr(value, "__origin__") and value.__origin__ == list:
-            return TensorType
-    except Exception:
-        pass
-    return value
 
 from attrs import field,define
 
@@ -376,12 +353,12 @@ class Data:
         elif isinstance(self.metadata.dtype, CUInt):
        
             self._symbolic_shape = self.shape_env.create_symbolic_int(
-                self.data.num_units,
+                self.data.data_width,
                 source=self.source,
                 symbolic_type="bit"
             )
         elif isinstance(self.metadata.dtype, QAny):
-            self._symbolic_shape = self.shape_env.create_symbolic_int(self.data.num_units,
+            self._symbolic_shape = self.shape_env.create_symbolic_int(self.data.data_width,
                 source=self.source,
                 symbolic_type="qbit"
             )
@@ -415,15 +392,15 @@ class Data:
     #     shape = self.shape
     #     return itertools.product(*[range(int(dim)) for dim in shape])
     
-    def __hash__(self):
-        """Hash method for Data to allow inclusion in hash-based collections."""
-        return hash((self.id, self.shape, self.flow))
+    # def __hash__(self):
+    #     """Hash method for Data to allow inclusion in hash-based collections."""
+    #     return hash((self.id, self.shape))
     
-    def __eq__(self, other):
-        # Define equality to allow comparison between Data objects
-        if isinstance(other, Data):
-            return self.shape == other.shape and self.properties == other.properties
-        return False
+    # def __eq__(self, other):
+    #     # Define equality to allow comparison between Data objects
+    #     if isinstance(other, Data):
+    #         return self.shape == other.shape and self.properties == other.properties
+    #     return False
     def __repr__(self):
         if isinstance(self.symbolic_shape,tuple) and len(self.symbolic_shape)>0:
             return f"Data('{self.id}', {self.shape}, {self.flow})"

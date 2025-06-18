@@ -19,7 +19,7 @@ from .data import Data,DataSpec
 from .data_types import *
 from .schema import Flow,Signature
 from .utilities import InitError,all_dict1_vals_in_dict2_vals
-from ...assert_checks import gen_mismatch_dict
+from ..assert_checks import gen_mismatch_dict
 if TYPE_CHECKING:
 
     from .data import Data, Result, DataSpec
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 from torch.fx.operator_schemas import type_matches
 import types
 from attrs import define, field
-from ...util.log import get_logger,logging
+from ..util.log import get_logger,logging
 logger = get_logger(__name__)
 
 
@@ -458,7 +458,7 @@ class Process:
                 self.input_data = self._build_legacy_input_mapping(self.inputs)
                 logger.debug("Legacy self.input_data automatically generated:")
             
-            # logger.info(f"Input data: " + pretty_repr(self.input_data))
+                logger.info(f"Input data: " + pretty_repr(self.input_data))
             # logger.info(f"Inputs: " + pretty_repr(self.inputs))
             
 
@@ -630,7 +630,7 @@ class Process:
         results: list[bool] = []
         # iterate once, matching + logging in one go
         for expected_property in self.expected_input_properties:
-            found, mismatches = self.expected_property_in_inputs_new(expected_property)
+            found, mismatches = self.expected_property_in_inputs(expected_property)
             results.append(found)
 
             if not found and mismatches and show_debug_log:
@@ -645,23 +645,52 @@ class Process:
 
         del self.inputs_copy
         return all(results)
-    def expected_property_in_inputs_new(self, expected_property: dict) -> bool:
+    def expected_property_in_inputs(self, expected_property: dict) -> bool:
+        """
+        Scan ``self.inputs_copy`` for *one* Data object whose ``.properties``
+        satisfy **every** key/value constraint in ``expected_property``.
+        If found, remove that Data object from ``self.inputs_copy`` and
+        return ``(True, None)``.  Otherwise return ``(False, mismatch_dict)``.
+
+        A key named **"Data Type"** is treated specially:
+
+            • If the *expected* value is a **type or tuple/list of types**,
+              the *actual* value matches when
+              ``issubclass(actual_type, expected_type)`` is True.
+
+            • Otherwise we fall back to ``all_dict1_vals_in_dict2_vals``.
+
+        All other keys use ``all_dict1_vals_in_dict2_vals`` verbatim.
+        """
         mismatches = {}
 
-        for data in self.inputs_copy:
-            results = []
-            for key, val in expected_property.items():
-                res = all_dict1_vals_in_dict2_vals(data.properties.get(key, None), val)
-                results.append(res)
+        for data in list(self.inputs_copy):                   # copy for safe removal
+            all_match: list[bool] = []
 
-            if all(results):
+            for key, expected_val in expected_property.items():
+                actual_val = data.properties.get(key, None)
+
+                # ----- special handling for "Data Type" ----------------
+                if key == "Data Type" and expected_val is not None:
+                    exp_types = (expected_val
+                                 if isinstance(expected_val, (list, tuple))
+                                 else (expected_val,))
+                    act_type  = actual_val if isinstance(actual_val, type) else type(actual_val)
+
+                    match = any(issubclass(act_type, et) for et in exp_types if isinstance(et, type))
+                    all_match.append(match)
+                else:
+                    # generic multi-value containment test
+                    match = all_dict1_vals_in_dict2_vals(actual_val, expected_val)
+                    all_match.append(match)
+
+            if all(all_match):
                 self.inputs_copy.remove(data)
                 return True, None
             else:
-                mismatch = gen_mismatch_dict(data, expected_property)
-            
-                input_id = (data.id, data) 
-                mismatches[input_id] = mismatch
+                mismatch_detail = gen_mismatch_dict(data, expected_property)
+                mismatches[(data.id, data)] = mismatch_detail
+
 
 
         return False, mismatches

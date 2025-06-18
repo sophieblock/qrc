@@ -49,12 +49,28 @@ def _post_setattr(instance, attribute, value):
     return value
 
 # possibly add order = True which adds  __lt__, __le__, __gt__, and __ge__ methods that behave like __eq__  and allow instances to be ordered
+# ─────────────────────────────────────────────────────────────────────────────
+# BitStringView – light-weight, mostly-immutable view over an integer bit-pattern
+# ─────────────────────────────────────────────────────────────────────────────
 @define(
     slots=True,
     kw_only=True,
     on_setattr=[setters.convert, setters.validate, _post_setattr],
 )
 class BitStringView:
+    """
+    A thin wrapper around an *integer* plus metadata:
+
+    * **nbits** — declared width (>= integer’s bit-length)
+    * **numbering** — MSB or LSB indexing convention
+    * **dtype** — optional DataType to which this value has been widened
+
+    The view can be mutated via ``integer`` assignment, ``__setitem__`` or
+    ``widen_to_dtype``; every such change invalidates the cached hash so the
+    object remains usable as a dict / set key.
+    """
+
+    # ---------------- core fields -------------------------------------
     integer: int = field(
         default=0,
         converter=int,
@@ -71,23 +87,41 @@ class BitStringView:
         validator=validators.instance_of(BitNumbering),
     )
 
-    dtype: Optional["DataType"] = field(
-        default=None,
+    dtype: Optional["DataType"] = field(default=None)
+
+    # ---------------- private cache -----------------------------------
+    _hash: Optional[int] = field(
+        init=False, default=None, repr=False, eq=False, hash=False
     )
 
+    # ------------------------------------------------------------------
+    # life-cycle hooks
+    # ------------------------------------------------------------------
     def __attrs_post_init__(self):
-        # initialize nbits if not provided
+        # initialise nbits
         if self.nbits is None:
             object.__setattr__(self, "nbits", self.integer.bit_length() or 1)
-        # enforce dtype if given
+
+        # enforce dtype width / validity
         if self.dtype is not None:
-            self.dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
-            object.__setattr__(self, "nbits", max(self.nbits, self.dtype.data_width))
+            self.dtype.assert_valid_classical_val(
+                self.integer, "BitStringView.integer"
+            )
+            object.__setattr__(
+                self, "nbits", max(self.nbits, self.dtype.data_width)
+            )
 
+    # ------------------------------------------------------------------
+    # utility helpers
+    # ------------------------------------------------------------------
+    def _invalidate_hash(self):
+        object.__setattr__(self, "_hash", None)
+
+    # ------------------------------------------------------------------
+    # string / list helpers
+    # ------------------------------------------------------------------
     def binary(self) -> str:
-        # bits = format(self.integer, f"0{self.nbits}b")
         masked = self.integer & ((1 << self.nbits) - 1)
-
         bits = format(masked, f"0{self.nbits}b")
         return bits[::-1] if self.numbering is BitNumbering.LSB else bits
 
@@ -96,30 +130,27 @@ class BitStringView:
 
     def array(self) -> list[int]:
         return self.bits()
-    
+
+    # ------------------------------------------------------------------
+    # constructors / factories
+    # ------------------------------------------------------------------
     @classmethod
     def from_int(
         cls,
-        integer: int,
+        integer: int | "BitStringView",
         *,
         nbits: Optional[int] = None,
         numbering: BitNumbering = BitNumbering.MSB,
         dtype: Optional["DataType"] = None,
     ) -> "BitStringView":
         if isinstance(integer, cls):
-            # preserve existing bits and dtype if not overridden
             return cls.from_bitstring(
                 other=integer,
                 nbits=nbits or integer.nbits,
                 numbering=numbering,
                 dtype=dtype or integer.dtype,
             )
-        return cls(
-            integer=integer,
-            nbits=nbits,
-            numbering=numbering,
-            dtype=dtype,
-        )
+        return cls(integer=integer, nbits=nbits, numbering=numbering, dtype=dtype)
 
     @classmethod
     def from_binary(
@@ -186,40 +217,19 @@ class BitStringView:
             dtype=dtype if dtype is not None else other.dtype,
         )
 
+    # convenience wrappers
     @classmethod
-    def msb(
-        cls,
-        integer: int | "BitStringView",
-        *,
-        nbits: Optional[int] = None,
-        dtype: Optional["DataType"] = None,
-    ) -> "BitStringView":
-        return cls.from_int(
-            integer=integer,
-            nbits=nbits,
-            numbering=BitNumbering.MSB,
-            dtype=dtype,
-        )
+    def msb(cls, integer, **kw):
+        return cls.from_int(integer, numbering=BitNumbering.MSB, **kw)
 
     @classmethod
-    def lsb(
-        cls,
-        integer: int | "BitStringView",
-        *,
-        nbits: Optional[int] = None,
-        dtype: Optional["DataType"] = None,
-    ) -> "BitStringView":
-        return cls.from_int(
-            integer=integer,
-            nbits=nbits,
-            numbering=BitNumbering.LSB,
-            dtype=dtype,
-        )
+    def lsb(cls, integer, **kw):
+        return cls.from_int(integer, numbering=BitNumbering.LSB, **kw)
+
+    # ------------------------------------------------------------------
+    # numbering / widening helpers
+    # ------------------------------------------------------------------
     def with_numbering(self, numbering: BitNumbering) -> "BitStringView":
-        """
-        Return a new BitStringView with the same integer, nbits and dtype
-        but a different bit-ordering.
-        """
         return type(self).from_bitstring(
             other=self,
             nbits=self.nbits,
@@ -227,13 +237,17 @@ class BitStringView:
             dtype=self.dtype,
         )
 
+    # **pure** widen helper (creates a new object)
+    def widen(self, dtype: "DataType") -> "BitStringView":
+        dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
+        return BitStringView.from_bitstring(
+            self,
+            nbits=max(self.nbits, dtype.data_width),
+            dtype=dtype,
+        )
 
+    # mutating version — kept for back-compat with test suite
     def widen_to_dtype(self, dtype: "DataType") -> "BitStringView":
-        """
-        Mutates object's (in-place) number of bits, sets dtype
-        We can add an optional pure widened() function which would leave the original untouched and
-        returns a fresh object. This would cause extra allocation & hashing though... TBD.
-        """
         dtype.assert_valid_classical_val(self.integer, "BitStringView.integer")
         width = dtype.data_width
         object.__setattr__(self, "nbits", max(self.nbits, width))
@@ -242,7 +256,42 @@ class BitStringView:
             object.__setattr__(self, "integer", self.integer & mask)
 
         object.__setattr__(self, "dtype", dtype)
+        self._invalidate_hash()
         return self
+
+    # ------------------------------------------------------------------
+    # dunder helpers
+    # ------------------------------------------------------------------
+    def __len__(self) -> int:
+        return self.nbits
+
+    def __int__(self) -> int:
+        return self.integer
+
+    # indexing with explicit bounds check
+    def __getitem__(self, idx):
+        if isinstance(idx, int) and not 0 <= idx < self.nbits:
+            raise IndexError(f"bit index {idx} out of range for {self.nbits}-bit view")
+        return self.array()[idx]
+
+    def __setitem__(self, idx, value):
+        if isinstance(idx, int) and not 0 <= idx < self.nbits:
+            raise IndexError(f"bit index {idx} out of range for {self.nbits}-bit view")
+        buf = self.array()
+        buf[idx] = int(bool(value))
+        new_bits = buf if self.numbering is BitNumbering.MSB else buf[::-1]
+        object.__setattr__(self, "integer", int("".join(map(str, new_bits)), 2))
+        self._invalidate_hash()
+        return self
+
+    def __add__(self, other: "BitStringView") -> "BitStringView":
+        if not isinstance(other, BitStringView):
+            raise TypeError(f"Cannot add {type(other)} to BitStringView")
+        return BitStringView.from_int(
+            integer=self.integer + other.integer,
+            nbits=max(self.nbits, other.nbits),
+            numbering=self.numbering,
+        )
 
     def __eq__(self, other) -> bool:
         if isinstance(other, BitStringView):
@@ -262,39 +311,21 @@ class BitStringView:
         return NotImplemented
 
     def __hash__(self) -> int:
-        return hash((self.integer, self.nbits, self.numbering))
+        if self._hash is None:
+            object.__setattr__(
+                self, "_hash", hash((self.integer, self.nbits, self.numbering))
+            )
+        return self._hash
 
-    def __add__(
-        self,
-        other: "BitStringView",
-    ) -> "BitStringView":
-        if not isinstance(other, BitStringView):
-            raise TypeError(f"Cannot add {type(other)} to BitStringView")
-        return BitStringView.from_int(
-            integer=self.integer + other.integer,
-            nbits=max(self.nbits, other.nbits),
-            numbering=self.numbering,
-        )
-
-    def __len__(self) -> int:
-        return self.nbits
-
-    def __int__(self) -> int:
-        return self.integer
-    def __getitem__(self, idx):
-        return self.array()[idx]
-    def __setitem__(self, idx, value):
-        buf        = self.array()
-        buf[idx]   = int(bool(value))
-        new_bits   = buf if self.numbering is BitNumbering.MSB else buf[::-1]
-        object.__setattr__(self, "integer", int("".join(map(str, new_bits)), 2))
-        return self
-
+    # ------------------------------------------------------------------
+    # debug helper
+    # ------------------------------------------------------------------
     def info(self) -> str:
         return (
             f"BitStringView({self.integer}, "
             f"nbits={self.nbits}, order={self.numbering.name})"
         )
+
 
 SymbolicFloat = Union[float, sympy.Expr]
 """A floating point value or a sympy expression."""

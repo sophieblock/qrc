@@ -30,7 +30,7 @@ from .utilities import (
 
 
 import datetime
-from ...util.log import get_logger
+from ..util.log import get_logger,logging
 logger = get_logger(__name__)
 
 
@@ -203,6 +203,7 @@ class Node:
         self.model: Process = process_model
         self.process: Process = process_model(**kwargs) if self.model != None else None
         self.network_type: str = network_type
+        # self.network_type: str = network_type or Node.NETWORK
         self.input_edges: List[DirectedEdge] = input_edges or []
         self.output_edges: List[DirectedEdge] = output_edges or []
         self.output_nodes: List[Node] = output_nodes or []

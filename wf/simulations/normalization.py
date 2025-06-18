@@ -12,7 +12,7 @@ from .utilities import all_dict1_vals_in_dict2_vals
 
 
 from .utilities import InitError
-from ...assert_checks import gen_mismatch_dict
+from ..assert_checks import gen_mismatch_dict
 from torch.fx.operator_schemas import (
       
         OpOverload,
@@ -20,10 +20,10 @@ from torch.fx.operator_schemas import (
         type_matches,
         _args_kwargs_to_normalized_args_kwargs
     )
-from ...util.log import logging
-logger = logging.getLogger(__name__)
+from ..util.log import get_logger,logging
+logger = get_logger(__name__)
 
-# from workflow.simulation.refactor.process import Process
+# from qrew.simulation.process import Process
 
 def build_inspect_signature_from_process_signature(signature: "Signature") -> inspect.Signature:
     """
