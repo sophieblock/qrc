@@ -18,13 +18,6 @@ Every concrete dtype (classical *or* quantum) derives from `DataType`. Think of 
   - `is_symbolic()` / `iteration_length_or_zero()`
   - `__str__` and `__format__` delegate to the class name + width
 
-
-
-#### Hooks
-
-> `_post_setattr` and `validate_dtype` keep `nbits` in sync whenever you assign to `integer` or `dtype`.
-
-
 ---
 
 ## Quantum Data Types (`QType`)
@@ -246,9 +239,35 @@ and ordering, and they give every classical `DataType` a convenient
 | `MSB` (big-endian) | **13** | `1101` | `[1, 1, 0, 1]` |
 | `LSB` (little-endian) | **13** | `1011` | `[1, 0, 1, 1]` |
 
-*With `MSB` the left-most character is **bit 0** (most significant);  
-with `LSB` the **right-most** character is bit 0, so the string is reversed.*
+*With `MSB` the left-most character is **bit 0** (most significant):*
+```python
+BitStringView.msb(0xA5, nbits=10).array()
+````
+out:
+<pre style="
+  background:#f4f4f4;          /* light-grey terminal look  */
+  color:#3a3a3a;               /* darker text               */
+  font-family:'Fira Code', monospace;
+  font-size:0.9rem;
+  line-height:1.5;
+">
+[0, 0, 1, 0, 1, 0, 0, 1, 0, 1]
+</pre>
 
+*With `LSB` the **right-most** character is bit 0, so the string is reversed:*
+```python
+BitStringView.lsb(0xA5, nbits=10).array()
+````
+out:
+<pre style="
+  background:#f4f4f4;          /* light-grey terminal look  */
+  color:#3a3a3a;               /* darker text               */
+  font-family:'Fira Code', monospace;
+  font-size:0.9rem;
+  line-height:1.5;
+">
+[1, 0, 1, 0, 0, 1, 0, 1, 0, 0]
+</pre>
 
 ### class `BitStringView`
 
@@ -276,6 +295,95 @@ A tiny, immutable wrapper around:
 
 **Magic**: `__int__`, `__len__`, `__add__`, `__eq__`, `__hash__`, `__repr__`: Make it behave like an `int` that still “remembers” its width & order
 
+
+##### <b>Worked Example – tracking value/view/mutation </b>
+
+```python
+bitstring_MSB = BitStringView.msb(0b1001_0011, nbits=8) # 0x93
+print(f"MSB int {int(bitstring_MSB)} | nbits: {bitstring_MSB.nbits} -> view: {bitstring_MSB.binary()}")
+
+bitstring_LSB = bitstring_MSB.with_numbering(BitNumbering.LSB)
+print(f"LSB int {int(bitstring_LSB)} | nbits: {bitstring_LSB.nbits} -> view: {bitstring_LSB.binary()}")
+```
+<pre style="background:#f4f4f4;color:#3a3a3a;font-family:'Fira Code',monospace;font-size:0.9rem;line-height:1.5;">MSB int 147 | nbits: 8 -> view: 10010011
+LSB int 147 | nbits: 8 -> view: 11001001</pre>
+
+Let the view-width be defined as $w=8$ and the payload be defined as $x=0b10010011$ ($147$ in decimal). 
+
+For a bit-index $i \in \{0,\dots,w-1\}$,
+$$
+w_{\text{MSB}}(i) \;=\; 2^{\,w-1-i},
+\qquad
+w_{\text{LSB}}(i) \;=\; 2^{\,i}
+$$
+hense
+but each view orders the bits differently:
+* **MSB view** — bit index 0 is the *most-significant* bit: $\text{bit}[0] \;=\; 2^{\,w-1}$ (weight $2^{7}$)
+* **LSB view** — bit index 0 is the *least-significant* bit: $\text{bit}[0] \;=\; 2^{\,0}$  (weight $2^{0}$)
+
+The stored integer is the same:
+
+```python
+int(bitstring_MSB) == int(bitstring_LSB) == 0x93
+```
+<pre style="background:#f4f4f4;color:#3a3a3a;font-family:'Fira Code',monospace;font-size:0.9rem;line-height:1.5;">True</pre>
+
+
+```text
+True
+```
+
+Next, we show how you can **widen to a concrete dtype & patch a single bit**. This is a design step common in RTL and ISA work where one has an 8-bit literal but needs it to live in a 12-bit signed register. 
+```python
+bitstring_MSB.widen_to_dtype(CInt(12)) # pad to 12 bits
+```
+
+<pre style="background:#f4f4f4;color:#3a3a3a;font-family:'Fira Code',monospace;font-size:0.9rem;line-height:1.5;">new binary:             000010010011
+ -> nbits:              12
+ -> int(bitstring_MSB): 147</pre>
+
+*The operation guarantees ($0 \le x < 2^{12}$).
+Formally, the new width (w') is
+$$
+w' = \max\bigl(w,\;\texttt{dtype.data\_width}\bigr) = 12
+$$
+
+
+We then overwrite a single physical bit inside the 12-bit field in **MSB numbering**:
+```python
+bitstring_MSB[7] = 0
+```
+<pre style="background:#f4f4f4;color:#3a3a3a;font-family:'Fira Code',monospace;font-size:0.9rem;line-height:1.5;">new binary:             000010000011
+ -> nbits:              12
+ -> int(bitstring_MSB): 131</pre>
+Mathematically:
+$$
+\begin{align*}
+x_{\text{new}} &= x_{\text{old}} - 2^{\,w' - 1 - 7} \\
+               &= 147 - 2^{4}        \\
+               &= 131
+\end{align*}
+$$
+
+Why this matters
+*	**View abstraction** — you can pass the same integer through subsystems that disagree on endianness without data loss.
+*	**Widen-&-mask** — mirrors the hardware step of bringing an 8-bit literal into a 12-bit ALU register while preventing sign-extension bugs.
+*	**Targeted bit-patch** — models register-level control where you toggle status or flag bits:
+setting $\text{bit}[k] := b$ performs
+$$
+x_{\text{new}}
+=
+\begin{cases}
+  x \;\lor\; 2^{p}, & \text{if } b = 1,\\[6pt]
+  x \;\land\; \bigl((2^{w'} - 1) - 2^{p}\bigr), & \text{if } b = 0.
+\end{cases}
+$$
+where $p = w’ - 1 - k$ for MSB numbering (or $p = k$ for LSB).
+
+These operations illustrate how BitStringView enforces width and ordering contracts while still behaving like a normal integer when needed.
+
+
+---
 
 `BitStringView` is a **presentation/transport** layer:  
 it can wrap *any* integer—typed or not—without pulling in the whole
