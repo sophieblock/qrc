@@ -1,1 +1,205 @@
 
+\documentclass{article}
+\usepackage[top=1in,bottom=1in,left=1in,right=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{fancyhdr}
+%\newcommand{\matr}[1]{\mathsf{{#1}}}
+\newcommand{\matr}[1]{{#1}}
+\newcommand{\aset}[1]{{{{#1}}}}       % could use \mathsf, \mathbbm, \mathcal...
+\newcommand{\avector}[1]{{{{#1}}}}  % could use \mathsf, \mathbbm, \mathcal, \vec...
+\newcommand{\reals}{\mathds{R}}
+\newcommand{\realp}{\mathds{R}^{+}}
+\newcommand{\intsp}{\mathds{Z}^{+}}
+\pagestyle{fancy}
+\cfoot{\textbf{BOEING PROPRIETARY}}
+\title{\textbf{Workflow Tool: Unified MIO Formulation for a Hybrid Quantum-Classical Workflow Tool}}
+\author{Sophie Block\\Quantum Applications, DC\&N, Boeing Research \& Technology}
+% \date{\today}
+\renewcommand{\rmdefault}{\sfdefault}
+\newtheorem{note}{Note}
+%\setlength{\headrulewidth{0in}} % This should remove the underline on the header.
+% See more here for headers/footers: http://kb.mit.edu/confluence/pages/viewpage.action?pageId=3907278
+\begin{document}
+\maketitle
+\sloppy
+
+\section{Overview}
+
+\noindent In this document, we present a unified set of mathematical formulations designed to capture both classical and quantum resource usage in a single workflow optimization model. Building upon prior work in quantum resource estimation, we incorporate the complexities of near-term (NISQ) and future fault-tolerant (FTQC) hardware, and highlight how classical HPC metrics (run-time, memory usage, parallel overhead) can be integrated with quantum performance metrics (gate fidelity, decoherence time, success probability). The overarching goal is to enable a single, coherent view of resource planning and schedule optimization for hybrid workflows.
+\section{Modeling Hybrid Tasks and Resources}
+We adopt the notation $\aset{P} = \{ P_1, \dots, P_{N_P}\}$ for the entire set of tasks, distinguishing quantum tasks by a superscript $(q)$ and classical tasks by $(c)$ when needed. For instance, $P_i^{(q)}$ refers to the $i$th quantum task, while $P_j^{(c)}$ refers to the $j$th classical task.
+
+
+These tasks form a Directed Acyclic Graph (DAG) of computations, with edges representing data dependencies. Some tasks are purely classical, some purely quantum, and some may be hybrid. Additionally, we assume a strong notion of typed data:
+\begin{itemize}
+  \item \textbf{Quantum data types:} e.g., \texttt{QBit}, \texttt{QInt}, \texttt{QUInt}, \texttt{QFxp}.
+  \item \textbf{Classical data types:} e.g., \texttt{CBit}, \texttt{CInt}, \texttt{CUInt}, \texttt{CFixed}, \texttt{CFloat}.
+\end{itemize}
+By explicitly encoding these data types, we track resource usage: a large classical array of \texttt{CInt(32)} might consume $(32\,\text{bits}) \times (\#\,\text{elements})$ in memory, while a quantum register \texttt{QInt(5)} uses 5 qubits. This typed approach underpins the resource modeling of HPC tasks (handling \texttt{C\_types}) and quantum tasks (using \texttt{Q\_types}).
+
+
+\subsection{Classical HPC Resource Model}
+Let \(\mathcal{P}^{\mathrm{C}} = \{P_1^{(c)}, \dots, P_{N_c}^{(c)}\}\) be the set of classical tasks. Each task \(P_k^{(c)}\) may require specific quantities of CPU cores, memory, or GPUs over time. We define a set of machines \(\aset{M} = \{M_1,\ldots,M_{N_M}\}\), each with resource capacity:
+\[
+(H_{m1}, H_{m2},\dots,H_{mR})\quad
+\text{for resource types } r = 1,\dots,R.
+\]
+For instance, \(H_{m,\mathrm{CPU}}\) could be the maximum number of CPU cores on machine \(M_m\), and \(H_{m,\mathrm{mem}}\) the available memory.
+
+
+\subsubsection{Discrete Time Steps and Scheduling Variables}
+We represent time in discrete steps \(i = 1,\dots,N_T\). Each step may be a fixed quantum of wall-clock time (e.g.\ \(\texttt{time\_step\_size} = 1 \text{ second}\)). We define binary scheduling variables:
+\[
+Z_{ikm} \;\in\; \{0,1\},
+\]
+where \(Z_{ikm} = 1\) if and only if task \(P_k\) is running on machine \(m\) at time step \(i\). Whenever \(Z_{ikm} = 1\), that task’s resource usage counts against the machine \(M_m\)’s capacity for that time step.
+
+\subsubsection{DAG Dependencies and Data Footprints}
+Classical tasks often form part of a Directed Acyclic Graph (DAG). If \((P_i^{(c)} \to P_j^{(c)})\) is an edge, it indicates that \(P_j^{(c)}\) depends on the outputs of \(P_i^{(c)}\). Each task also has an associated run-time and data footprint:
+\begin{itemize}
+  \item \(\textbf{Run-time:}\) \(T_{\mathrm{CPU}}(P_k^{(c)})\) for CPU execution or \(T_{\mathrm{GPU}}(P_k^{(c)})\) if accelerated on a GPU.
+  \item \(\textbf{Memory usage:}\) \(M_{\mathrm{mem}}(P_k^{(c)})\). For instance, if \(P_k^{(c)}\) processes an array of \texttt{CInt(32)} of size \(N_{el}\), the memory usage is \(32 \times N_{el}\) bits.
+\end{itemize}
+
+\subsubsection{HPC Resource Usage}
+For classical task set \(\mathcal{P^{\mathrm{C}}}\) in a given workflow, each task has runtime $T_{\mathrm{CPU}}(P^{(c)}_i)$ (or $T_{\mathrm{GPU}}(P^{(c)}_i)$ if specialized accelerators are used). Tasks that run in parallel are subject to resource constraints:
+\begin{equation}\label{eq:Tclassical}
+T_{\mathrm{HPC}}(\mathcal{P^{\mathrm{C}}}) = \max_{P^{(c)}_i \in \mathcal{P^{\mathrm{C}}}} \bigl(T_{\mathrm{CPU}}(P^{(c)}_i)\bigr)\quad (\text{if parallelizable}),
+\end{equation}
+Alternatively, if tasks must run one after another, we sum their runtimes. Additional overhead \(\kappa_{\mathrm{comm}}\) accounts for data transfers between HPC nodes or between classical resources and quantum devices. The total synchronization time might include:
+\[
+T_{\mathrm{sync}} \;=\; T_{\mathrm{comm}} \;+\; T_{\mathrm{prepare}} \;+\; T_{\mathrm{postprocess}},
+\]
+depending on the particular workflow. Classicaltasks might hold classical data in forms such as \texttt{CInt(32)}, \texttt{CFixed(16,8)}, or multi-dimensional arrays (\texttt{ArrayType} or \texttt{TensorType}), each with a well-defined bit usage and layout.
+\subsubsection{Classical Scheduling Constraints and Objectives}
+A common objective in classical HPC scheduling is to minimize the \emph{makespan} (the total time until all tasks finish) or to minimize some cost function (e.g.\ CPU-hours or energy usage). Typical constraints include:
+
+\begin{enumerate}
+\item \textbf{Resource capacity:} For each time step \(i\), machine \(m\), and resource type \(r\),
+\[
+\sum_{k=1}^{N_P} Q_{kr} \cdot Z_{ikm} \;\;\le\;\; H_{mr}.
+\]
+\item \textbf{Task continuity:} If a task \(P_k\) needs \(D_k\) time steps, these must be consecutive on the same machine (unless migration is allowed).
+\item \textbf{DAG dependencies:} A task \(P_j\) can only start once all its prerequisite tasks have finished: \(\mathrm{end\_time}(P_i) \le \mathrm{start\_time}(P_j)\) for each edge \((P_i \to P_j)\).
+\item \textbf{Single assignment:} At most one machine can run \(P_k\) at a given time: \(\sum_{m'} Z_{ikm'} \le 1\) for each \(i\).
+\end{enumerate}
+
+\subsection{Quantum Resource Model}
+For quantum tasks $\{P_1^{(q)}, \dots, P_{N_q}^{(q)}\}$, we assume each task is a quantum circuit that requires a certain number of qubits, gate operations, and has an associated success probability. We define:
+\begin{itemize}
+  \item $N_{q}^{(k)}$: number of qubits (physical or logical) for the circuit in task $P_k^{(q)}$.
+  \item $N_{1Q}^{(k)}, N_{2Q}^{(k)}$: total counts of single- and two-qubit gates.
+  \item $T_{1Q}^{(k)}, T_{2Q}^{(k)}$: time per single- or two-qubit gate.
+  \item $p_{1Q}^{(k)}, p_{2Q}^{(k)}, p_{M}^{(k)}$: (lowercase) error probabilities for single-/two-qubit gates and measurement, respectively. The success probabilities are $1 - p_{1Q}^{(k)}$, etc.
+  \item $\tau_1^{(k)}, \tau_2^{(k)}$: characteristic relaxation and dephasing times.
+  \item $Z_k$: number of repeated circuit executions (e.g., sampling-based runs).
+\end{itemize}
+
+\subsubsection{Quantum Circuit Time and Success Probability}
+The total execution time for $P_k^{(q)}$ (one run) can be approximated as:
+\begin{equation}
+T_k = N_{1Q}^{(k)} \, T_{1Q}^{(k)} \;\;+\;\; N_{2Q}^{(k)} \, T_{2Q}^{(k)}.
+\end{equation}
+Decoherence can be modeled with exponential factors:
+\begin{equation}
+S_{\tau_1}=\exp\!\bigl(-T_k \,/\, \tau_1^{(k)}\bigr)
+\quad\text{and}\quad
+S_{\tau_2}=\exp\!\bigl(-T_k \,/\, \tau_2^{(k)}\bigr),
+\end{equation}
+and the success probability for one circuit run is:
+\begin{equation}
+\label{eq:quantum_succ}
+S_{\mathrm{tot}}^{(k)} \;=\; 
+(1 - p_{1Q}^{(k)})^{N_{1Q}^{(k)}} 
+\,\bigl(1 - p_{2Q}^{(k)}\bigr)^{N_{2Q}^{(k)}} 
+\,\bigl(1 - p_{M}^{(k)}\bigr)^{N_{q}^{(k)}}
+\, \exp\!\Bigl(-\tfrac{T_k}{\tau_1^{(k)}}\Bigr)
+\, \exp\!\Bigl(-\tfrac{T_k}{\tau_2^{(k)}}\Bigr).
+\end{equation}
+If $Z_k$ (e.g., sampling-based or iterative algorithms), one might approximate the overall probability of completing all runs successfully as $(S_{\mathrm{tot}}^{(k)})^{Z_k}$. In practice, advanced error-correction and fault-tolerant (FT) methods significantly alter how $N_{q}, P_{1Q}, P_{2Q}, T_{1Q}, T_{2Q}$ scale. But these equations provide a first-order model of success probability in NISQ or partially error-corrected scenarios.
+
+\subsubsection{Quantum Scheduling in Discrete Steps}
+Similar to classical tasks, we consider discrete time slots $i = 1,\dots,N_T$. A quantum device is modeled as another machine $M_{q}$ with specialized resource capacity $H_{q,\mathrm{qubits}}$. The scheduling variable $Z_{ikm}$ remains the same: $Z_{ikm} = 1$ if quantum task $k$ is assigned to machine $m$ at time $i$. For quantum tasks:
+\begin{itemize}
+  \item $Q_{k,\mathrm{qubits}} = N_{q}^{(k)}$ is the qubit resource usage.
+  \item $T_k$ steps are needed (or $\lceil T_k / \Delta t \rceil$ if $\Delta t$ is the length of each discrete time step).
+  \item The same dependency constraints apply if the quantum task depends on classical outputs or another quantum task's output.
+\end{itemize}
+
+\subsection{Unified Formulation for Hybrid Scheduling}
+We now unify classical and quantum tasks under a single scheduling framework. Let $\aset{P} = \{ P_1, \dots, P_{N_P}\}$ be the entire set of tasks, where each $P_i$ is either classical $(c)$ or quantum $(q)$. We consider discrete time slots $i = 1,\dots,N_T$ and machines $M_m$ with resource capacities.
+
+\subsubsection{Resource Constraints}
+The resource constraints can be written as:
+\begin{equation}
+\sum_{P_k \text{ assigned to } m} Q_{kr} \cdot Z_{ikm} \le H_{mr}, \quad \forall i,m,r,
+\end{equation}
+or:
+\begin{equation}
+\sum_{k=1}^{N_P}\; Q_{kr} \;\; Z_{ikm} \;\;\le\;\; H_{mr},
+\quad \forall\, i,\,m,\,r,
+\end{equation}
+where $Q_{kr}$ is the resource usage of task $P_k$ in dimension $r$ (e.g., CPU cores for classical tasks, qubits for quantum tasks), and $Z_{ikm} \in \{0,1\}$ indicates if $P_k$ is running on machine $m$ at time $i$. 
+
+\subsubsection{DAG and Scheduling Constraints}
+Beyond resource constraints, we include:
+\begin{itemize}
+  \item \textbf{DAG dependency:} If $(P_i \to P_j)$ is in the DAG, then $\mathrm{end\_time}(P_i) \le \mathrm{start\_time}(P_j)$.
+  \item \textbf{Task duration:} If $P_k$ requires $D_k$ discrete time steps to complete, then $\sum_{i=1}^{N_T}\sum_{m=1}^{N_M} Z_{ikm} = D_k$ (assuming no migration or partial parallelization).
+  \item \textbf{Single assignment:} For each time step $i$ and task $k$, $\sum_{m=1}^{N_M} Z_{ikm} \le 1$ to prevent $P_k$ from running on multiple machines simultaneously.
+\end{itemize}
+
+\subsubsection{Makespan and Workflow Completion Time}
+Define the makespan $T_{\mathrm{makespan}}$ as the final time step in which any task is still executing:
+\[
+T_{\mathrm{makespan}} = \max_{k}\; \bigl(\mathrm{end\_time}(P_k)\bigr).
+\]
+In a discrete setting, we can compute $\mathrm{end\_time}(P_k)$ from the largest $i$ such that $Z_{ikm}=1$ for some $m$.
+
+\subsubsection{Workflow Success Probability}
+Quantum tasks have success probability $S_{\mathrm{tot}}^{(k)}$ as in Equation~\eqref{eq:quantum_succ}. We define the overall workflow success probability:
+\begin{equation}
+p_{\mathrm{workflow}} \;=\; 
+\prod_{k \,\in\, \{q\text{-tasks}\}}\;
+\bigl(S_{\mathrm{tot}}^{(k)}\bigr)^{\,Z_k},
+\end{equation}
+where $Z_k$ denotes how many times the quantum task runs in total (or how many distinct “subtasks” it represents). For a single-run scenario, $Z_k = 1$ if the task is used; for repeated-sample tasks, $Z_k$ might be the number of required executions.
+
+In practice, classical tasks are assumed to succeed deterministically in this simplified model. One can easily extend the formulation to incorporate classical task error probabilities if desired.
+
+\subsubsection{Objective Functions}
+We consider a variety of possible objectives:
+
+\paragraph{(1) Minimize Makespan (Time) Subject to Probability Constraints}
+\[
+\begin{aligned}
+&\text{Minimize:} \quad T_{\mathrm{makespan}} \\
+&\text{Subject to:} \quad p_{\mathrm{workflow}} \;\;\ge\;\; p_{\mathrm{min}},\\
+&\qquad\qquad \text{Resource and DAG constraints above.}
+\end{aligned}
+\]
+
+\paragraph{(2) Weighted Cost Function}
+\begin{equation}
+\label{eq:weighted_obj}
+\mathcal{C}(\sigma) \;=\; \alpha \cdot T_{\mathrm{makespan}}(\sigma)
+\;\;-\;\;\beta \cdot \ln\bigl(p_{\mathrm{workflow}}(\sigma)\bigr)
+\;\;+\;\;\gamma \cdot R_{\mathrm{HPC}}(\sigma),
+\end{equation}
+where $\sigma$ is a scheduling solution (an assignment of tasks to machines over time), $R_{\mathrm{HPC}}(\sigma)$ might measure total CPU-hours or memory cost, and $\alpha, \beta, \gamma$ are constants. 
+\begin{itemize}
+  \item Minimizing $T_{\mathrm{makespan}}$ keeps total runtime small.
+  \item $-\ln\bigl(p_{\mathrm{workflow}}(\sigma)\bigr)$ penalizes solutions with lower quantum success probability.
+  \item $R_{\mathrm{HPC}}(\sigma)$ can model classical resource cost (e.g., power usage or cloud pricing).
+\end{itemize}
+By adjusting $\alpha, \beta, \gamma$, one can emphasize different trade-offs among time, success probability, and HPC usage.
+
+
+\section{Remarks}
+
+We introduce explicit data types for both quantum, we can track bit usage in HPC nodes and qubit usage in quantum nodes under a uniform model. This typed approach will enable more precise cost models and scheduling constraints, since each data item has a known width (bits/qubits) and can be bound to a hardware resource.
+
+Future work includes refining success probability models to account for correlated errors, measurement-based gating, or continuous-variable encodings, as well as more detailed HPC cost models for multi-GPU or distributed memory. Ultimately, end-to-end optimization frameworks will be essential in systematically evaluating whether and how quantum acceleration provides tangible advantage.
+
+\end{document}
