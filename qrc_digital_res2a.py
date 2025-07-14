@@ -148,6 +148,7 @@ def grad_group_dict(case_num: int,
     for t in range(T):
         out[f"slice_{t}"] = grads_flat[elem_mask(t, M)]
     return out
+
 def coef_variation_by_block(case_num, grads_flat,T, N_ctrl, N_reserv):
     """Return {block: CV} with block ∈ {"t","h","J"} or {"h","slice_0",…}."""
     blocks = grad_group_dict(case_num, grads_flat, T,N_ctrl, N_reserv)
@@ -163,6 +164,108 @@ def array(a,dtype):
     return np.asarray(a, dtype=np.float32)
 def Array(a,dtype):
     return np.asarray(a, dtype=np.float32)
+# ----------------------------------------------------------------------
+#  moment logging  (digital version of log_moments from analog script)
+# ----------------------------------------------------------------------
+from optax._src.transform import ScaleByAdamState          # Adam state class
+try:                                                       # optax ≥ 0.1.6
+    from optax._src.masking import MaskedNode
+except ImportError:                                        # optax < 0.1.6
+    from optax.transforms._masking import MaskedNode
+
+
+def _pytree_l2(tree):
+    """ℓ₂‑norm of all numeric leaves in a PyTree (ignores MaskedNode)."""
+    sq_sum = 0.0
+    for leaf in jax.tree_util.tree_leaves(tree):
+        if isinstance(leaf, MaskedNode):
+            continue
+        if jnp.isscalar(leaf):
+            sq_sum += float(leaf)**2
+        else:
+            sq_sum += float(jnp.sum(jnp.square(leaf)))
+    return float(jnp.sqrt(sq_sum))
+
+
+def _find_adam_state(state):
+    """
+    Depth‑first search for the first optax.ScaleByAdamState in *any*
+    nested optimiser state (handles masked / multi‑transform wrappers).
+    """
+    if isinstance(state, ScaleByAdamState):
+        return state
+    if isinstance(state, tuple):
+        for s in state:                            # recurse into tuples
+            found = _find_adam_state(s)
+            if found is not None:
+                return found
+    if hasattr(state, "inner_state"):              # MaskedState wrapper
+        return _find_adam_state(state.inner_state)
+    return None
+
+
+def log_moments(opt_state,
+                case_num: int,
+                *,
+                trotter_steps: int | None = None,
+                N_ctrl: int | None = None,
+                N_reserv: int | None = None):
+    """
+    Return block‑wise (‖m‖₂, ‖v‖₂) **Adam moments** at the current step.
+
+    Parameters
+    ----------
+    opt_state     : the optimiser state produced by optax
+    case_num      : 0 = plain Adam, 1 = masked h/J Adam
+    trotter_steps : reserved for a future slice‑wise scheme (ignored here)
+    N_ctrl,…      : same – included only so the signature matches the analog helper
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Mapping ``block_name -> (||m||₂, ||v||₂)``.
+    """
+    # ------------------------------------------------------------
+    # case 0  → one global Adam branch (clip_state, adam_state)
+    # ------------------------------------------------------------
+    if case_num == 0:
+        adam = _find_adam_state(opt_state)
+        if adam is None:
+            raise RuntimeError("No Adam moments found in opt_state (case 0).")
+        return {"all": (_pytree_l2(adam.mu), _pytree_l2(adam.nu))}
+
+    # ------------------------------------------------------------
+    # case 1  → (clip_state, masked_h_state, masked_J_state)
+    # ------------------------------------------------------------
+    if case_num == 1:
+        try:
+            _, h_state, J_state = opt_state
+        except ValueError as exc:                  # wrong tuple length
+            raise RuntimeError(
+                "Unexpected opt_state structure for case 1 "
+                "(expected 3‑tuple: clip, h, J)."
+            ) from exc
+
+        def _mom(branch):
+            adam = _find_adam_state(branch)
+            m, v = adam.mu, adam.nu
+            return _pytree_l2(m), _pytree_l2(v)
+
+        return {"h": _mom(h_state), "J": _mom(J_state)}
+
+    # ------------------------------------------------------------
+    # generic fallback – iterate over every branch we can find
+    # ------------------------------------------------------------
+    moments = {}
+    for idx, branch in enumerate(opt_state):
+        adam = _find_adam_state(branch)
+        if adam is None:
+            continue
+        moments[f"block_{idx}"] = (_pytree_l2(adam.mu), _pytree_l2(adam.nu))
+
+    if not moments:
+        raise RuntimeError("No Adam moments found in opt_state.")
+    return moments
 
 def quantum_fun(gate, input_state, qubits):
     '''
@@ -823,11 +926,6 @@ def run_experiment(params,
         
         grads_pytree = grad_group_dict(case_num, grads_flat,T=trotter_steps,N_ctrl=N_ctrl, N_reserv=N_reserv)
        
-        # grads_pytree = {
-               
-        #         "h": grads_flat[mask_h],
-        #         "J": grads_flat[mask_J]
-        #     }
         grad_for_opt = grads_flat if case_num == 0 else grads_pytree
         updates, new_opt_state = opt.update(
             grad_for_opt, 
@@ -869,7 +967,7 @@ def run_experiment(params,
     learning_rates = []
     # print(f"params: {type(params)}, {params.dtype}")
     num_reductions = 0
-    cv_B_per_epoch = {}
+    cv_B_per_epoch,mom_per_epoch = {},{}
     s = time.time()
     new_scale = 1.0
     while epoch  < num_epochs or improvement:
@@ -886,7 +984,11 @@ def run_experiment(params,
         cv_B = coef_variation_by_block(case_num, grads_flat,
                             trotter_steps, N_ctrl, N_reserv)
         cv_B_per_epoch[epoch] = cv_B
-       
+        mom = log_moments(opt_state, case_num,
+                      trotter_steps=trotter_steps,
+                      N_ctrl=n_ctrl_qubits,
+                      N_reserv=n_rsv_qubits)
+        mom_per_epoch[epoch] = mom
        
      
         if epoch > 1:
@@ -921,15 +1023,22 @@ def run_experiment(params,
             max_grad = max(jnp.abs(grad))
             e = time.time()
             epoch_time = e - s
+            cv_str = ", ".join(f"{k}: {v:.2f}" for k, v in cv_B.items())
             
-            if cost < 1e-4:
-                print(f'Epoch {epoch + 1} --- cost: {cost:.7e}, '
+            mom_str = ", ".join(
+                f"{k}: ({m_val:.2e}, {v_val:.2e})"
+                for k, (m_val, v_val) in mom.items()
+            )
+            if cost < 1e-3:
+                print(f'Epoch {epoch + 1} --- cost: {cost:.4e}, '
                 f'CV_B: {{{cv_str}}}, '
+                f'‖m‖,‖v‖ per block: {mom_str}, '
                 f'[t: {epoch_time:.1f}s]')
             
             else:
-                print(f'Epoch {epoch + 1} --- cost: {cost:.5f}, '
+                print(f'Epoch {epoch + 1} --- cost: {cost:.4f}, '
                     f'CV_B: {{{cv_str}}}, '
+                    f'‖m‖,‖v‖ per block: {mom_str}, '
                     f'[t: {epoch_time:.1f}s]')
                 
             s = time.time()
@@ -1036,13 +1145,15 @@ def run_experiment(params,
         'opt_description': opt_descr,
         'epochs': num_epochs,
         'selected_indices': selected_indices,
-        'lrs': learning_rates,
+        
         'scales_per_epoch': scales_per_epoch,  # Add scales per epoch
         'scale_reduction_epochs': scale_reduction_epochs,  # Add epochs of scale reduction
         'init_params': init_params,
         'preopt_results': preopt_results,
         'grads_per_epoch': grads_per_epoch,
         'opt_lr': opt_lr,
+        'cv_B_per_epoch':cv_B_per_epoch,
+        'mom_per_epoch':mom_per_epoch,
         'trotter_step': trotter_steps,
         'controls': n_ctrl_qubits,
         'reservoirs': n_rsv_qubits,
@@ -1098,7 +1209,7 @@ if __name__=='__main__':
         trots = [25,28,30,32,35,38,40,45]
         res = [1]
 
-    trots = [2,5]
+    trots = [1,2]
     res = [1]
     rsv_qubits_list = res
     trotter_step_list = trots
@@ -1123,8 +1234,8 @@ if __name__=='__main__':
     baths = [False]
     num_baths = [0]
     training_size = 20
-    case_num = 0 # "per-param Adam"
-    # case_num = 1 # "masked per group adam"
+    # case_num = 0 # "per-param Adam"
+    case_num = 1 # "masked per group adam"
 
     patience= 5
     accum_size = 5
