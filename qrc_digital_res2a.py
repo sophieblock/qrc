@@ -39,6 +39,8 @@ from optax.contrib import reduce_on_plateau
 from optax._src import base as optax_base
 from reduce_on_plateau import reduce_on_plateau
 from typing import NamedTuple
+# JAX pytree flattening
+from jax.flatten_util import ravel_pytree
 
 #os.environ['OPENBLAS_NUM_THREADS'] = '1'
 has_jax = True
@@ -633,15 +635,10 @@ def get_optimizer(
             return base_optimizer.update(updates, state, params=params, **kwargs)
 
         return optax_base.GradientTransformationExtraArgs(init_fn, update_fn)
-    def make_chain(component):
-        masks = {"t": [True, False, False],
-                 "h": [False, True, False],
-                 "J": [False, False, True]}[component]
-        return lambda gt: optax.masked(gt, dict(zip("thJ", masks)))
-
+    
     if case == 1:
         desc = 'masked per group adam'
-
+        
         base_opt = optax.chain(
             optax.clip_by_global_norm(1.0),
 
@@ -649,6 +646,7 @@ def get_optimizer(
             optax.masked(optax.adam(opt_lr["J"],b1=b1,b2=b2,eps=eps), mask={"h": False, "J": True})
         )
         return desc, wrap(base_opt, passes_value=False, passes_step=False)
+   
 
     elif case == 2:
         desc = "masked per group adam & ReduceLROnPlateau"
@@ -695,6 +693,16 @@ def get_optimizer(
             min_scale=min_scale,
             )
         return desc, optimizer
+    elif case == 3:
+        desc = "group Adam + cost-threshold shrink"
+        sched = reduce_on_cost_threshold(cost_threshold, factor, min_scale)
+        def g(rate): return optax.chain(adam(rate), sched)
+        base = optax.chain(
+            optax.clip_by_global_norm(1.),
+            make_chain("h")(g(opt_lr["h"])),
+            make_chain("J")(g(opt_lr["J"])),
+        )
+        return desc, wrap(base, passes_value=True, passes_step=False)
     # default fallback
     desc = "per-param Adam"
     base_opt = optax.chain(
@@ -819,10 +827,11 @@ def run_experiment(params,
         return fidelities
     
     
-    # ------------------------------------------------------------------
-    #  Case-1 learning rate (analog style)  ────────────────────────────
-    # ------------------------------------------------------------------
-    if opt_lr == None:
+        # Flatten the parameter pytree for generic handling
+    flat_params, unravel_fn = ravel_pytree(params)
+
+    if opt_lr is None:
+        t0 = time.time()
         t0          = time.time()
         init_loss, init_grads = jax.value_and_grad(cost_func)(
             params, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static
@@ -878,6 +887,11 @@ def run_experiment(params,
 
         cost = init_loss
     
+    # Cost and gradient on flat vector
+    def flat_cost(flat_params, X, y):
+        params_tree = unravel_fn(flat_params)
+        return cost_func(params_tree, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
+
     opt_descr, opt = get_optimizer(
         case=case_num,
         opt_lr     = opt_lr,       # either a dict or (lr_tree,assignment_mask)
@@ -891,14 +905,14 @@ def run_experiment(params,
         accumulation_size=ACCUMULATION_SIZE,
         min_scale=MIN_SCALE,
         warmup_steps = 400,
-        # warmup_fraction = .15,
-        )
 
-    if case_num in [1]:
-        params = {
-            'h': params[mask_h],
-            'J':params[mask_J]
-        }
+        )
+    # reconstruct parameter tree for optimizer init
+    if case_num == 1:
+        params_tree = {"h": flat_params[mask_h], "J": flat_params[mask_J]}
+    else:
+        params_tree = flat_params
+    opt_state = opt.init(params_tree)
 
     print("________________________________________________________________________________")
     print(f"Starting optimization for {gate_name}(epochs: {num_epochs}) T = {trotter_steps}, N_r = {N_reserv}, N_bath = {num_bath}...\n")
@@ -906,37 +920,35 @@ def run_experiment(params,
         f"variance={np.var(lr_tree)}…"
         )
     # print(f"Initial Loss: {init_loss:.4f}, initial_gradients: {np.mean(np.abs(init_grads))}. Time: {dt:.2e}")
-   
-    
-    opt_state = opt.init(params)
-
     @jit
-    def update(params, opt_state, X, y, step):
-        X = jnp.asarray(X, dtype=jnp.complex128)
-        y = jnp.asarray(y, dtype=jnp.complex128)
-        # Ensure inputs are float64
-        if isinstance(params,dict):
-            flat = jnp.concatenate([jnp.ravel(v) for v in params.values()]) 
-            loss, grads_flat = jax.value_and_grad(cost_func)(flat, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
-        # params = jnp.asarray(params, dtype=jnp.float64)
+    def update(flat_params, opt_state, X, y, step):
+        loss, flat_grads = jax.value_and_grad(flat_cost)(flat_params, X, y)
+        # split gradients into block‑wise tree
+        grads_tree = grad_group_dict(case_num, flat_grads,
+                                    T=trotter_steps, N_ctrl=n_ctrl_qubits, N_reserv=n_rsv_qubits)
+        # reconstruct parameter tree for this update
+        if case_num == 1:
+            params_tree = {"h": flat_params[mask_h], "J": flat_params[mask_J]}
         else:
-            flat = params
-            loss, grads_flat = jax.value_and_grad(cost_func)(flat, X, y, n_rsv_qubits, n_ctrl_qubits, trotter_steps, static)
-        
-        
-        grads_pytree = grad_group_dict(case_num, grads_flat,T=trotter_steps,N_ctrl=N_ctrl, N_reserv=N_reserv)
-       
-        grad_for_opt = grads_flat if case_num == 0 else grads_pytree
-        updates, new_opt_state = opt.update(
-            grad_for_opt, 
-            opt_state, 
-            params=params, 
-            value=loss,
-            step=step
-            )
-        new_params = optax.apply_updates(params, updates)
-       
-        return new_params, new_opt_state, loss, grads_flat,grad_for_opt
+            params_tree = flat_params
+        # Choose appropriate gradient pytree for this case
+        if case_num == 0:
+            grads_for_opt = flat_grads
+        else:
+            grads_for_opt = grads_tree
+        updates, new_opt_state = opt.update(grads_for_opt, opt_state)
+        updated_tree = optax.apply_updates(params_tree, updates)
+        # flatten updated parameters back to vector
+        if case_num == 1:
+            flat_params = jnp.concatenate([
+                jnp.ravel(updated_tree["h"]),
+                jnp.ravel(updated_tree["J"])
+            ], axis=0)
+        else:
+            flat_params = updated_tree
+        return flat_params, new_opt_state, loss, flat_grads, grads_tree
+    
+
     fullstr = time.time()
 
     prev_cost = float('inf')  # Initialize with infinity
@@ -971,8 +983,11 @@ def run_experiment(params,
     s = time.time()
     new_scale = 1.0
     while epoch  < num_epochs or improvement:
-        
-        params, opt_state, cost,grads_flat,grads_pytree = update(params, opt_state, X, y,step=epoch)
+   
+        flat_params, opt_state, cost, grads_flat, grads_pytree = update(flat_params, opt_state, X, y, step=epoch)
+        params = unravel_fn(flat_params)  # reconstruct for any QNode calls
+
+
         if 'grad_groups_history' not in locals():
             grad_groups_history = []
         grad_groups_history.append(grads_pytree)
@@ -1193,7 +1208,7 @@ def run_experiment(params,
 
 if __name__=='__main__':
 
-    N_ctrl = 1
+    N_ctrl = 2
    
     
 
@@ -1209,7 +1224,7 @@ if __name__=='__main__':
         trots = [25,28,30,32,35,38,40,45]
         res = [1]
 
-    trots = [1,2]
+    trots = [5]
     res = [1]
     rsv_qubits_list = res
     trotter_step_list = trots
