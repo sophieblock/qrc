@@ -1,3 +1,279 @@
+"""
+description: |-
+  Network representation for the collection of a single PDS sample.
+  This network is based on the Appendix B of MIL-STD-889D. Other
+  relevant documents include ASTM D1141 and ASTM E178.
+
+resource-types:
+  fresh-material-sample:
+    name: Fresh material sample
+
+nodes:
+  raw-material-sample-retrieved:
+    label: Retrieve raw material sample
+    description: Retrieve the raw material sample to be electrochemically tested.
+    requires-resources:
+    - fresh-material-sample
+  b32-surface-prep:
+    label: B.3.2 Surface Preparation
+    description: Perform surface preparation as per B.3.2 in MIL-STD-889D
+    requires-completed:
+    - raw-material-sample-retrieved
+    comprises:
+    - b32a-machining-grinding
+    - b32c-degreasing
+    - b32d-surface-preparation
+    - b32e-added-treatment
+    - b32f-pretest-storage
+    - b32g-masking
+    - b32-final-check
+  b32a-machining-grinding:
+    label: Milling/grinding of sample
+    description: Ground sample with P800 (or ANSI 400) to a uniform finish.
+  b32c-degreasing:
+    label: Degrease (if oiled)
+    description: Degrease (if oiled) using 4-step sonication process. Immerse and sonicate in each chemical for 10 minutes each.
+    comprises:
+    - b32c-degrease-sonication-acs-hexanes
+    - b32c-degrease-sonication-acs-diethyl
+    - b32c-degrease-sonication-acs-acetone
+    - b32c-ethanol-rinse
+    - b32c-air-dry
+  b32c-degrease-sonication-acs-hexanes:
+    label: Immerse/sonicate in ACS grade hexanes
+    description: Immerse/sonicate in ACS grade hexanes for 10 minutes to degrease.
+  b32c-degrease-sonication-acs-diethyl:
+    label: Immerse/sonicate in ACS grade diethyl ether
+    description: Immerse/sonicate in ACS grade diethyl ether for 10 minutes to degrease.
+  b32c-degrease-sonication-acs-acetone:
+    label: Immerse/sonicate in ACS grade acetone
+    description: Immerse/sonicate in ACS grade acetone for 10 minutes to degrease.
+  b32c-ethanol-rinse:
+    label: Immerse/sonicate in 200-proof ethanol
+    description: Immerse/sonicate in 200-proof ethanol for 10 minutes to degrease.
+  b32c-air-dry:
+    label: Air-dry at room temperature
+    description: Air-dry at room temperature until surface is dry.
+  b32d-surface-preparation:
+    label: Ultrasonic cleaning for surface prep
+    description: Ultrasonic cleaning using ACS grade acetone for 10 minutes followed by 200 proof ethanol for 10 minutes, and air-dried.
+    comprises:
+    - b32d-ultrasonic-cleaning
+    - b32d-ethanol-rinse
+    - b32d-air-dry
+  b32d-ultrasonic-cleaning:
+    label: Ultrasonic cleaning
+    description: Ultrasonic cleaning with cleaner
+  b32d-ethanol-rinse:
+    label: Rinse in 200-proof ethanol
+    description: Rinse in 200-proof ethanol for 10 minutes.
+  b32d-air-dry:
+    label: Air-dry at room temperature
+    description: Air-dry at room temperature until surface is dry.
+  b32e-added-treatment:
+    label: Prepare any further sample treatment
+    description: Prepare any additional sample treatment on the surface before electrocmeical testing.
+    comprises-one-of:
+    - b32e-no-treatment-bare
+    - b32e-passivation
+    - b32e-anodization
+    - b32e-plating
+  b32e-no-treatment-bare:
+    label: No further treatment (bare sample)
+    description: No further surface preparation treatment is performed (e.g., bare coupon testing).
+  b32e-passivation:
+    label: Passivation of sample surface
+    description: Surface sample is prepared via passivation.
+  b32e-anodization:
+    label: Anodization of sample surface
+    description: Surface sample is prepared via anodization.
+  b32e-plating:
+    label: Plating of sampling surface
+    description: Surface sample is prepared via electroplating.
+  b32e-cleaning-acetone:
+    label: Cleaning with acetone
+    description: Clean treated surface with ACS grade acetone for 10 minutes.
+  b32e-cleaning-ethanol:
+    label: Rinse in 200-proof ethanol
+    description: Rise in 200-proof ethanol for 10 minutes.
+  b32e-air-dry:
+    label: Air-dry at room temperature.
+    description: Air-dry at room temperature until surface is dry.
+  b32f-pretest-storage:
+    label: Pre-test sample storage for 24 hours
+    description: Store sample in pre-test storage at 77 +/- 0.63 degF (25 +/- 0.35 degC) and 80% relative humidity for 24 hours before testing.
+  b32g-masking:
+    label: Masking (if necessary)
+    description: Mask sample if needed, if sample is prone to crevice corrosion during testing.
+  b32-final-check:
+    label: Accept surface-prepared sample for testing.
+    description: Check sample and ensure that sample is ready for testing.
+  b33-prepare-electrochemical-cell:
+    label: B.3.3. Electrochemical Cell Preparation
+    description: Prepare electrochemical cell as per B.3.3. of MIL-STD-889D.
+    requires-completed:
+    - b32-surface-prep
+    comprises:
+    - b33a-check-o-rings
+    - b33b-check-counter-electrode
+    - b33c-arrange-counter-electrode
+    - b33d-place-reference-electrode
+    - b33e-faraday-cage
+  b33a-check-o-rings:
+    label: Check O-rings for working electrode
+    description: Check O-rings used to seal working electrode. Reference B.4 for more information.
+  b33b-check-counter-electrode:
+    label: Check counter electrode
+    description: Check counter electrode is inert and that area is at least twice the area of the working electrode. Platinum mesh counter electrode is recommended.
+  b33c-arrange-counter-electrode:
+    label: Arrange counter electrode
+    description: Arrange counter electrode in parallel orientation to the working electrode.
+  b33d-place-reference-electrode:
+    label: Arrange reference electrode
+    description: Place reference electrode in a bridged cell or Luggin tube between working and counter electrodes.
+  b33e-faraday-cage:
+    label: Insert electrochemical cell in Faraday cage
+    description: Insert electrochemical cell into Faraday cage.
+  b35-reference-electrode-health-check:
+    label: Health check for reference electrode
+    description: Reference electrode shall be health-checked against unused reference electrode of same type.
+    requires-completed:
+    - b33-prepare-electrochemical-cell
+  b36-electrolyte-preparation:
+    label: B.3.6. Electrolyte Preparation
+    description: Prepare electrolyte (artificial seawater) for use in electrochemical experiment, as per MIL-STD-889D.
+    requires-completed:
+    - b35-reference-electrode-health-check
+    comprises-one-of:
+    - b36-use-commercial-electrolyte
+    - b36-prepare-inhouse-electrolyte
+  b36-use-commercial-electrolyte:
+    label: Use commercially-available electrolyte
+    description: Use commercially-available electrolyte.
+    comprises:
+    - b36-retrieve-commercial-electrolyte
+    - b36-aerate-electrolyte
+    - b36-set-electrolyte-quiescent
+  b36-retrieve-commercial-electrolyte:
+    label: Retrieve commercially-available electrolyte
+    description: Retrieve the commercially-available electrolyte to use for electrochemical experiment.
+  b36-prepare-inhouse-electrolyte:
+    label: Prepare in-house electrolyte
+    description: Prepare in-house electrolyte.
+    comprises:
+    - b36-mix-inhouse-electrolyte
+    - b36-wait-inhouse-electrolyte
+    - b36-aerate-electrolyte
+    - b36-set-electrolyte-quiescent
+  b36-mix-inhouse-electrolyte:
+    label: Mix in-house electrolyte ingredients
+    description: Mix deionized water (18 MOhm-cm) with salts to prepare in-house electrolyte, as per ASTM D1141, without heavy metals.
+  b36-wait-inhouse-electrolyte:
+    label: In-house electrolyte must be prepared at least 24-hours in advance
+    description: In-house electrolyte must be prepared at least 24-hours in advance of electrochemical experiment usage.
+  b36-aerate-electrolyte:
+    label: Aerate electrolyte before usage
+    description: Aerate vigorously the electrolyte for 10 minutes immediately before use in an electrochemical test.
+  b36-set-electrolyte-quiescent:
+    label: Set electrolyte at quiescent
+    description: Electrolyte shall be left quiescent during the electrochemical test, at 77 +/- 3 degF (25 +/- 1.67 degC) and with pH 8.2.
+  b36-check-electrolyte-ph:
+    label: Check pH of electrolyte is 8.2 +/- 0.02
+    description: Check that pH of electrolyte is 8.2 +/- 0.02; add sodium hydroxide or hydrochloric acid as needed.
+    requires-completed:
+    - b36-electrolyte-preparation
+  b37-polarization-curve-data-acquisition:
+    label: B.3.7. Polarization curve data acquisition
+    description: B.3.7. Polarization curve data acquisition, as per MIL-ST-D889.
+    requires-completed:
+    - b36-check-electrolyte-ph
+    comprises:
+    - b37-ocp-vs-time
+    - b37-scan-polarization-curve
+    - b37-record-material-data
+  b37-ocp-vs-time:
+    label: Record OCP vs time
+    description: Record OCP vs time sampling of the surface.
+    comprises-one-of:
+    - b37-ocp-vs-time-less-noble
+    - b37-ocp-vs-time-more-noble
+  b37-ocp-vs-time-less-noble:
+    label: Record OCP vs time (less noble)
+    description: Record OCP vs time at 1 data point per second for 4 hours for less noble materials (OCP < -200mV vs SCE).
+  b37-ocp-vs-time-more-noble:
+    label: Record OCP vs time (more noble)
+    description: Record OCP vs time at 1 data point per second for 24 hours for more noble materials (OCP > -200mV vs SCE).
+  b37-scan-polarization-curve:
+    label: Scan polarization curve.
+    description: Scan cathodic and anodic polarization curves.
+    comprises:
+    - b37-scan-polarization-anodic-curve
+    - b37-scan-polarization-cathodic-curve
+  b37-scan-polarization-anodic-curve:
+    label: Scan anodic polarization curve.
+    description: Scan anodic polarization curve from OCP to +0.7 V vs SCE or until max curent of 10 mA/cm^2.
+  b37-scan-polarization-cathodic-curve:
+    label: Scan cathodic polarization curve.
+    description: Scan cathodic polarization curve from OCP to -1.4 V vs SCE or until max current of 10 mA/cm^2.
+  b37-record-material-data:
+    label: Record material data
+    description: Record all relevant material data for final polarization curve data package.
+    comprises:
+    - b37-record-substrate-material
+    - b37-record-heat-treatment
+    - b37-record-sample-dimensions
+    - b37-record-grinding-media-and-size
+    - b37-record-surface-preparation-method
+  b37-record-substrate-material:
+    label: Record substrate material used
+    description: Record substrate material used for electrochemical test.
+  b37-record-heat-treatment:
+    label: Record heat treatment used
+    description: Record heat treatment used for electrochemical test.
+  b37-record-sample-dimensions:
+    label: Record sample dimensions
+    description: Record sample dimensions used for electrochemical test.
+  b37-record-grinding-media-and-size:
+    label: Record grinding media/size
+    description: Record grinding media and size used for electrochemical test.
+  b37-record-surface-preparation-method:
+    label: Record surface preparation method
+    description: Record details of the surface preparation method used including profiling, heat treatment, cleaning, coating, time since prepared, etc.
+  b37-final-curve-generation:
+    label: Generate final data package
+    description: Generate final data package for polarization curve.
+    requires-completed:
+    - b37-record-material-data
+    comprises:
+    - b37-save-ocp-data-files
+    - b37-save-polarization-data-files
+    - b37-record-electrolyte-ph
+    - b37-record-temperature
+    - b37-record-rh
+  b37-save-ocp-data-files:
+    label: Save OCP data files
+    description: Save all OCP-related data files into data package.
+  b37-save-polarization-data-files:
+    label: Save polarization data files
+    description: Save all polarization data files (cathodic and anodic) into data package.
+  b37-record-electrolyte-ph:
+    label: Record electrolyte pH
+    description: Record electrolyte pH measurement for electrochemical test.
+    requires-completed:
+    - b36-check-electrolyte-ph
+  b37-record-temperature:
+    label: Record temperature
+    description: Record environment temperature for electrochemical test.
+  b37-record-rh:
+    label: Record relative humidity
+    description: Record relative humidity for electrochemical test.
+  polarization-curve-ready:
+    label: Polarization curve data package ready
+    description: Polarization curve data package is ready for single sample.
+    requires-completed:
+    - b37-final-curve-generation
+"""
+
 import warnings
 
 # Suppress PennyLane‐vs‐JAX compatibility warnings
