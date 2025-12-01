@@ -1,0 +1,226 @@
+
+\documentclass[11pt]{article}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{siunitx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
+\usepackage{caption}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\title{Design Space Exploration for Loop Nests:\\
+Unrolling, Pipelining, and Communication Granularity\\[4pt]
+\large (Expanded notes distilled from slides)}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+These notes formalize a pragmatic design space exploration (DSE) workflow for loop--intensive programs. 
+The \emph{design knobs} are (i) per--stage loop unroll factors and (ii) per--edge communication granularity.
+We define a minimal cost model, legality constraints, and a greedy multi--stage search that iteratively balances a pipeline under an area (capacity) budget. 
+The presentation mirrors the slides while adding definitions, symbols, and pseudocode suitable for implementation.
+\end{abstract}
+
+\section{Problem statement}
+
+Consider a program decomposed into a sequence of computational stages
+$S=\{s_1,\ldots,s_m\}$ connected by data dependencies (edges)
+$E\subseteq S\times S$.
+Each stage is a loop nest that produces/consumes named values
+$v \in \mathcal{V}$ (e.g.\ \texttt{peak}, \texttt{feature\_x}).
+We wish to select:
+\begin{itemize}[leftmargin=*]
+  \item an \textbf{unroll factor} $u_s \in \mathbb{N}$ for each stage $s$, and
+  \item a \textbf{communication granularity} $g_e \in \mathbb{N}$ (bytes/msg) for each edge $e\in E$,
+\end{itemize}
+so as to minimise runtime (or maximise throughput) under a \emph{capacity} (area/memory) constraint.
+
+\paragraph{Notation.}
+Let $B_e$ be the total number of bytes transferred along edge $e=(s\!\to\!t)$ per steady--state item, 
+and $L$ the link--level per--message latency.
+Let $BW$ be the sustained bandwidth (bytes/s) for that interconnect. 
+The \textbf{communication time model} for $e$ at granularity $g_e$ is
+\begin{equation}
+T_{\mathrm{comm}}(e, g_e) = \left\lceil \frac{B_e}{g_e} \right\rceil \Bigl( L + \frac{g_e}{BW} \Bigr).
+\label{eq:comm-time}
+\end{equation}
+Smaller $g_e$ yields more messages (higher latency cost), larger $g_e$ reduces messages but increases per--message payload, stressing buffers.
+A \emph{valid granularity} must satisfy alignment and buffering constraints (Sec.~\ref{sec:gran}).
+
+For stage $s$ we assume a simple \textbf{area--time model} parameterised by its unroll factor $u_s$:
+\begin{align}
+A(s,u_s) &= A^{\text{base}}_s + u_s \, A^{\text{unit}}_s, \label{eq:area}\\
+T_{\mathrm{comp}}(s,u_s) &= \frac{I_s}{\min(u_s, P_s)} \cdot II_s + T^{\text{setup}}_s. \label{eq:stage-time}
+\end{align}
+Here $I_s$ is the iteration count, $II_s$ the initiation interval (cycles) when pipelined, $P_s$ the available parallel resources, and $A^{\text{unit}}_s$ the per--replica area cost when unrolled. Equation~\eqref{eq:stage-time} captures the first--order speedup from unrolling/pipelining until resources saturate.
+
+The \textbf{pipeline time} for design $d=\{u_s\},\{g_e\}$ is
+\begin{equation}
+T(d) \;=\; \max_{s\in S}\Bigl( T_{\mathrm{comp}}(s,u_s) + \sum_{e\in \mathrm{in}(s)} T_{\mathrm{comm}}(e,g_e) \Bigr).
+\label{eq:pipeline}
+\end{equation}
+The \textbf{capacity constraint} is
+\begin{equation}
+\sum_{s\in S} A(s,u_s)\;+\;\sum_{e\in E} \mathrm{Buf}(e,g_e) \;\le\; A_{\max},
+\label{eq:capacity}
+\end{equation}
+where $\mathrm{Buf}(e,g_e)$ is the buffer area required by granularity $g_e$ and chosen depth (Sec.~\ref{sec:gran}).
+
+\subsection{Per--stage read/write demand and inter--stage communication}
+\label{sec:demand}
+For each value $v$ used or defined by a stage $s$ we define the \emph{read/write demand} per item:
+\begin{equation}
+R_s(v),\quad W_s(v)\quad\text{[bytes].}
+\end{equation}
+For each edge $e=(s\!\to\!t)$ that moves value $v$ we define the \emph{communication demand}
+\begin{equation}
+CED_{s\to t}(v) \;=\; W_s(v) \;=\; R_t(v)\,,
+\end{equation}
+and accumulate $B_e = \sum_v CED_{s\to t}(v)$.%
+\footnote{The slides abbreviated these with \texttt{RDAD} (read/write demand) and \texttt{CED} (communication edge demand).}
+
+\section{Step 1: Pipeline and communication analysis}
+\label{sec:step1}
+\textbf{Goal.} Partition the loop nest(s) into stages $S$, build the dependency graph $E$, and compute the per--stage read/write demand and per--edge communication demand (Sec.~\ref{sec:demand}).
+This step is independent of the eventual choice of $u_s$ and $g_e$.
+It provides the payloads $B_e$ used later by Eq.~\eqref{eq:comm-time}.
+
+\paragraph{Outcome.} A typed, acyclic stage graph with:
+\begin{enumerate}[leftmargin=*]
+  \item $R_s(v),W_s(v)$ for all stage/value pairs $ (s,v)$,
+  \item $B_e$ for all edges $e=(s\!\to\!t)$,
+  \item base performance/area parameters $\{A^{\text{base}}_s,A^{\text{unit}}_s,II_s,P_s,T^{\text{setup}}_s\}$.
+\end{enumerate}
+
+\section{Step 2: Single--stage solutions in isolation}
+\label{sec:step2}
+For each stage $s$:
+\begin{enumerate}[leftmargin=*]
+  \item Enumerate \emph{feasible unroll factors} $u_s \in \mathcal{U}_s$ that obey functional constraints (e.g.\ divisor of loop bounds or vector width) and local resource limits ($A(s,u_s) \le A^{\text{local}}_{\max}$).
+  \item Derive the \emph{valid granularity set} for every incident edge $e$ (Sec.~\ref{sec:gran}).
+  \item Record the per--stage Pareto set $\mathcal{P}_s = \{(u_s, A(s,u_s), T_{\mathrm{comp}}(s,u_s))\}$.
+\end{enumerate}
+
+\subsection{Granularity legality \& buffers}
+\label{sec:gran}
+Let $e=(s\!\to\!t)$ carry $B_e$ bytes per item and element size $b$ bytes.
+A granularity $g_e$ is valid iff:
+\begin{enumerate}[leftmargin=*,label=(\roman*)]
+  \item \emph{alignment}: $g_e \equiv 0 \pmod{b}$,
+  \item \emph{bounded message count}: $1 \le \lceil B_e/g_e \rceil \le M_{\max}$,
+  \item \emph{buffer feasibility}: $\mathrm{Buf}(e,g_e) = D_e \cdot g_e \cdot \alpha \le A^{\text{buf}}_{\max}(e)$,
+\end{enumerate}
+where $D_e$ is the chosen FIFO depth (in messages) and $\alpha$ converts bytes to ``area'' units for that memory. 
+The legal set is
+\begin{equation}
+\mathcal{G}_e \;=\; \Bigl\{g \in \mathbb{N}\;:\; \text{(i)--(iii) hold}\Bigr\}.
+\end{equation}
+In practice one snaps $g$ to powers of two or cache line sizes.
+
+\section{Step 3: Multi--stage heuristic search}
+\label{sec:step3}
+\textbf{Idea.} Start from an initial design and make small, legal moves that \emph{relieve the bottleneck}: reduce the unroll factor of the slowest stage (decrease area, possibly increase time), or adjust $g_e$ along the busiest edge to reduce message overhead or buffer usage.
+
+\paragraph{Balanced pipeline heuristic.}
+Call a pipeline \emph{balanced} if stage times are within a factor $\beta$:
+\begin{equation}
+\frac{\max_s T_s}{\min_s T_s} \le \beta \quad (\beta \approx 1.1\text{--}1.3).
+\end{equation}
+Moves should reduce the imbalance while respecting capacity \eqref{eq:capacity}.
+
+\begin{algorithm}[t]
+\caption{Greedy DSE for unroll factors and granularities}
+\label{alg:dse}
+\begin{algorithmic}[1]
+\State \textbf{Input:} stage set $S$, edges $E$, per--stage Pareto sets $\mathcal{P}_s$, legal granularity sets $\mathcal{G}_e$, capacity $A_{\max}$
+\State Initialise design $d \gets$ pick max $u_s$ from $\mathcal{P}_s$ and largest $g_e \in \mathcal{G}_e$ that fits capacity
+\State Evaluate $T(d)$ via \eqref{eq:pipeline}; keep a visited set $\mathcal{V}$ of $(\{u_s\},\{g_e\})$
+\Repeat
+    \State Identify bottleneck stage $s^\star \gets \arg\max_s T_s$ and congested edge $e^\star$ on its cut
+    \State Generate neighbors $\mathcal{N}(d)$ by:
+      \begin{itemize}
+        \item decreasing $u_{s^\star}$ to the next Pareto point in $\mathcal{P}_{s^\star}$,
+        \item modifying $g_{e^\star}$ to the nearest legal value in $\mathcal{G}_{e^\star}$ (up or down).
+      \end{itemize}
+    \State Filter $\mathcal{N}(d)$ by capacity \eqref{eq:capacity} and $\notin \mathcal{V}$
+    \If{$\mathcal{N}(d)$ is empty} \textbf{break} \EndIf
+    \State $d' \gets \arg\min_{c \in \mathcal{N}(d)} \bigl( T(c), -\mathrm{eff}(c) \bigr)$ \Comment{lexicographic: time then efficiency}
+    \If{$T(d') < T(d)$} \State $d \gets d'$; $\mathcal{V}\gets \mathcal{V}\cup\{d\}$ \Else \textbf{break} \EndIf
+\Until{converged}
+\State \textbf{return} $d$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Efficiency and benefit.}
+Besides runtime $T(d)$ we track
+\begin{equation}
+\mathrm{benefit}(d) = \frac{T_{\text{baseline}}}{T(d)}, 
+\qquad
+\mathrm{efficiency}(d) = \frac{\mathrm{benefit}(d)}{\sum_s A(s,u_s) + \sum_e \mathrm{Buf}(e,g_e)}.
+\end{equation}
+The slide criteria \textit{time$(d_i)<$time$(d_{i-1})$}, \textit{benefit$(d_i) >$ benefit$(d_{i-1})$}, \textit{efficiency$(d_i) >$ efficiency$(d_{i-1})$} are enforced by the acceptance rule in Alg.~\ref{alg:dse}.
+
+\section{Step 4: Termination and acceptance}
+Stop when (i) no legal neighbor improves $T$, (ii) capacity is tight, or (iii) a balanced solution is reached.
+The final design must satisfy
+\begin{align}
+\text{Capacity: }&\sum_s A(s,u_s) + \sum_e \mathrm{Buf}(e,g_e) \le A_{\max},\\
+\text{Dominance: }&T(d) \text{ minimal among visited designs},\\
+\text{Pareto sanity: }& \text{no component uses a dominated point from } \mathcal{P}_s.
+\end{align}
+
+\section{Implementation commentary (from slides to practice)}
+\textbf{Transform pipeline.}
+A practical flow is:\\[2pt]
+\begin{tabular}{@{}l@{ }l@{}}
+\textbf{Front-end} & Parse C/Python to an IR with explicit loops and arrays. \\
+\textbf{Scalar \& loop opts} & Constant folding, LICM, simplification. \\
+\textbf{DSE(1)} & Select unroll factors (per stage). \\
+\textbf{Code transform} & Apply unroll-and-jam; expose pipeline structure. \\
+\textbf{Analysis} & Compute $R/W$ demand and inter-stage payloads $B_e$. \\
+\textbf{DSE(2)} & Choose granularities $g_e$ and re-balance. \\
+\textbf{Synthesis/Estimation} & Produce scheduled C/VHDL + timing/area estimates. \\
+\end{tabular}
+
+\paragraph{Multiple loop nests.}
+When several loop nests feed each other, the stage graph is hierarchical. Apply Step~1 per nest, then fuse into a global DAG. DSE proceeds on the fused graph with stage-local Pareto sets and global capacity.
+
+\section{Worked micro-example (illustrative)}
+Suppose three stages $S_1\to S_2\to S_3$ produce/consume arrays of \SI{32}{bit} values with per-item payloads $B_{1\to2}{=}\SI{64}{kB}$ and $B_{2\to3}{=}\SI{8}{kB}$.
+On a link with $L{=}\SI{200}{ns}$ and $BW{=}\SI{6}{GB/s}$, Eq.~\eqref{eq:comm-time} gives:
+\begin{align*}
+T_{\mathrm{comm}}(1{\to}2,g) &= \Bigl\lceil \frac{65536}{g} \Bigr\rceil \Bigl( 200\,\text{ns} + \frac{g}{6\cdot 10^9}\Bigr),\\
+T_{\mathrm{comm}}(2{\to}3,g) &= \Bigl\lceil \frac{8192}{g} \Bigr\rceil \Bigl( 200\,\text{ns} + \frac{g}{6\cdot 10^9}\Bigr).
+\end{align*}
+Choosing $g{=}\SI{4}{kB}$ yields roughly $16$ and $2$ messages respectively; increasing to \SI{8}{kB} halves message count at the expense of buffer space.
+The heuristic will usually increase $g$ on the $1{\to}2$ edge first (it dominates latency), provided buffers fit.
+
+\section{What to measure during experiments}
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Area vs.\ time staircase.} For each stage, plot $u_s$ vs.\ $T_{\mathrm{comp}}(s,u_s)$ and mark feasible points under local budgets.
+  \item \textbf{End-to-end throughput.} Compare the initial (no unrolling) design to the ``fully unrolled'' design; show where capacity is exceeded.
+  \item \textbf{Sensitivity to $g_e$.} Sweep $g_e$ on the heaviest edge to visualise the latency/buffer trade-off.
+\end{itemize}
+
+\section{Checklist for implementing the slides' algorithm}
+\begin{enumerate}[leftmargin=*]
+  \item Build a stage/edge graph from code; compute $R/W$ and $B_e$.
+  \item Calibrate $A^{\text{base}}_s,A^{\text{unit}}_s,II_s,P_s,T^{\text{setup}}_s$.
+  \item Generate $\mathcal{U}_s$, $\mathcal{G}_e$ and per--stage Pareto sets $\mathcal{P}_s$.
+  \item Run Alg.~\ref{alg:dse} with capacity $A_{\max}$; log visited designs.
+  \item Report $\{u_s\}$, $\{g_e\}$, area breakdown, $T(d)$, benefit, efficiency.
+\end{enumerate}
+
+\paragraph{Reproducibility tip.} Keep the model symbolic where possible (e.g.\ $B_e$ as $M{\times}N{\times}\text{bytes}$), then substitute numbers for specific benchmarks (DCT, vision kernels, histogram).
+
+\section*{Acknowledgement of provenance}
+These notes were prepared by translating a set of slides titled \emph{``Design Space Exploration (DSE)''} (dated March 31, 2006) into a structured, implementation-ready document. The symbols and equations here are a faithful formalisation of the slide content (unroll factors, pipelined stages, and communication granularities) with standard cost models added where the slides were schematic.
+\end{document}
