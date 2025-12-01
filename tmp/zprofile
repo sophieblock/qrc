@@ -1,0 +1,123 @@
+# ---------- ~/.zprofile ----------
+
+
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+
+# Set OpenMPI environment variable
+export OMPI_MCA_btl=^sm
+
+
+# aliases
+alias showpath='echo $PATH | tr ":" "\n"'
+
+alias conda-check='which -a conda && conda --version && which python && python -V && conda config --show-sources'
+
+# Conditional alias: use VS Code integrated terminal -> open with code,
+# otherwise use nano (Terminal.app / other terminals).
+if [[ "${TERM_PROGRAM:-}" = "vscode" || -n "${VSCODE_PID:-}" ]]; then
+    alias showzsh='code ~/.zshrc ~/.zprofile'
+else
+    alias showzsh='open ~/.zshrc ~/.zprofile'
+fi
+
+
+# Helper functions: environment inspection
+# dumpenv - print all exported environment variables (sorted) and PATH entries
+dumpenv() {
+  printf '%s\n' "=== Environment snapshot: $(date -u +"%Y-%m-%d %H:%M:%S %Z") ==="
+  if command -v env >/dev/null 2>&1; then
+    env | sort
+  else
+    printenv | sort
+  fi
+  printf '\n%s\n' "=== PATH entries ==="
+  printf '%s\n' "$PATH" | tr ':' '\n'
+}
+
+# saveenv [file] - save a snapshot of exported environment variables to a file
+saveenv() {
+  local outfile="${1:-$HOME/env-snapshot-$(date -u +%Y%m%d-%H%M%S).txt}"
+  if command -v env >/dev/null 2>&1; then
+    # Exclude PATH from the saved snapshot to keep the output concise
+    env | grep -v '^PATH=' | sort > "$outfile"
+  else
+    # printenv on some systems may include PATH; exclude it here as well
+    printenv | grep -v '^PATH=' | sort > "$outfile"
+  fi
+  printf 'Saved environment snapshot to: %s\n' "$outfile"
+}
+
+# show_conda_vars - print exported env vars containing 'conda' (case-insensitive)
+show_conda_vars() {
+  printf '%s\n' "=== Environment variables matching 'conda' (case-insensitive) - $(date -u +"%Y-%m-%d %H:%M:%S %Z") ==="
+  if command -v env >/dev/null 2>&1; then
+    # Exclude PATH entirely, then search for 'conda' in remaining exported variables
+    env | grep -v '^PATH=' | grep -i 'conda' | sort || printf 'No exported variables matching "conda" found.\n'
+  else
+    printenv | grep -v '^PATH=' | grep -i 'conda' | sort || printf 'No exported variables matching "conda" found.\n'
+  fi
+}
+removevar() {
+  local var="$1"
+  unset "$var"
+  PATH=$(printf '%s\n' "$PATH" | awk -v RS=':' -v ORS=':' '$0!~("^" var "$")' -- "$var" | sed 's/:$//')
+  export PATH
+}
+
+# remove_path_contains <substring>
+remove_path_contains() {
+  if [[ -z "$1" ]]; then
+    printf 'Usage: remove_path_contains <substring>\n'
+    return 2
+  fi
+  local substr="$1"
+  local -a newpath=()
+  for p in "${(@)path}"; do
+    if [[ "$p" != *"$substr"* ]]; then
+      newpath+=("$p")
+    fi
+  done
+  path=("${newpath[@]}")
+  typeset -U path
+  export PATH="${(j/:/)path}"
+  printf 'Removed PATH entries containing "%s"\n' "$substr"
+}
+
+
+
+
+showPath() {
+  # split PATH on ':' and print each entry on its own line (zsh param expansion)
+  print -rl -- ${(s/:/)PATH}
+}
+
+
+
+# remove_path_entry <exact-path>
+remove_path_entry() {
+  if [[ -z "$1" ]]; then
+    printf 'Usage: remove_path_entry <path-to-remove>\n'
+    return 2
+  fi
+  local target="$1"
+  local -a newpath=()
+  for p in "${(@)path}"; do
+    if [[ "$p" != "$target" ]]; then
+      newpath+=("$p")
+    fi
+  done
+  # assign back to the special 'path' array (updates $PATH automatically)
+  path=("${newpath[@]}")
+  # dedupe (optional)
+  typeset -U path
+  export PATH="${(j/:/)path}"
+  printf 'Removed "%s" from PATH (if present)\n' "$target"
+}
+
+if [[ -o interactive ]]; then
+  echo " ---- .zprofile loaded -----"
+  echo "    CONDA_PREFIX = ${CONDA_SHLVL:-<none>}"
+  echo "    CONDA_DEFAULT_ENV = ${CONDA_DEFAULT_ENV:-<none>}"
+  show_conda_vars
+fi
