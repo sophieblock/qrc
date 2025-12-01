@@ -1,0 +1,68 @@
+# ---------- ~/.zshrc ----------
+autoload -Uz compinit && compinit
+
+
+# >>> conda initialize >>>
+# !! Contents within this block are managed by 'conda init' !!
+__conda_setup="$('/Users/sophieblock/miniforge3/bin/conda' 'shell.zsh' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "/Users/sophieblock/miniforge3/etc/profile.d/conda.sh" ]; then
+        . "/Users/sophieblock/miniforge3/etc/profile.d/conda.sh"
+    else
+        export PATH="/Users/sophieblock/miniforge3/bin:$PATH"
+    fi
+fi
+unset __conda_setup
+# <<< conda initialize <<<
+
+
+alias activate='conda activate'
+alias deactivate='conda deactivate'
+alias list-envs='conda env list'
+alias cupdate='conda update --all'
+alias cclean='conda clean --all'
+
+
+
+
+# # <<< direnv init <<<
+# # Update the prompt with the Conda environment name
+
+update_ps1() {
+    PS1="$(show_conda_env)%n@%m %F{yellow}%1~%f %# "
+}
+# Update PS1 dynamically
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd update_ps1
+PS1="$(show_conda_env)%n@%m %1~ %# "
+
+# eval "$(direnv hook zsh)"
+# <<< direnv init <<<
+
+# Convenience aliases for macOS + Miniforge/conda
+# Short alias that works in both login shells (from ~/.zprofile) and
+# non-login shells like VS Code's integrated terminal. EVEN THOUGH IT IS A LOGIC SHELL LIKE IT IT FULLY INTERACTIVE SMH
+alias showpath=showPath
+
+
+
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
+export SDKMAN_DIR="$HOME/.sdkman"
+[[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
+
+
+if [[ -o interactive ]]; then
+  echo " ----- .zshrc shell loaded ------ "
+  echo "    _CONDA_ROOT = ${CONDA_ROOT:-<none>}"
+  echo "    CONDA_PYTHON_EXE = ${CONDA_PYTHON_EXE:-<none>}"
+  echo "   CONDA_DEFAULT_ENV=${CONDA_DEFAULT_ENV:-<none>}"
+#   showPath
+#   echo "[DEBUG.zshrc] PATH=$PATH"
+fi
