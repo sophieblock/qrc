@@ -1,0 +1,797 @@
+system: [object Object]
+user: <PKI Office Hours Service Bulletin.docx>
+<BESWebChangesAID=73_v25-8-7.docx>
+<BESWebChangesAID=72.docx>
+<BESWebChangesAID=73.docx>
+<BESWebChangesAID=155.docx>
+<CMI FAQs.docx>
+<BESWebChangesAID=71.docx>
+<Boeing Keyfactor CMI User Guide.docx>
+<BAH Certificate Request Process.docx>
+<HOW TO - Search for Certs by Owner Role Name.docx>
+<HOW TO - Create a PFX file on Windows Server 2016.docx>
+<SecureAccessAID=318.docx>
+<SecureBadgeAID=312.docx>
+<Medium Assurance SecureBadge CertificatesAID=76.docx>
+How do I get access to Keyfactor CMI?
+user: When am I required to update trust chain (new issuing and root CA) certificates in my trust store?
+assistant: Short answer
+- Update your trust store whenever a new Boeing CA (root or issuing/intermediate) is deployed and you need your systems to trust certificates issued by that new CA.
+- Keep existing CA certs in place until all certificates that chain to them have expired or are no longer in use.
+
+What that means in practice
+- Immediately: when Boeing publishes a new trust chain (for example during the KeyFactor migration), check your application and server trust stores and add the new root and intermediate CA certificates so your clients and servers will trust newly-issued certs.
+- Don’t remove the old CA certs until every system that relies on them is transitioned — removing them too soon can break TLS, client auth, code-signature validation, etc.
+- Audit cadence: verify CA trust lists at least monthly (or more often during migrations/rollouts) and after any PKI change announcement.
+
+Boeing-specific guidance & links
+- New BAS trust chain example (download and install these if required):
+  - Boeing BAS Root CA SHA256 G3: http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Root%20CA%20SHA256%20G3.crt
+  - Boeing BAS Issuing CA SHA256 G4: http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Issuing%20CA%20SHA256%20G4.crt
+  - (Device issuing for isolated systems) Boeing Windows Device Issuing CA G3: http://crl.keyfactorpkigeo.com/Boeing%20Windows%20Device%20Issuing%20CA%20G3.crt
+- Ensure these PKI endpoints are reachable from your environment:
+  - KeyFactor Command (RA): https://boeing.keyfactorpki.com
+  - CDP/AIA: http://crl.keyfactorpki.com
+  - OCSP: http://boe.keyfactorpki.com/ocsp
+- CMI/KeyFactor user guidance and user guide: https://boeing.sharepoint.us/sites/IAMPKI and Boeing Keyfactor CMI User Guide (link available from the PKI Information Page).
+
+Quick checklist to update trust chain
+1. Identify affected systems/apps & owners.
+2. Download new root/intermediate certs from the AIA or links above.
+3. Install them to the appropriate trust stores (OS, JVM, appliance, application).
+4. Verify CDP/AIA/OCSP access and test certificate validation (browser, curl, app).
+5. Keep old CA certs until all relevant end-entity certs are migrated/expired.
+6. Document the change and confirm monitoring/alerting for revocation/validation.
+
+Need help
+- Attend Boeing PKI Office Hours (Tuesdays and Thursdays) or contact Enterprise Help Desk for escalations.
+- Start at the PKI Information Page: https://boeing.sharepoint.us/sites/IAMPKI
+- For process questions outside PKI/CMI, use AskBoeing: https://boeing-chat.moveworksgov.com/
+
+If you want, tell me:
+- which platform or application (Windows server, Java, F5, VMware, device), and I’ll give the exact steps to import the new CA cert(s).
+user: How do I request a CMI team to be added?
+assistant: Use the BES Enterprise Services Catalog to request a new CMI team. Steps and required info:
+
+1. Open the PKI catalog request:
+   - https://besweb.web.boeing.com/ISCatalogServices/Form?tid=161
+   - Select: PKI → PKI Consultation/General Request
+
+2. Fill the form:
+   - Subject: CMI – Create Team <teamname>
+   - Description: include the requested team name and list team members and their BEMSID(s). Minimum 2 members required.
+   - Provide an Email Distribution List (DL) that will receive certificate notifications for the team (individual emails are not accepted). If you don’t have a DL, request one in MARS: https://mars.web.boeing.com/mars/dlhome?6
+   - Any other required justification/details per the form
+
+3. Submit. PKI will create the team in the pki.notification.<teamname> format and assign the Owner Role (OwnerRoleName) used by KeyFactor.
+
+After creation
+- Manage membership via IDAP Teams: https://idap.web.boeing.com/Teams/
+- You’ll receive instructions when the team and OwnerRole are ready.
+
+Need wording for the Description field or help finding your OwnerRoleName? Tell me the team name and members and I can draft the form text for you.
+user: Can you help me diagnose the issue from my terminal output: "so714f@Mac ~ % pip3 install poetry
+Using pip 24.2 from /Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip (python 3.13)
+Non-user install because site-packages writeable
+Created temporary directory: /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-build-tracker-ftooou55
+Initialized build tracking at /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-build-tracker-ftooou55
+Created build tracker: /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-build-tracker-ftooou55
+Entered build tracker: /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-build-tracker-ftooou55
+Created temporary directory: /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-install-xtrrsxei
+Created temporary directory: /private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-ephem-wheel-cache-krn2uvo6
+Looking in indexes: https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple
+1 location(s) to search for versions of poetry:
+* https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/
+Fetching project page and analyzing links: https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/
+Getting page https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/
+Found credentials in url for sres.web.boeing.com
+Looking up "https://sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/" in the cache
+Request header has "max_age" as 0, cache bypassed
+No cache entry available
+Starting new HTTPS connection (1): sres.web.boeing.com:443
+Incremented Retry for (url='/artifactory/api/pypi/pypi-releases/simple/poetry/'): Retry(total=4, connect=None, read=None, redirect=None, status=None)
+WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))': /artifactory/api/pypi/pypi-releases/simple/poetry/
+Starting new HTTPS connection (2): sres.web.boeing.com:443
+Incremented Retry for (url='/artifactory/api/pypi/pypi-releases/simple/poetry/'): Retry(total=3, connect=None, read=None, redirect=None, status=None)
+WARNING: Retrying (Retry(total=3, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))': /artifactory/api/pypi/pypi-releases/simple/poetry/
+Starting new HTTPS connection (3): sres.web.boeing.com:443
+Incremented Retry for (url='/artifactory/api/pypi/pypi-releases/simple/poetry/'): Retry(total=2, connect=None, read=None, redirect=None, status=None)
+WARNING: Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))': /artifactory/api/pypi/pypi-releases/simple/poetry/
+Starting new HTTPS connection (4): sres.web.boeing.com:443
+Incremented Retry for (url='/artifactory/api/pypi/pypi-releases/simple/poetry/'): Retry(total=1, connect=None, read=None, redirect=None, status=None)
+WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))': /artifactory/api/pypi/pypi-releases/simple/poetry/
+Starting new HTTPS connection (5): sres.web.boeing.com:443
+Incremented Retry for (url='/artifactory/api/pypi/pypi-releases/simple/poetry/'): Retry(total=0, connect=None, read=None, redirect=None, status=None)
+WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))': /artifactory/api/pypi/pypi-releases/simple/poetry/
+Starting new HTTPS connection (6): sres.web.boeing.com:443
+Could not fetch URL https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/: There was a problem confirming the ssl certificate: HTTPSConnectionPool(host='sres.web.boeing.com', port=443): Max retries exceeded with url: /artifactory/api/pypi/pypi-releases/simple/poetry/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))) - skipping
+Skipping link: not a file: https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/poetry/
+Given no hashes to check 0 links for project 'poetry': discarding no candidates
+ERROR: Could not find a version that satisfies the requirement poetry (from versions: none)
+1 location(s) to search for versions of pip:
+* https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/
+Fetching project page and analyzing links: https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/
+Getting page https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/
+Found credentials in url for sres.web.boeing.com
+Looking up "https://sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/" in the cache
+Request header has "max_age" as 0, cache bypassed
+Starting new HTTPS connection (1): sres.web.boeing.com:443
+Could not fetch URL https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/: There was a problem confirming the ssl certificate: HTTPSConnectionPool(host='sres.web.boeing.com', port=443): Max retries exceeded with url: /artifactory/api/pypi/pypi-releases/simple/pip/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain (_ssl.c:1020)'))) - skipping
+Skipping link: not a file: https://3662274:****@sres.web.boeing.com/artifactory/api/pypi/pypi-releases/simple/pip/
+Given no hashes to check 0 links for project 'pip': discarding no candidates
+No remote pip version found
+ERROR: No matching distribution found for poetry
+Exception information:
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_vendor/resolvelib/resolvers.py", line 397, in resolve
+    self._add_to_criteria(self.state.criteria, r, parent=None)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_vendor/resolvelib/resolvers.py", line 174, in _add_to_criteria
+    raise RequirementsConflicted(criterion)
+pip._vendor.resolvelib.resolvers.RequirementsConflicted: Requirements conflict: SpecifierRequirement('poetry')
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/resolution/resolvelib/resolver.py", line 95, in resolve
+    result = self._result = resolver.resolve(
+                            ~~~~~~~~~~~~~~~~^
+        collected.requirements, max_rounds=limit_how_complex_resolution_can_be
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_vendor/resolvelib/resolvers.py", line 546, in resolve
+    state = resolution.resolve(requirements, max_rounds=max_rounds)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_vendor/resolvelib/resolvers.py", line 399, in resolve
+    raise ResolutionImpossible(e.criterion.information)
+pip._vendor.resolvelib.resolvers.ResolutionImpossible: [RequirementInformation(requirement=SpecifierRequirement('poetry'), parent=None)]
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/cli/base_command.py", line 105, in _run_wrapper
+    status = _inner_run()
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/cli/base_command.py", line 96, in _inner_run
+    return self.run(options, args)
+           ~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/cli/req_command.py", line 67, in wrapper
+    return func(self, options, args)
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/commands/install.py", line 379, in run
+    requirement_set = resolver.resolve(
+        reqs, check_supported_wheels=not options.target_dir
+    )
+  File "/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/pip/_internal/resolution/resolvelib/resolver.py", line 104, in resolve
+    raise error from e
+pip._internal.exceptions.DistributionNotFound: No matching distribution found for poetry
+Removed build tracker: '/private/var/folders/_n/l6510w3x7l7dl_qw6crm6t540000gr/T/pip-build-tracker-ftooou55'"
+assistant: Problem summary
+- pip failed to reach your corporate Artifactory because Python/openssl could not verify the server TLS chain:
+  [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate in certificate chain
+- That means the HTTPS server (sres.web.boeing.com) presents a cert chain that includes a CA not trusted by your Python/openssl trust store.
+
+Quick remediation options (ranked)
+1) Preferred — add the Boeing CA(s) to a trust bundle Python/openssl uses
+   - Fetch the Boeing root and intermediate CA(s) that sign the Artifactory cert (example BAS links are provided in Boeing PKI docs).
+   - Create a PEM file that concatenates the root and any intermediates: boeing-ca-chain.pem
+   - Tell pip/requests/openssl to use that bundle:
+     - export SSL_CERT_FILE=/path/to/boeing-ca-chain.pem
+     - OR export REQUESTS_CA_BUNDLE=/path/to/boeing-ca-chain.pem
+     - OR for pip only: pip3 install --cert /path/to/boeing-ca-chain.pem poetry
+   - Test: python3 -c "import ssl; print(ssl.get_default_verify_paths())" and curl -v --cacert /path/to/boeing-ca-chain.pem https://sres.web.boeing.com/
+
+2) macOS system trust (recommended for long-term if you use system Python)
+   - Import the Boeing Root/Intermediate into Keychain Access and mark as Always Trust.
+   - Restart terminal / your Python process and retry pip. This makes the OS trust the CA for apps using macOS trust store.
+
+3) If using the certifi bundle (many Python installs use it)
+   - Locate certifi cacert.pem:
+     - python3 -c "import certifi; print(certifi.where())"
+   - Append Boeing CA PEM(s) to that file (or replace with a bundle you control).
+   - Retry pip.
+
+4) Temporary (not recommended for production)
+   - pip3 install --trusted-host sres.web.boeing.com poetry
+   - Or set PIP_TRUSTED_HOST in pip config. This skips verification and is insecure — only use as a quick test.
+
+Diagnosis commands to run
+- Show the TLS cert chain from your terminal:
+  - openssl s_client -showcerts -connect sres.web.boeing.com:443
+  - curl -v https://sres.web.boeing.com/ 2>&1 | sed -n '1,200p'
+- Find Python/openssl verification paths:
+  - python3 -c "import ssl; print(ssl.get_default_verify_paths())"
+- If using certifi, find its bundle:
+  - python3 -c "import certifi; print(certifi.where())"
+
+Likely cause in your environment
+- Company Artifactory is presenting a certificate signed by an internal Boeing CA that is not present in the Python/openssl trust bundle used by your pip installation. This is common for corporate proxies or private repos during PKI changes or migrations (KeyFactor/Venafi). Boeing PKI docs show new BAS root/intermediate CA links you may need to install.
+
+Where to get Boeing CA certificates
+- From the certificate AIA link when you run openssl s_client and inspect issuer/AIA.
+- Or from Boeing PKI pages (example links in Boeing guidance, e.g. Boeing BAS Root/Issuing CA .crt URLs).
+
+If you want, I can:
+- Draft exact commands to download the Boeing CA and add it to certifi or set SSL_CERT_FILE (tell me which Python you’re using: system Python, Homebrew, pyenv, or framework build).
+- Or walk you step-by-step to import CA into macOS Keychain and verify pip afterwards.
+
+If this is blocking business-critical work and you need help with Boeing CA artifacts or permissions, contact Enterprise Help Desk; if problems look related to the KeyFactor migration/trust chain rollout, attend PKI Office Hours or check PKI pages: https://boeing.sharepoint.us/sites/IAMPKI.
+user: Here is another snippet of terminal output to show help you diagnose: "so714f@Mac ~ % python3 -c "import ssl; print(ssl.get_default_verify_paths())"
+DefaultVerifyPaths(cafile='/Library/Frameworks/Python.framework/Versions/3.13/etc/openssl/cert.pem', capath=None, openssl_cafile_env='SSL_CERT_FILE', openssl_cafile='/Library/Frameworks/Python.framework/Versions/3.13/etc/openssl/cert.pem', openssl_capath_env='SSL_CERT_DIR', openssl_capath='/Library/Frameworks/Python.framework/Versions/3.13/etc/openssl/certs')
+so714f@Mac ~ % openssl s_client -showcerts -connect sres.web.boeing.com:443
+Connecting to 137.136.109.51
+CONNECTED(00000005)
+depth=2 C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Root CA G2
+verify return:1
+depth=1 C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Issuing CA G3
+verify return:1
+depth=0 C=US, O=Boeing, OU=servers, CN=sres.web.boeing.com
+verify return:1
+---
+Certificate chain
+ 0 s:C=US, O=Boeing, OU=servers, CN=sres.web.boeing.com
+   i:C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Issuing CA G3
+   a:PKEY: RSA, 2048 (bit); sigalg: sha256WithRSAEncryption
+   v:NotBefore: Apr 17 08:53:10 2024 GMT; NotAfter: Jun 16 08:53:10 2026 GMT
+-----BEGIN CERTIFICATE-----
+MIIFtzCCBJ+gAwIBAgITUgADVF3U+pEq4fiQpgABAANUXTANBgkqhkiG9w0BAQsF
+ADBsMQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQm9laW5nMRQwEgYDVQQLEwtjZXJ0
+c2VydmVyczE2MDQGA1UEAxMtQm9laW5nIEJhc2ljIEFzc3VyYW5jZSBTb2Z0d2Fy
+ZSBJc3N1aW5nIENBIEczMB4XDTI0MDQxNzA4NTMxMFoXDTI2MDYxNjA4NTMxMFow
+TjELMAkGA1UEBhMCVVMxDzANBgNVBAoTBkJvZWluZzEQMA4GA1UECxMHc2VydmVy
+czEcMBoGA1UEAxMTc3Jlcy53ZWIuYm9laW5nLmNvbTCCASIwDQYJKoZIhvcNAQEB
+BQADggEPADCCAQoCggEBAK28hbYOm+962SNK3AaaUIFUdzVHAoSPLNt3MnYeZ08K
+9i8eFPij/cyo6gMzWthbhxlA0b/TVxQWJer98JPzX0cRuC8vqHG+JE1pJcJuIwtr
+6ciO+wIqtChtqWHJDoT2b+Cm+C1gdEhwPxYNYxX2wF6IGpTEFAALbRgI0OoTkv+v
+MwdC5AEcTcTPDivY+xC8sepft6iKoToXB1l+itQYxruRbnGAzUO/xA7fAKqqFbzi
+Z1gGhvfi3psWzM10cwBpGGJ3qVO8y5V4tsqAvq8VdZMZqkQ9ndb72e3/TWr9maGv
+6O7wzRAbJVRea1r541q+C2JsKefm4PIAqJLlGsFvlDkCAwEAAaOCAm4wggJqMB0G
+A1UdDgQWBBSCpQ5+H6ZHkJZD9Q0azkZQVLm9JjAfBgNVHSMEGDAWgBSpqHcM5Rc4
+58XjAcAgojv+lhNdETBoBgNVHR8EYTBfMF2gW6BZhldodHRwOi8vY3JsLmJvZWlu
+Zy5jb20vY3JsL0JvZWluZyUyMEJhc2ljJTIwQXNzdXJhbmNlJTIwU29mdHdhcmUl
+MjBJc3N1aW5nJTIwQ0ElMjBHMy5jcmwwgZ4GCCsGAQUFBwEBBIGRMIGOMCcGCCsG
+AQUFBzABhhtodHRwOi8vb2NzcC5ib2VpbmcuY29tOjgwODAwYwYIKwYBBQUHMAKG
+V2h0dHA6Ly9jcmwuYm9laW5nLmNvbS9jcmwvQm9laW5nJTIwQmFzaWMlMjBBc3N1
+cmFuY2UlMjBTb2Z0d2FyZSUyMElzc3VpbmclMjBDQSUyMEczLmNydDALBgNVHQ8E
+BAMCBaAwOwYJKwYBBAGCNxUHBC4wLAYkKwYBBAGCNxUIgcHFTYKsqS6E+Y8h5qpP
+lIMAgVe0tAyBw94HAgFkAgEhMB0GA1UdJQQWMBQGCCsGAQUFBwMCBggrBgEFBQcD
+ATAnBgkrBgEEAYI3FQoEGjAYMAoGCCsGAQUFBwMCMAoGCCsGAQUFBwMBMGsGA1Ud
+IARkMGIwYAYKKwYBBAFJDwMBEjBSMFAGCCsGAQUFBwIBFkRodHRwczovL2NybC5i
+b2VpbmcuY29tL2NybC9UaGVfQm9laW5nX0NvbXBhbnlfQ2VydGlmaWNhdGVfUG9s
+aWN5LnBkZjAeBgNVHREEFzAVghNzcmVzLndlYi5ib2VpbmcuY29tMA0GCSqGSIb3
+DQEBCwUAA4IBAQBRcpUTYEAblM0zsUtiPZ8UW21QrVQdlxzM8CqmTCRF3Zh/YdhT
+PvZhCuhphKB9IiTChrBnNDUM+7WCYQOJX+SeHc0Zn5shLY8pIrGVLNcc49ymCwqP
+1lxopHipoQ+RHbxlNsgxFietI/wCs9e0KPfvq68mPsO8qJbEHlIbUnv8Uhmn4g9h
+0apkgLl1LiXbnRKQ7iwtF1H/x4HB0PHSPLqVsYLi9+GsSknSyGxf4618M23swnCK
+O62L7gL72qwsptOrUFkwQImF3XJ17zxgW2xp/Q5KrS9f+a16vPOjzQ9CGf4qi2xg
+9uGhRqL7vauF6rOaS2BBGmFbR8eWRzUvfsEK
+-----END CERTIFICATE-----
+ 1 s:C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Issuing CA G3
+   i:C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Root CA G2
+   a:PKEY: RSA, 2048 (bit); sigalg: sha256WithRSAEncryption
+   v:NotBefore: Jun 29 22:49:40 2016 GMT; NotAfter: Jun 29 22:59:40 2026 GMT
+-----BEGIN CERTIFICATE-----
+MIIHJTCCBQ2gAwIBAgITSgAAAATw30Ppt/pvRQAAAAAABDANBgkqhkiG9w0BAQsF
+ADBpMQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQm9laW5nMRQwEgYDVQQLEwtjZXJ0
+c2VydmVyczEzMDEGA1UEAxMqQm9laW5nIEJhc2ljIEFzc3VyYW5jZSBTb2Z0d2Fy
+ZSBSb290IENBIEcyMB4XDTE2MDYyOTIyNDk0MFoXDTI2MDYyOTIyNTk0MFowbDEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkJvZWluZzEUMBIGA1UECxMLY2VydHNlcnZl
+cnMxNjA0BgNVBAMTLUJvZWluZyBCYXNpYyBBc3N1cmFuY2UgU29mdHdhcmUgSXNz
+dWluZyBDQSBHMzCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALwWhTIU
+RRwoqDfnvDIjeNTY8FPKPq+P9X4NUaq6JaXRLRGYlg/ow0Br1k+rrXaT+WfuEQ3F
+oTAdVJtHh48mbopLKX+oYpbC5QBjYk13vAR2et5LUGTQobSgX2+gUnQ7Awt6pp3w
+OH1eP6yl91tBk06NeurGOyKs3E2pcd349mXtkUnmiXXVPWpQXIMXq98cq7u0nzZ5
+UkmiEYziX+wYOqUpR1qCYHX7lVwliNkKb5P36iigySMC8LekDMhX/fvUVXcTm2yo
+UGpen68v4p4FFvu8UmvYGiOe7OgWyKQQGH4XdtSMzGfcY6Sx4CN863DNH/t4kpKk
+Jrrlq6I/jZ+xF9sCAwEAAaOCAsEwggK9MA4GA1UdDwEB/wQEAwIBBjAQBgkrBgEE
+AYI3FQEEAwIBADAdBgNVHQ4EFgQUqah3DOUXOOfF4wHAIKI7/pYTXREwFwYDVR0g
+BBAwDjAMBgorBgEEAUkPAwECMBkGCSsGAQQBgjcUAgQMHgoAUwB1AGIAQwBBMBIG
+A1UdEwEB/wQIMAYBAf8CAQAwHwYDVR0jBBgwFoAUlOnxKYJ9axy9Z6+j5B6xntjo
+LxswggEBBgNVHR8EgfkwgfYwgfOggfCgge2GVGh0dHA6Ly9jcmwuYm9laW5nLmNv
+bS9jcmwvQm9laW5nJTIwQmFzaWMlMjBBc3N1cmFuY2UlMjBTb2Z0d2FyZSUyMFJv
+b3QlMjBDQSUyMEcyLmNybIaBlGxkYXA6Ly9kaXIuYm9laW5nLmNvbS9DTj1Cb2Vp
+bmclMjBCYXNpYyUyMEFzc3VyYW5jZSUyMFNvZnR3YXJlJTIwUm9vdCUyMENBJTIw
+RzIsb3U9cGtpLG91PWNlcnRzZXJ2ZXJzLG89Ym9laW5nLGM9dXM/Y2VydGlmaWNh
+dGVSZXZvY2F0aW9uTGlzdDtiaW5hcnkwggEKBggrBgEFBQcBAQSB/TCB+jBgBggr
+BgEFBQcwAoZUaHR0cDovL2NybC5ib2VpbmcuY29tL2NybC9Cb2VpbmclMjBCYXNp
+YyUyMEFzc3VyYW5jZSUyMFNvZnR3YXJlJTIwUm9vdCUyMENBJTIwRzIuY3J0MIGV
+BggrBgEFBQcwAoaBiGxkYXA6Ly9kaXIuYm9laW5nLmNvbS9DTj1Cb2VpbmclMjBC
+YXNpYyUyMEFzc3VyYW5jZSUyMFNvZnR3YXJlJTIwUm9vdCUyMENBJTIwRzIsb3U9
+cGtpLG91PWNlcnRzZXJ2ZXJzLG89Ym9laW5nLGM9dXM/Y0FDZXJ0aWZpY2F0ZTti
+aW5hcnkwDQYJKoZIhvcNAQELBQADggIBAAQvN8/cZstqbaICR+tswdyFO5zqSF6Y
+SzfusLDHqBwiY/TK8nJIVDtoPqR/GbgKnHaZjDBn/nuV9AmVPzuZglax0C8ptLcg
+2OnTnA9N9BAC73L58lmwIsde+4VxofX9noLWTjOHqmRB7tK8+7WdZQeJdNwJKmyu
+9XBtHl0Gyekr/LFOH/WLku9ZnxUZmZRl2o4qjEwZMYxKQe2sTDBzQ/Ckku3UVHtv
+aOOYkN2TEPtPb4rasHQDaVsm7S1UjC4lHIrEOvAvV9PWMFMzklm79r+KIJJnODBg
+SQpq36/OTsC9BPZ+mRg8ru4lvlUvIqRt/BkLkE5YHj0OD/Z2/8cAhQvHchDTTFdk
+2H1qMGljDhPrD/QKVITpRfsWPhfUHyjpF9f1QKonwsMkbdtefw7a/m8l8PXz9UxA
+EGWG38blD5dBtyl+ef1OzdN5APo6k3DQE/xWpMNzrNNvv5TWU9apBMaNEnodamL6
+o+gdTsbwPStSJN+mukqX5yuAzCQVquNqNVIDHFCXYSuYqcnzhQNEcqyTjRzjHK3P
+VzMnNDJL3Ros5piRg+yjOMjoQyTCFDuoxukSnvFMGpc1z3mZlZP7xNWpBEAR3Z9n
+//KErRbYq3Q+ki06vUZS7uRcB0wH+aPbLzqAQVWqq6zzaEsrybwAAa1BowwE2O2K
+q7ILrIKvxfgU
+-----END CERTIFICATE-----
+ 2 s:C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Root CA G2
+   i:C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Root CA G2
+   a:PKEY: RSA, 4096 (bit); sigalg: sha256WithRSAEncryption
+   v:NotBefore: Apr 21 20:48:40 2016 GMT; NotAfter: Apr 21 20:49:09 2036 GMT
+-----BEGIN CERTIFICATE-----
+MIIFsDCCA5igAwIBAgIQIWJ1MlwNF6pNmbqGKWFs1zANBgkqhkiG9w0BAQsFADBp
+MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQm9laW5nMRQwEgYDVQQLEwtjZXJ0c2Vy
+dmVyczEzMDEGA1UEAxMqQm9laW5nIEJhc2ljIEFzc3VyYW5jZSBTb2Z0d2FyZSBS
+b290IENBIEcyMB4XDTE2MDQyMTIwNDg0MFoXDTM2MDQyMTIwNDkwOVowaTELMAkG
+A1UEBhMCVVMxDzANBgNVBAoTBkJvZWluZzEUMBIGA1UECxMLY2VydHNlcnZlcnMx
+MzAxBgNVBAMTKkJvZWluZyBCYXNpYyBBc3N1cmFuY2UgU29mdHdhcmUgUm9vdCBD
+QSBHMjCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAL8kUZYfc+Aep3/Y
+/WxRS1+SpuzVNTmZZzUcDcway1P6PVtQNodlVgQqgmApkMIIQcBtk4Yhe8r6LVrb
+WqtUojlae2TJW5rKlb1Aan22sSMx9dR5D+2xeQgcRJZAaAq+OhWdECMZz5AV3v/K
+pwJh8HAb9uzvq3NN4GLQwJXTjq2oQB032PGSQGPCEbyhZ/YjYLxdDSufccFvRdwI
+gxT3hKc4xjDD/bKSW8MdUeO4MUwZq7qPm/dRvhrjqSD6frg75HB45oXKa0SNVxVo
+lWf/BfCX4uGnjdBOZDCJVUnnc9f8muteznfse+vzm5TdE00vf6uEJE2NDsfMn5MB
+R71iJ55n8X0tRVkMIgixd/6RJHpCTLb2z6jh+yL2/Ugfqu8IGUCdZYjePRn2iPOt
+Vqii+njdgh4oyWSI0tLQneyLLeD9EaviN5KHv+kk1irxJP7HOPzR3qxgTKIsCGA4
+E+SQsZh76AuYCCRuwlM06Nw/M4M6TTtmkGHfTSr+eDRFrjwqOMivNa+IN5JKnZ4a
+XrZcLL5AJH810Ysgrz46GtW3SbtVdoY8zHo5jnjjrIPMj+WgcXnnjza8VvDZbS9c
+w7TIJ19s8t8XqDRwbuYjAKZ+rQCElE9xDQ5kpi3AmDGBO+fhB+W6cA+flu8Iu3T6
+/nrYhQLZrjywiyDyoEGGeazH/eqvAgMBAAGjVDBSMA4GA1UdDwEB/wQEAwIBBjAP
+BgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBSU6fEpgn1rHL1nr6PkHrGe2OgvGzAQ
+BgkrBgEEAYI3FQEEAwIBADANBgkqhkiG9w0BAQsFAAOCAgEAqDxIbgi9ennVHtqB
+E/ahkq7M4H1+5druTS27vyK/Rw41bHxTMl09/WJ9mr1lLM5jU1wN4SHQqXKvflfA
+jEFh7sVrSuGr5rYNoJqoRS5RAfmZG6kPHZsvNj3+emZ5jZ/H3yk2mQAU1htuwKe+
+tG3k8QG7C6GnItRS2O+FiJcZO3SfZZE7TXf0I+Rn+QUHM/vosMLOurSX/MkvpDIO
+4ZL1jVoz/5mN79BNXVlaPtlE5oF8NA06PeSfOyR1GcqE13O1XvgUZGdopQubpna/
+7PSok1B6FYa6achOaTADb46fh1OswTsx/svDjj9DSZlGbmjPh0/Q85c1aUyBUlPg
+jltlN7Q1zwuvMy6EDb80tZOibRodO+zIKwXwjYJAujena4r/56wWgph1B+T07dWw
+kJfLLqoRQZ95oGZKwTBx/6lotYiW/jCUGw1hJqEq9KDkjvCz5RlW3uix0bpHqGBN
+LqChiKRtT96BIV8YULGV1Moli4sLitVgGtpBDTqqfuWI2n2JCGRop+qbPNGUTTD2
+jKs6FIKYk7etcFVssaYUmg61TXPTr2r+ZPoAxxey8kz4n1/Sv+yv3PCV70S4sQq2
+s+lnXDsiQMgG9B1SSoFGWXBFkWXNGYDOoIzwNpihdfQnEup7kOXsPcILHk7K8A1L
+DZeEq/jEZD55pUVuuRdXtvD3LsA=
+-----END CERTIFICATE-----
+---
+Server certificate
+subject=C=US, O=Boeing, OU=servers, CN=sres.web.boeing.com
+issuer=C=US, O=Boeing, OU=certservers, CN=Boeing Basic Assurance Software Issuing CA G3
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Peer signature type: rsa_pkcs1_sha256
+Peer Temp Key: ECDH, prime256v1, 256 bits
+---
+SSL handshake has read 5275 bytes and written 1676 bytes
+Verification: OK
+---
+New, TLSv1.2, Cipher is ECDHE-RSA-AES128-GCM-SHA256
+Protocol: TLSv1.2
+Server public key is 2048 bit
+Secure Renegotiation IS supported
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+SSL-Session:
+    Protocol  : TLSv1.2
+    Cipher    : ECDHE-RSA-AES128-GCM-SHA256
+    Session-ID: 3D79766AC12C9A3F84215A708A54A3A41A763A6074EEF95733C5CF4B19A4B376
+    Session-ID-ctx: 
+    Master-Key: 8F568E54FB7C405F3A7257764A04F8798D76FC57D3AF921647539C7A7369A6BEFDAAD7DD00D73C17EF437BECBA50244E
+    PSK identity: None
+    PSK identity hint: None
+    SRP username: None
+    Start Time: 1774233366
+    Timeout   : 7200 (sec)
+    Verify return code: 0 (ok)
+    Extended master secret: yes
+---
+^Z
+zsh: suspended  openssl s_client -showcerts -connect sres.web.boeing.com:443
+so714f@Mac ~ % curl -v https://sres.web.boeing.com/ 2>&1 | sed -n '1,200p'
+* Uses proxy env variable https_proxy == 'http://www-proxy.boeing.com:31060'
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+
+
+
+
+  0     0    0     0    0     0      0      0 --:--:--  0:00:01 --:--:--     0* Host www-proxy.boeing.com:31060 was resolved.
+* IPv6: (none)
+* IPv4: 192.42.207.21
+*   Trying 192.42.207.21:31060...
+* Connected to www-proxy.boeing.com (192.42.207.21) port 31060
+* CONNECT tunnel: HTTP/1.1 negotiated
+* allocate connect buffer
+* Establish HTTP proxy tunnel to sres.web.boeing.com:443
+> CONNECT sres.web.boeing.com:443 HTTP/1.1
+> Host: sres.web.boeing.com:443
+> User-Agent: curl/8.7.1
+> Proxy-Connection: Keep-Alive
+> 
+< HTTP/1.0 200 Connection established
+< 
+* CONNECT phase completed
+* CONNECT tunnel established, response 200
+* ALPN: curl offers h2,http/1.1
+* (304) (OUT), TLS handshake, Client hello (1):
+} [324 bytes data]
+*  CAfile: /etc/ssl/cert.pem
+*  CApath: none
+* (304) (IN), TLS handshake, Server hello (2):
+{ [87 bytes data]
+* TLSv1.2 (IN), TLS handshake, Certificate (11):
+{ [4776 bytes data]
+* TLSv1.2 (IN), TLS handshake, Server key exchange (12):
+{ [333 bytes data]
+* TLSv1.2 (IN), TLS handshake, Server finished (14):
+{ [4 bytes data]
+* TLSv1.2 (OUT), TLS handshake, Client key exchange (16):
+} [70 bytes data]
+* TLSv1.2 (OUT), TLS change cipher, Change cipher spec (1):
+} [1 bytes data]
+* TLSv1.2 (OUT), TLS handshake, Finished (20):
+} [16 bytes data]
+* TLSv1.2 (IN), TLS change cipher, Change cipher spec (1):
+{ [1 bytes data]
+* TLSv1.2 (IN), TLS handshake, Finished (20):
+{ [16 bytes data]
+* SSL connection using TLSv1.2 / ECDHE-RSA-AES128-GCM-SHA256 / [blank] / UNDEF
+* ALPN: server did not agree on a protocol. Uses default.
+* Server certificate:
+*  subject: C=US; O=Boeing; OU=servers; CN=sres.web.boeing.com
+*  start date: Apr 17 08:53:10 2024 GMT
+*  expire date: Jun 16 08:53:10 2026 GMT
+*  subjectAltName: host "sres.web.boeing.com" matched cert's "sres.web.boeing.com"
+*  issuer: C=US; O=Boeing; OU=certservers; CN=Boeing Basic Assurance Software Issuing CA G3
+*  SSL certificate verify ok.
+* using HTTP/1.x
+> GET / HTTP/1.1
+> Host: sres.web.boeing.com
+> User-Agent: curl/8.7.1
+> Accept: */*
+> 
+* Request completely sent off
+< HTTP/1.1 302 Found
+< Date: Mon, 23 Mar 2026 02:36:49 GMT
+< Server: Apache/2.4.62 (Red Hat Enterprise Linux) OpenSSL/3.5.1
+* Illegal STS header skipped
+< Strict-Transport-Security: 
+< Location: https://sres.web.boeing.com/ui/
+< Content-Length: 215
+< Content-Type: text/html; charset=iso-8859-1
+< Set-Cookie: BIGipServersres-443-pool=4028428042.47873.0000; path=/; Httponly; Secure
+< 
+{ [215 bytes data]
+100   215  100   215    0     0     88      0  0:00:02  0:00:02 --:--:--    88
+* Connection #0 to host www-proxy.boeing.com left intact
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>302 Found</title>
+</head><body>
+<h1>Found</h1>
+<p>The document has moved <a href="https://sres.web.boeing.com/ui/">here</a>.</p>
+</body></html>
+so714f@Mac ~ % 
+so714f@Mac ~ % 
+so714f@Mac ~ % 
+so714f@Mac ~ % 
+so714f@Mac ~ % python3 -c "import certifi; print(certifi.where())"
+/Library/Frameworks/Python.framework/Versions/3.13/lib/python3.13/site-packages/certifi/cacert.pem
+"
+assistant: Thanks — the logs are helpful. Summary of what’s happening and next steps.
+
+What the outputs show
+- python3 ssl default verify paths:
+  - Python/openssl is using /Library/Frameworks/Python.framework/Versions/3.13/etc/openssl/cert.pem as its CA bundle.
+- openssl s_client to sres.web.boeing.com shows the server chain is valid and chains to Boeing BAS Root/Issuing CA (Verification: OK).
+- curl (through Boeing proxy) also verifies the site successfully — curl used CAfile /etc/ssl/cert.pem on your mac and succeeded.
+- pip failed with: CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain — pip/requests used Python’s CA bundle (or certifi) and that bundle does not include the Boeing CA(s).
+
+Root cause
+- Python/pip is using a different CA bundle than the system/curl chain. The Python bundle at /Library/.../cert.pem (or certifi’s cacert.pem) does not contain the Boeing Basic Assurance CA that signs sres.web.boeing.com, so TLS verification fails for pip even though system tools (curl/openssl with system trust) succeed.
+
+Safe remediation options (pick one)
+
+1) Recommended short-term — point pip/python to a CA bundle that includes Boeing CA(s)
+- Create a local PEM bundle including the Boeing issuing + root certs (concatenate them; root last), e.g. ~/boeing-ca.pem
+- Then run:
+  - export SSL_CERT_FILE=~/boeing-ca.pem
+  - export REQUESTS_CA_BUNDLE=~/boeing-ca.pem
+  - pip3 install --cert ~/boeing-ca.pem poetry
+- This affects only your shell session and is safe.
+
+2) Recommended long-term — add Boeing CA(s) to the certificate store pip uses
+- Option A (append to certifi bundle that pip uses):
+  - Locate certifi file: python3 -c "import certifi; print(certifi.where())"
+  - Append Boeing PEM(s) to that file (sudo if required). Example:
+    - cat BoeingRoot.crt >> /Library/.../python.../site-packages/certifi/cacert.pem
+  - Then pip will use the augmented cert bundle.
+- Option B (set SSL_CERT_FILE permanently):
+  - Create a managed bundle at /usr/local/etc/ssl/boeing-cacert.pem and set SSL_CERT_FILE in your shell rc (~/.zshrc) or pip config.
+- Option C (macOS system trust):
+  - Import Boeing CA(s) into Keychain Access → System → Always Trust. This is best if other apps should trust the CA without editing Python bundles.
+
+3) Quick & insecure test-only (don’t use long term)
+- pip3 install --trusted-host sres.web.boeing.com poetry
+- This disables verification for that host and is not recommended beyond a quick test.
+
+How to get the Boeing CA cert(s)
+- Download from Boeing PKI links (examples in PKI docs) or extract from openssl s_client:
+  - openssl s_client -showcerts -connect sres.web.boeing.com:443
+  - Copy the BEGIN/END blocks into separate files (issuing + root).
+
+Exact example (safe session approach)
+1. Save CA chain:
+   - Create file ~/boeing-ca.pem with the issuing and root certificates (PEM format).
+2. Test pip using that bundle:
+   - export SSL_CERT_FILE=~/boeing-ca.pem
+   - export REQUESTS_CA_BUNDLE=~/boeing-ca.pem
+   - pip3 install poetry
+3. If it works, make it permanent by adding the export lines to ~/.zshrc or by appending the PEM to certifi’s cacert.pem.
+
+Useful verification commands
+- Confirm Python is using the expected bundle:
+  - python3 -c "import ssl; print(ssl.get_default_verify_paths())"
+- Confirm certifi path:
+  - python3 -c "import certifi; print(certifi.where())"
+- Test curl with a custom CA file:
+  - curl --cacert ~/boeing-ca.pem -v https://sres.web.boeing.com/
+- Re-run pip with explicit cert:
+  - pip3 install --cert ~/boeing-ca.pem poetry
+
+Notes & recommendations
+- Prefer updating a controlled CA bundle (certifi or SSL_CERT_FILE) rather than disabling verification.
+- If you’re using a corporate Python distribution, coordinate with your local IT/PKI team — they may provide an approved CA bundle or instruct you to import the new BAS certificates into system trust.
+- If this is related to the KeyFactor migration or new BAS chain rollout, attend PKI Office Hours or check https://boeing.sharepoint.us/sites/IAMPKI.
+
+If you want, I can:
+- Draft the exact shell commands to create ~/boeing-ca.pem from openssl output and append it to certifi, or
+- Provide step-by-step instructions to import the CA into macOS Keychain and make it trusted system-wide. Which would you like?
+user: How do I create this CA chain file and/or update it? I actually do have where is was pointing to where I clearly did it before the G3/G4 newer certs were globally pushed by boeing IT located at `/Users/so714f/.ssl/certs/boeing-ca-bundle.pem` but I dont know how to update or recreate  (or verify afterword) that the correct issuing and root certificates are bundled? Can you specify the steps for addressing everything as a long-term, robust solution including every possible measures to ensure the correct boeing CA(s) are always used (append Boeing PEM(s) to certifi bundle, setting every environment variable specifying which zsh file – .zshenv, .zprofile, .zshrc – should store each, pip config settings for trusting, etc.)? I did run `pip3 install --trusted-host sres.web.boeing.com poetry` and it worked which is awesome but I am going to have to move to my conda configuration/set up after this and I would feel more comfortable if I wasn't circumventing any security protocols
+assistant: Good — you already have a working bundle (/Users/so714f/.ssl/certs/boeing-ca-bundle.pem). Below are clear, repeatable steps to recreate/update that file, verify it, and make a robust long-term configuration so Python/pip/requests/conda use the Boeing CA chain reliably without bypassing TLS checks.
+
+Summary plan (what you’ll do)
+1. Obtain Boeing issuing + root PEMs (from AIA URLs or from the server).
+2. Create/replace your bundle file and verify its contents.
+3. Test with curl, openssl and pip.
+4. Make the bundle the canonical CA source for Python/pip/requests by:
+   - Appending to certifi (optional) or
+   - Setting SSL_CERT_FILE & REQUESTS_CA_BUNDLE (recommended)
+   - Configuring pip to use the cert file
+5. Make the env configuration persistent and available to shells and services (.zshenv).
+6. Configure conda to trust the same CA.
+7. (Optional but recommended) Import Boeing root to macOS System Keychain for system-wide trust.
+8. Document and backup the bundle.
+
+Step A — obtain the issuing + root PEM(s)
+Option 1 — download Boeing PEMs (preferred if you have official URLs)
+- Example BAS links shown in Boeing docs (replace if you have different URLs):
+  - Boeing BAS Issuing CA G4/G3 (intermediate): http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Issuing%20CA%20SHA256%20G4.crt
+  - Boeing BAS Root CA G3: http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Root%20CA%20SHA256%20G3.crt
+- wget/curl to download:
+  - mkdir -p ~/.ssl/certs && cd ~/.ssl/certs
+  - curl -O "http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Issuing%20CA%20SHA256%20G4.crt"
+  - curl -O "http://crl.keyfactorpkigeo.com/Boeing%20BAS%20Root%20CA%20SHA256%20G3.crt"
+
+Option 2 — extract from the server (if official links not available)
+- openssl s_client -showcerts -connect sres.web.boeing.com:443 </dev/null \
+  | awk '/-----BEGIN CERTIFICATE-----/{flag=1} flag{print} /-----END CERTIFICATE-----/{print; flag=0}' \
+  > ~/tmp/sres-chain.pem
+- Then split/inspect subjects with:
+  - openssl crl2pkcs7 -nocrl -certfile ~/tmp/sres-chain.pem | openssl pkcs7 -print_certs -noout
+
+Step B — create/replace your canonical bundle
+- Decide canonical path: you already use /Users/so714f/.ssl/certs/boeing-ca-bundle.pem
+- Create the bundle with issuing first, root last (order matters for some validators):
+  - cd ~/.ssl/certs
+  - cat Boeing_BAS_Issuing_G4.crt Boeing_BAS_Root_G3.crt > boeing-ca-bundle.pem
+- Set secure permissions:
+  - chmod 644 boeing-ca-bundle.pem
+  - chown $(id -u):$(id -g) boeing-ca-bundle.pem
+
+Step C — verify the bundle is correct
+1. Show subjects to confirm correct certs and order:
+   - awk '/BEGIN/{i++} {print > "cert-"i".pem"}' boeing-ca-bundle.pem   # splits into cert-1.pem cert-2.pem
+   - for f in cert-*.pem; do echo "== $f =="; openssl x509 -noout -subject -issuer -dates -in $f; done
+   - Ensure cert-1 is Issuing CA, cert-2 is Root CA and validity dates look good.
+2. Test resolving server chain with the new bundle:
+   - curl --cacert ~/.ssl/certs/boeing-ca-bundle.pem -v https://sres.web.boeing.com/  (should say “SSL certificate verify ok”)
+   - python3 -c "import ssl,socket; cp='${HOME}/.ssl/certs/boeing-ca-bundle.pem'; ctx=ssl.create_default_context(cafile=cp); s=ctx.wrap_socket(socket.socket(),server_hostname='sres.web.boeing.com'); s.connect(('sres.web.boeing.com',443)); print('ok'); s.close()"
+
+Step D — make Python/pip/requests use it (robust approach)
+You have two safe options — pick one or combine for redundancy.
+
+Option 1 (recommended): set SSL_CERT_FILE & REQUESTS_CA_BUNDLE environment variables
+- Put these exports into ~/.zshenv so they apply to all login and non-login zsh shells and are available to processes started from GUI too:
+  - echo 'export SSL_CERT_FILE="$HOME/.ssl/certs/boeing-ca-bundle.pem"' >> ~/.zshenv
+  - echo 'export REQUESTS_CA_BUNDLE="$HOME/.ssl/certs/boeing-ca-bundle.pem"' >> ~/.zshenv
+  - Then source: source ~/.zshenv   (or log out/in)
+- Verify:
+  - python3 -c "import ssl,os; print(os.environ.get('SSL_CERT_FILE')); print(ssl.get_default_verify_paths())"
+  - pip3 install --cert ~/.ssl/certs/boeing-ca-bundle.pem poetry   (or simply pip3 install poetry after environment set)
+
+Option 2 (alternate / complementary): append to certifi bundle
+- This makes pip/requests that rely on certifi find the CA without env variables.
+- Locate certifi:
+  - python3 -c "import certifi,sys; print(certifi.where())"
+- Backup then append:
+  - sudo cp $(python3 -c "import certifi; print(certifi.where())") /usr/local/etc/cacert.pem.bak
+  - cat ~/.ssl/certs/boeing-ca-bundle.pem | sudo tee -a $(python3 -c "import certifi; print(certifi.where())") >/dev/null
+- Verify:
+  - python3 -c "import certifi,ssl; print(certifi.where()); ctx=ssl.create_default_context(cafile=certifi.where()); import socket; s=ctx.wrap_socket(socket.socket(),server_hostname='sres.web.boeing.com'); s.connect(('sres.web.boeing.com',443)); print('ok'); s.close()"
+
+Notes:
+- Appending to certifi modifies a package file; pip upgrades of certifi may overwrite it — track this in your documentation/automation and re-append if certifi is updated.
+- Using SSL_CERT_FILE avoids modifying packages and is easier to manage.
+
+Step E — pip config (optional safety)
+- You can set pip to always use the cert by editing pip config:
+  - mkdir -p ~/.config/pip
+  - cat >> ~/.config/pip/pip.conf <<EOF
+    [global]
+    cert = /Users/so714f/.ssl/certs/boeing-ca-bundle.pem
+    EOF
+- This ensures pip (only) uses the file without relying on env var.
+
+Step F — conda trust and Conda environments
+- Conda (conda-forge/miniconda) may use its own SSL bundle. Make Con da use the same file:
+  - Add to ~/.condarc:
+    ssl_verify: /Users/so714f/.ssl/certs/boeing-ca-bundle.pem
+- For conda-build or env-specific tasks make sure CONDA_SSL_VERIFY env var or the .condarc are set.
+- Also set REQUESTS_CA_BUNDLE and SSL_CERT_FILE in ~/.zshenv so conda-run Python sessions see them.
+
+Step G — macOS System Keychain (optional system-wide)
+- Import root into System keychain and mark Always Trust so system apps and GUI-launched processes inherit trust.
+  - open Keychain Access → System → File → Import Items… → select Boeing root .crt → double-click it and choose Always Trust.
+- You will need admin rights. This helps apps that use macOS trust store (not Python/openssl directly).
+
+Step H — verification suite (run these after changes)
+1. curl with default system (no extra flags):
+   - curl -v https://sres.web.boeing.com/
+   - should show “SSL certificate verify ok.”
+2. python quick SSL test using default context (after env var set):
+   - python3 -c "import ssl,socket,os; print('SSL_CERT_FILE',os.environ.get('SSL_CERT_FILE')); ctx=ssl.create_default_context(); s=ctx.wrap_socket(socket.socket(),server_hostname='sres.web.boeing.com'); s.connect(('sres.web.boeing.com',443)); print('python ssl ok'); s.close()"
+3. pip install normal:
+   - pip3 install poetry
+4. conda test:
+   - conda search <some package> or conda install -n base pip  (validate no SSL errors)
+
+Step I — automation & maintenance (long-term robustness)
+- Backups: keep a copy of boeing-ca-bundle.pem under versioned backup or in config repo and track change date.
+- Monitoring: add a periodic check (cron or GitHub Actions) that tests TLS verification for critical hosts using your bundle.
+- Cert updates: whenever Boeing announces CA rotation (e.g., G3/G4), repeat Step A-B and run the verification suite. Document the change in your notes.
+- Avoid --trusted-host as a permanent fix — it disables verification.
+- If you administer multiple machines, use a configuration management tool (Jamf/MDM/Ansible) to deploy the bundle, set SSL_CERT_FILE, and/or update certifi centrally.
+
+Which zsh file to modify (explicit)
+- Put SSL_CERT_FILE and REQUESTS_CA_BUNDLE in ~/.zshenv:
+  - Reason: .zshenv is sourced for all zsh invocations (login, non-login, scripts) — ensures environment variables are available for GUI apps started from Finder/Spotlight if you export them in the login environment; some macOS GUI apps may still not pick them up unless launched after you log out/in.
+- You can put interactive-only or shell-only things in ~/.zshrc, but not the SSL variables — keep them in ~/.zshenv to ensure subprocesses see them.
+- If you use other shells, set equivalent
+user: <install.sh>
+<screenshot of :.ssl:certs: content.png>
+<keychain certs resulting from "CA G" search.png>
+I attached a screenshot named "screenshot of... certs: content.png" that shows the result objects downloaded from running the curl commands you sent me where the names include "%20"  – the screenshot also show one certificates opened in preview so you can partially see the content. I have a macOS and I do have in my keychain (possibly added during a previous debug session) certs that have G3 and G4 in the name (attached screenshot named keychain certs resulting from "CA G" search.png). Also, the only cert link that opens for me (I have a macos): `https://crl.boeing.com/crl/` and I do see a lot of certs that I want to ensure are not missing so I just want you to verify against the install script I attached which is from the devops-setup boeing repo's components/certs/install.sh script (devops-setup is backend repo for boeing windows gui app that installs software/packages properly but is unfortunately  not* set up for macos – which is why we are here right now). Please provide the corrected commands so that "%20"s are not in the downloaded script name and additionally provide a corrected version of the install script that includes verification and long-term hardening steps and even an update-ca like functional script if possible (apparently exists for linux so shouldnt be hard to recreate for macOS). Instead of trying to type the sh file content out here, provide as files  can download in this chat because your responses often are difficult if not messed up entirely from code box formatting. Finally, there is opensll installed by default but homebrew (and I presume other installers might do so similarly) installed it's own openssl since it was a dependency of a different tool installed via brew. Unsure if this can cause issues and if so, if there is a way to specify which openssl to use or if we can prevent homebrew (and other installers in the future like cargo and conda) from installing dependencies that might exist already? 
+
+---
+
+assistant: Thanks — lots to cover. Below I’ll:
+
+- Give a corrected, hardened install.sh you can save and run on macOS/Linux (no %20 in filenames).
+- Show commands to create/verify the PEM bundle, import into macOS Keychain, update certifi and conda, and persist environment variables.
+- Explain how to handle multiple OpenSSL installs and how to force the script to use a specific openssl binary.
+- Note on file delivery: I can’t upload files here, but I’ll provide the full script content and the exact commands you can copy/paste to create files locally.
+
+Important safety notes before you run anything
+- Review the script before running. It downloads Boeing CA certs from Boeing-hosted CRL/AIA URLs; confirm those URLs are approved for your environment.
+- You’ll need admin rights for some steps (Keychain/System-level actions, updating cert bundles).
+- Do not use --trusted-host as a permanent workaround.
+
+1) Corrected, hardened install.sh
+- Save the content below into a file (for example ~/bin/install-boeing-certs.sh), make it executable (chmod +x), then run it.
+- It:
+  - Downloads PEM/DER files cleanly (no %20 in local filenames).
+  - Converts DER→PEM as needed.
+  - Builds a canonical bundle at $HOME/.ssl/certs/boeing-ca-bundle.pem (creates directories).
+  - Verifies by testing TLS to a Boeing host using that bundle.
+  - Optionally appends the OS/system trust store (macOS Keychain system roots are handled separately).
+  - Optionally appends the current certifi bundle (backed up).
+  - Writes pip & conda config and exports SSL env vars into ~/.zshenv.
+  - Allows forcing a specific openssl binary (via OPENSSL_BIN env var).
+
+Copy this content and save it to ~/bin/install-boeing-certs.sh:
+
+#!/usr/bin/env bash
+set -euo pipefail
+IFS=$'\n\t'
+
+# CONFIG
+BUNDLE_DIR="${HOME}/.ssl/certs"
+BUNDLE_FILE="${BUNDLE_DIR}/boeing-ca-bundle.pem"
+BACKUP_DIR="${HOME}/.ssl/certs/backups/$(date -u +%Y%m%dT%H%M%SZ)"
+CERTIFI_SAFE_BACKUP_DIR="${BACKUP_DIR}/certifi"
+PIP_CONFIG_DIR="${HOME}/.config/pip"
+PIP_CONFIG="${PIP_CONFIG_DIR}/pip.conf"
+CONDA_RC="${HOME}/.condarc"
+ZSHENV="${HOME}/.zshenv"
+
+# Allow overriding openssl binary (example: /usr/local/opt/openssl@3/bin/openssl)
+OPENSSL_BIN="${OPENSSL_BIN:-openssl}"
+
+# Boeing cert URLs (use official AIA/CRL locations)
+declare -a BOEING_URLS=(
+  "https://crl.boeing.com/crl/Boeing%20BAS%20Issuing%20CA%20SHA256%20G4.crt"
+  "https://crl.boeing.com/crl/Boeing%20BAS%20Root%20CA%20SHA256%20G3.crt"
+  "https://crl.boeing.com/crl/Boeing%20Basic%20Assurance%20Software%20Issuing%20CA%20G3.crt"
+  "https://crl.boeing.com/crl/Boeing%20Basic%20Assurance%20Software%20Root%20CA%20G2.crt"
+)
+
+# Hosts to test against after building bundle
+TEST_HOSTS=( "sres.web.boeing.com" "git.web.boeing.com" )
+
+echo "Using openssl: $(command -v "${OPENSSL_BIN}" || true)"
+mkdir -p "${BUNDLE_DIR}"
+mkdir -p "${BACKUP_DIR}"
+touch "${BUNDLE_FILE}"
+chmod 644 "${BUNDLE_FILE}"
+
+echo "Backing up existing bundle if present..."
+if [ -f "${BUNDLE_FILE}" ]; then
+  mkdir -p "${BACKUP_DIR}"
+  cp -a "${BUNDLE_FILE}" "${BACKUP_DIR}/boeing-ca-bundle.pem.bak"
+  echo "Backup saved to ${BACKUP_DIR}"
+fi
+
+# Helper to download and convert certificate to PEM and append to bundle
+download_and_append() {
+  local url="$1"
+  local tmpder tmpcert
+  tmpder="$(mktemp -t boeing_cert_der.XXXX.crt)"
+  tmpcert="$(mktemp -t boeing_cert_pem.XXXX.pem)"
+  trap 'rm -f "${tmpder}" "${tmpcert}"' RETURN
+
+  echo "Downloading: ${url}"
+  if ! curl --retry 5 --fail -L -o "${tmpder}" "${url}"; then
+    echo "Failed to download ${url}" >&2
+    return 1
+  fi
+
+  # Try to detect DER vs PEM and convert if necessary
+  if grep -q "BEGIN CERTIFICATE" "${tmpder}" 2>/dev/null; then
+    # already PEM
+  /bin/openssl (Intel) or /opt/homebrew/opt/openssl@3/bin/openssl (Apple Silicon).
+  - The script allows overriding OPENSSL_BIN to choose which openssl to use for x509 conversion/inspection.
+  - Python’s ssl module is linked against the OpenSSL that was present at Python build time. Updating the openssl binary does not automatically change Python’s trusted CA location; that’s why SSL_CERT_FILE or certifi modifications are used instead of relying on the openssl used by Python.
+- If you want to ensure Homebrew doesn’t install duplicate openssl: you can’t fully prevent tools from depending on it. But you can:
+  - Use brew to manage openssl and set PATH to the desired version during dev work.
+  - Use virtualenv/pyenv/conda to create predictable Python environments.
+
+10) Recommended long-term operational measures (summary)
+- Keep a canonical bundle in source control (private repo) for your machines and a small updater script (the one above).
+- Run the updater script as part of login/startup via launchd or a simple cron/periodic job (weekly) that checks validity and compares issuer fingerprints.
+- Monitor certificate expirations for Boeing CA chain and test TLS to critical hosts after PKI rollouts/announcements.
+- Avoid --trusted-host; use proper CA bundles.
+- If many machines, deploy via MDM / configuration-management tool (Jamf / Chef / Ansible) to copy the bundle into /etc/ssl/certs and set env vars or update cert stores.
+
+11) About your screenshots & existing keychain contents
+- Your Keychain screenshots show a mix of Boeing G2/G3/G4 names in System and login keychains; that’s fine. The script will optionally add missing system roots. Because Keychain stores already contain Boeing certs, adding the bundle and pointing Python to it will ensure consistency across Python tools and system tools.
+- Use the verification commands above to confirm the PEM bundle contains the certificates you expect and that curl/python succeed.
+
+12) If you want me to:
+- Provide a minimal install script variant that only updates certifi (no prompts).
+- Provide a launchd plist example to auto-run the script weekly.
+- Produce a small validator script that compares the currently installed bundle fingerprint vs Boeing published fingerprints (you’d need the published fingerprints to compare).
+
+How to save the script locally (copy/paste)
+- In terminal:
+  - mkdir -p ~/bin
+  - cat > ~/bin/install-boeing-certs.sh <<'EOF'
+  - [paste the entire script text from step 1 here]
+  - EOF
+  - chmod +x ~/bin/install-boeing-certs.sh
+
+Run with chosen openssl (optional):
+- /usr/local/opt/openssl@3/bin/openssl --version  # confirm path
+- OPENSSL_BIN="/usr/local/opt/openssl@3/bin/openssl" ~/bin/install-boeing-certs.sh
+
+If you want, I can now:
+- Provide the launchd plist for automatic periodic execution.
+- Provide the minimal cert-only variant.
+- Or walk you step-by-step interactively while you run the script and verify outputs.
+
+Which follow-up would you like?

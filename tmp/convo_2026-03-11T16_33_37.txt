@@ -1,0 +1,684 @@
+user: Please review https://git.web.boeing.com/devs/resources/blob/main/tools/Docker.md#linux .
+assistant: I can’t open that internal Boeing URL directly. If you paste the Linux section text here (or grant a copy of the relevant content), I’ll do a detailed line-by-line review. In the meantime, below is a focused, practical review checklist and suggested improvements for a “Docker on Linux” document—useful both for quick validation and for direct edits you can apply.
+
+High-level summary checklist
+- Purpose & scope: Is the doc’s intent and target audience clear (developers, CI agents, admins)?  
+- Prerequisites: Kernel, distro versions, CPU, disk, memory, required packages, and network/firewall requirements are listed.  
+- Supported Docker versions: Document exact versions supported or tested and upgrade guidance.  
+- Installation instructions: Clear commands for the supported distributions (apt/yum/dnf/zypper) and for official repo setup.  
+- Post-install configuration: `docker` group usage, enabling systemd service, cgroups v1 vs v2 notes, and rootless Docker info.  
+- Security: SELinux/AppArmor guidance, user namespaces, privileged container warnings.  
+- System integration: How to configure logging, storage drivers, and registry authentication.  
+- Troubleshooting & verification: Commands to verify installation and common failure resolutions.  
+- Examples: Common useful commands and minimal Compose examples.  
+- Automation/CI: Steps or snippets for headless installs and non-interactive set up in CI.  
+- Maintenance: How to update, rollback, and cleanup images/containers.  
+- Links & references: Official Docker docs and internal policies for images and secrets.
+
+Concrete items to check/correct in the Linux section
+- Explicit install commands: Provide exact commands for the distro(s). Example for Ubuntu:
+  ```
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl gnupg lsb-release
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] \
+    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+  sudo apt-get update
+  sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+  ```
+- Docker group: Recommend adding non-root users with:
+  `sudo usermod -aG docker $USER`  
+  and note the need to re-login for group membership to apply.
+- systemd service: Ensure the doc shows enabling and starting Docker:
+  `sudo systemctl enable --now docker`
+- Verify installation: Add clear verification steps:
+  `sudo docker run --rm hello-world`
+  and
+  `docker version && docker info`
+- cgroups v2: If target systems may use cgroup v2, include explicit notes and commands to detect/handle it:
+  - Detect: `stat -fc %T /sys/fs/cgroup` or `cat /proc/filesystems` and `cat /sys/fs/cgroup/cgroup.controllers`
+  - If containerd/docker in your env require cgroup v1, document kernel boot flags or container runtime updates.
+- Rootless Docker: If allowed, document install and known limitations (ports <1024, systemd integration caveats).
+- SELinux/AppArmor: Provide instructions for enabling SELinux permissive/enforcing or AppArmor profiles as applicable and implications for volume mounts.
+- Storage drivers: Recommend default storage drivers per distro and note when to change (overlay2 preference on modern kernels), plus commands for diagnosis:
+  `docker info | grep -i "Storage Driver"`
+- Docker config file: Show recommended `/etc/docker/daemon.json` examples (logging driver, registry mirrors):
+  ```json
+  {
+    "log-driver": "json-file",
+    "log-opts": {
+      "max-size": "10m",
+      "max-file": "3"
+    },
+    "storage-driver": "overlay2"
+  }
+  ```
+- Registry auth: Include examples for `docker login`, credential helpers, and how to configure insecure registries (only if necessary and with a strong warning).
+- Troubleshooting common errors:
+  - Docker fails to start: check `sudo journalctl -u docker --no-pager`
+  - Permission denied contacting socket: `ls -l /var/run/docker.sock` and group membership checks
+  - Kernel features missing: `dmesg` or `journalctl` hints
+- Clean-up commands & disk management: Useful commands such as:
+  `docker system prune --all --volumes`
+  and show how to check image/container sizes:
+  `docker system df`
+- Automation: Non-interactive apt/yum installs and service enablement in scripts:
+  `DEBIAN_FRONTEND=noninteractive sudo apt-get -y install docker-ce`
+- Version pinning for stability: Show how to list available packages and pin a version with apt/dpkg or yum/dnf.
+
+Suggested improvements to tone and structure
+- Use numbered step sequences for installation sections to make follow-along easier.
+- Add a “Quick Start” one-liner at top and then deep-dive sections below.
+- Call out any Boeing-specific policy: approved base images, scanning or SBOM requirements, image signing requirements, secrets management.
+- Add one small real-world example (e.g., run a simple nginx container with a mounted volume).
+- Include links to internal CI/CD or image registry documents and to Docker’s official docs for deeper reading.
+
+Small example snippets you can drop into the doc
+- Verify Docker and run test container:
+  ```
+  docker version
+  docker run --rm hello-world
+  ```
+- Enable and start service:
+  `sudo systemctl enable --now docker`
+- Add user to docker group:
+  `sudo usermod -aG docker $USER`
+
+What I need to do a thorough review
+- Paste the Linux section text here, or paste a link copy/paste of the section contents. I’ll:
+  - Provide line-by-line edits and suggested rephrasing
+  - Identify correctness, missing steps, or security concerns
+  - Offer ready-to-copy command snippets and a final recommended version of the section
+
+Would you like to paste the section content here for a detailed edit, or should I produce a suggested full rewrite of a typical “Docker on Linux” section based on the checklist above?
+user: Please translate the content such that the target device is a macos arm64 (apple silicon)
+assistant: Below is a translated, macOS (Apple Silicon / arm64)–targeted version of a “Docker on Linux” style section. It focuses on Apple Silicon specifics, installation options (Docker Desktop and alternatives), verification, common settings, troubleshooting, and best practices for arm64 images and multi‑arch builds.
+
+Quick summary
+- Preferred method: Docker Desktop for Mac (Apple Silicon build).
+- Alternatives (headless / CLI-only): Colima + Docker CLI, Rancher Desktop.
+- Key arm64 considerations: use arm64 images or multi‑arch builds; emulation (qemu) for amd64 is supported but slower.
+- File sharing, filesystem performance, and macOS privacy settings are common friction points.
+
+Prerequisites
+- macOS on Apple Silicon (M1, M2, or later) — arm64 architecture.
+- macOS version compatible with Docker Desktop (check Docker Desktop requirements; commonly macOS 12+ or 13+ depending on Docker version).
+- Sufficient disk space (images and volumes can grow quickly) and memory for the VM/container runtime.
+
+Install Docker Desktop (recommended)
+1. Install Docker Desktop via Homebrew Cask:
+   ```
+   brew install --cask docker
+   ```
+2. Start Docker Desktop from Applications (you can also run `open /Applications/Docker.app`).
+3. On first run, grant required permissions (e.g., virtualization, file access) when macOS prompts. Docker uses Apple’s virtualization.framework on Apple Silicon.
+4. Confirm Docker is running by checking the whale icon in the menu bar and waiting for the “Docker Desktop is running” state.
+
+Verify installation
+- Check Docker version and platform:
+  ```
+  docker version
+  docker info
+  ```
+- Run the test container:
+  ```
+  docker run --rm hello-world
+  ```
+
+Apple Silicon / arm64 specifics
+- Prefer native arm64 images. Example official images often provide multi‑arch manifests that include arm64:
+  `docker pull nginx:latest`
+- If an image lacks arm64, Docker Desktop can use QEMU emulation to run amd64 images, but expect slower startup and runtime.
+- Check the image architectures with:
+  ```
+  docker manifest inspect --verbose <image>:<tag>
+  ```
+- For builds that must support multiple architectures, use Buildx:
+  ```
+  docker buildx create --use --name mybuilder
+  docker buildx build --platform linux/amd64,linux/arm64 -t myimage:multiarch --push .
+  ```
+
+Alternatives to Docker Desktop (headless / scriptable)
+- Colima + Docker CLI: lightweight, good for CI/local headless workflows.
+  ```
+  brew install colima docker
+  colima start --arch aarch64
+  ```
+  Then use `docker` as usual.
+- Rancher Desktop: provides containerd/nerdctl or Docker-compatible CLI and Kubernetes.
+- Use these if you prefer non‑GUI or need different runtime behavior.
+
+Configuration and common settings
+- Resources: Use Docker Desktop > Preferences > Resources to adjust CPU, memory, and disk image size.
+- File sharing: Configure shared folders in Docker Desktop > Preferences > Resources > File Sharing. Note that bind‑mount performance to macOS host is slower than native Linux; use docker volumes for better performance in many cases.
+- Daemon config:
+  - Docker Desktop manages its daemon via UI. Adding `/etc/docker/daemon.json` on macOS may not affect Docker Desktop. Use the Docker Desktop UI for common settings (registry mirrors, insecure registries) or edit Docker Desktop’s advanced settings.
+  - For Colima/Rancher Desktop you can configure their daemon settings via their own config files or CLI options.
+- Logging rotation: configure in Docker Desktop Preferences or using `daemon.json` on non‑Desktop runtimes. Example `daemon.json`:
+  ```json
+  {
+    "log-driver": "json-file",
+    "log-opts": {
+      "max-size": "10m",
+      "max-file": "3"
+    },
+    "storage-driver": "overlay2"
+  }
+  ```
+
+Image registry and credentials
+- Use `docker login` as usual:
+  ```
+  docker login my-registry.example.com
+  ```
+- Docker Desktop integrates with macOS keychain for credential storage by default. Credential helpers are supported.
+- For internal registries that are insecure (HTTP), configure via Docker Desktop > Preferences > Docker Engine (or via `daemon.json` for other runtimes). Mark insecure registries only if absolutely necessary.
+
+Kubernetes (optional)
+- Docker Desktop includes an optional lightweight Kubernetes cluster that can be enabled in Preferences > Kubernetes. This is useful for local testing but not for production workloads.
+- For Kubernetes with Colima or Rancher Desktop, check those products’ Kubernetes support (Rancher Desktop includes k8s; Colima can enable k8s via --kubernetes).
+
+Common commands and maintenance
+- Check running containers:
+  `docker ps -a`
+- Inspect disk usage:
+  `docker system df`
+- Cleanup unused images, containers, networks, and build cache:
+  ```
+  docker system prune --all --volumes
+  ```
+- Remove a specific image:
+  `docker rmi <image>:<tag>`
+
+Troubleshooting (Apple Silicon)
+- Docker won’t start or VM fails:
+  - Ensure virtualization permissions were granted in System Settings.
+  - Check Docker Desktop logs via the app (Troubleshoot > Get Support) or:
+    ```
+    ~/Library/Containers/com.docker.docker/Data/log/vm
+    ```
+- File sharing or volume permission issues:
+  - Ensure host path is included in Docker Desktop file sharing settings.
+  - Remember user mapping: mounts map macOS user to container uid/gid; adjust ownership inside container as needed.
+- Slow filesystem I/O:
+  - Prefer Docker volumes over bind mounts for heavy IO workloads.
+- Image or binary is amd64 only:
+  - Use multi‑arch builds or explicit `--platform linux/amd64` with awareness of QEMU emulation overhead:
+    `docker run --platform linux/amd64 --rm <image>`
+- CLI not found after installing Docker Desktop:
+  - Docker Desktop installs the CLI to PATH when the app runs. Start Docker Desktop, then open a new terminal session.
+- If using Colima and Docker CLI reports connection issues:
+  ```
+  colima status
+  colima start
+  ```
+
+Security & policies
+- Avoid running containers as privileged unless necessary. Use least privilege for container capabilities.
+- Follow Boeing internal policies for base images, vulnerability scanning, SBOMs, signing, and secrets management.
+- Be careful with insecure registries and credential handling—use TLS and authenticated registries whenever possible.
+
+Best practices for Apple Silicon
+- Build multi‑arch images if images will be run on mixed arch fleets.
+- Test images on arm64 hosts or CI runners that emulate arm64 to catch architecture-specific bugs early.
+- Use `docker buildx` for reproducible multi‑arch builds and `--push` to upload multi‑arch manifests to a registry.
+- For development workflows with heavy I/O, prefer volumes and keep hot code in volumes rather than bind mounts when performance matters.
+
+Example snippets
+- Verify Docker and run test container:
+  ```
+  docker version
+  docker run --rm hello-world
+  ```
+- Multi‑arch build with Buildx:
+  ```
+  docker buildx create --use --name mybuilder
+  docker buildx build --platform linux/amd64,linux/arm64 -t myorg/myapp:latest --push .
+  ```
+- Start Colima for Apple Silicon:
+  ```
+  colima start --arch aarch64
+  ```
+
+What I can do next
+- If you paste the Linux section text here, I can produce a direct line‑by‑line macOS arm64 translation of that content (keeping your style and structure).
+- I can also prepare a ready‑to‑drop macOS arm64 section tailored to your internal guidelines (include any Boeing-specific policies you want enforced).
+user: plwase provide specific instructions for installing and configuring git git-lfg and then python/pip on macOS. Translate any linux/unix instructions if no macos instructions are found
+assistant: Below are step‑by‑step, macOS (Intel and Apple Silicon)–specific instructions for installing and configuring Git, Git LFS, and Python/pip. I include Homebrew‑based installs (recommended), macOS permissions notes, common configuration, and translations of typical Linux commands to their macOS equivalents.
+
+Git — install and configure
+- Prereqs: Xcode command‑line tools (provides `git` if no other install):
+  - Install or ensure installed:
+    `xcode-select --install`
+- Preferred install (Homebrew — gets a recent Git):
+  - Install Homebrew if you don’t have it:
+    ```bash
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    ```
+  - Install Git:
+    ```
+    brew install git
+    ```
+  - On Apple Silicon, Homebrew default path is `/opt/homebrew`; on Intel it's `/usr/local`. Ensure Homebrew’s `bin` is in your PATH (the Homebrew installer usually prints instructions). Example add to `~/.zprofile` (zsh default shell):
+    ```bash
+    # Apple Silicon
+    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+    ```
+- Verify:
+  - Version:
+    `git --version`
+  - Basic info:
+    `git config --list --show-origin`
+- Configure user identity and helpful defaults:
+  ```
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"
+  git config --global core.editor "code --wait"        # or vim, nano
+  git config --global pull.rebase false                # or true if you prefer rebase
+  git config --global credential.helper osxkeychain    # use macOS Keychain
+  git config --global init.defaultBranch main
+  ```
+- macOS credential helper note:
+  - `git credential-osxkeychain` is provided; Homebrew Git usually sets `credential.helper` to `osxkeychain`. To explicitly enable:
+    `git credential-osxkeychain`
+
+Git LFS (Large File Storage) — install and configure
+- Install via Homebrew:
+  `brew install git-lfs`
+- Initialize for your user (sets up hooks):
+  `git lfs install --system`  
+  or per repo:
+  ```
+  cd /path/to/repo
+  git lfs install
+  ```
+- Track file types (example: large media and binaries):
+  ```
+  git lfs track "*.psd"
+  git lfs track "*.zip"
+  git add .gitattributes
+  git commit -m "Track large binaries with Git LFS"
+  ```
+- Verify tracked patterns:
+  `git lfs track --list`
+- If migrating existing large files to LFS, follow `git lfs migrate` docs; a basic migration example (careful: rewrites history):
+  ```
+  git lfs migrate import --include="*.psd,*.zip"
+  ```
+- macOS Gatekeeper / notarization: Homebrew packages are signed; if you downloaded `git-lfs` binary or installer from elsewhere, macOS may block it — open Security & Privacy to allow if needed.
+
+Python and pip — install and configure
+Two common approaches: Homebrew Python (systemwide user install) or pyenv (per-user versions and virtualenv flexibility). I recommend `pyenv` for development to easily manage multiple Python versions. Both approaches below.
+
+A) Homebrew Python (quick, system‑wide installation)
+- Install:
+  `brew install python`
+- Verify:
+  `python3 --version`
+  `pip3 --version`
+- Recommended: Use `python3` and `pip3` explicitly. Create venvs:
+  ```
+  python3 -m venv ~/.venvs/myenv
+  source ~/.venvs/myenv/bin/activate
+  pip install --upgrade pip setuptools wheel
+  ```
+- macOS note: Homebrew’s `python` installs into Homebrew prefix; ensure Homebrew `bin` is on PATH (see Git section).
+
+B) pyenv (recommended for multiple versions)
+- Install dependencies and pyenv:
+  - On Apple Silicon, install `openssl` and `readline` via Homebrew first:
+    ```
+    brew install openssl readline sqlite3 xz zlib
+    brew install pyenv
+    ```
+  - Add pyenv initialization to your shell startup (zsh):
+    ```bash
+    # Add to ~/.zprofile or ~/.zshrc
+    echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.zprofile
+    echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.zprofile
+    echo 'eval "$(pyenv init --path)"' >> ~/.zprofile
+    source ~/.zprofile
+    ```
+- Install a Python version:
+  `pyenv install 3.11.6`  # replace with desired version
+- Set local or global version:
+  `pyenv global 3.11.6`   # sets default for your user
+  or per project:
+  ```
+  cd /path/to/project
+  pyenv local 3.11.6
+  ```
+- Verify:
+  `python --version`
+  `pip --version`
+- Create and use virtual environments (venv or pipenv/poetry):
+  ```
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install --upgrade pip setuptools wheel
+  ```
+- If you need `python` to map to `python3` in PATH, pyenv handles shims; ensure your shell init sourced correctly.
+
+pip configuration and best practices
+- Always use virtual environments for projects to avoid polluting global site packages.
+- Upgrade pip inside env:
+  `pip install --upgrade pip`
+- Common useful pip config (global file `~/.config/pip/pip.conf` or macOS `~/.pip/pip.conf`):
+  ```ini
+  [global]
+  timeout = 60
+  # index-url = https://internal-pypi.example.com/simple
+  ```
+- Installing packages with Apple Silicon native wheels:
+  - Prefer wheels or use `pip` with `--prefer-binary` when possible.
+  - For packages that need compilation, ensure Xcode command-line tools installed (`xcode-select --install`) and Homebrew deps (openssl, sqlite) are present; set environment variables if required:
+    ```bash
+    export LDFLAGS="-L/opt/homebrew/opt/openssl/lib"
+    export CPPFLAGS="-I/opt/homebrew/opt/openssl/include"
+    export PKG_CONFIG_PATH="/opt/homebrew/opt/openssl/lib/pkgconfig"
+    ```
+  - On Intel Macs, paths are `/usr/local/opt/...`.
+
+Translating common Linux commands to macOS equivalents
+- `apt-get install` → `brew install`
+- `systemctl` → macOS uses `launchd` and there’s no direct equivalent; for Homebrew services:
+  ```
+  brew services start <formula>
+  brew services stop <formula>
+  ```
+- `usermod -aG docker $USER` → Not applicable on macOS; Docker Desktop uses macOS permissions and Keychain helpers. For file permission fixes use `chown`/`chmod` locally as needed.
+
+Additional useful tips & troubleshooting
+- If `git` points to Apple’s older git (from Xcode CLI) despite Homebrew install, ensure Homebrew `bin` comes earlier in PATH:
+  ```
+  echo $PATH
+  which git
+  ```
+  Adjust `~/.zprofile` so `/opt/homebrew/bin` or `/usr/local/bin` is before `/usr/bin`.
+- If `git lfs` not found in older repos, run `git lfs install` in repo to enable hooks.
+- macOS Keychain sometimes caches incorrect credentials — to reset:
+  - Open Keychain Access and search for the entry (e.g., `git:https://github.com`) and delete it; next `git pull` will prompt and store new creds.
+- For Python builds that fail on Apple Silicon, prefer universal2 or arm64 wheels. Use `--platform` and `buildx` if building containers for arm64.
+
+Quick checklist (commands)
+- Install Homebrew:
+  ```bash
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  ```
+- Install Git & Git LFS:
+  ```
+  brew install git git-lfs
+  git lfs install --system
+  ```
+- Configure Git:
+  ```
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"
+  git config --global credential.helper osxkeychain
+  ```
+- Install Python (Homebrew) and create a venv:
+  ```
+  brew install python
+  python3 -m venv ~/.venvs/myenv
+  source ~/.venvs/myenv/bin/activate
+  pip install --upgrade pip setuptools wheel
+  ```
+- Install pyenv (alternative):
+  ```
+  brew install pyenv
+  pyenv install 3.11.6
+  pyenv global 3.11.6
+  ```
+
+If you want, I can:
+- Produce a ready‑to‑paste section formatted for your internal docs (with examples and Boeing policy callouts).
+- Provide a script that
+user: what about the environment variables CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, PIP_CERT, SRES_API_KEY_ENDPOINT, SRES_USERNAME/SRES_API_TOKEN etc.?
+assistant: Below is a focused guide on those environment variables, what they do, how to set them on macOS (including Apple Silicon), and secure handling recommendations — including examples for shell, launchd (GUI apps / Docker Desktop), and CI. I also cover `SRES_*` credentials and best practices for storing/retrieving them.
+
+What these variables do
+- `CURL_CA_BUNDLE`: Path to a PEM file containing CA certificates used by `curl` when making TLS connections (overrides system bundle).
+- `REQUESTS_CA_BUNDLE`: Path to a PEM file used by Python `requests` library to validate TLS (requests honors this env var).
+- `PIP_CERT`: Path to a CA bundle for `pip` to use when connecting to HTTPS package indexes (or use `--cert` on the pip command line).
+- `SRES_API_KEY_ENDPOINT`, `SRES_USERNAME`, `SRES_API_TOKEN` (Boeing-specific):
+  - Likely internal variables used by Boeing SRES tooling to locate token endpoints and authenticate API requests. Treat as secrets and do not store them in plaintext in repos.
+
+Where to put CA bundle files
+- Place a PEM file with the internal CA(s) at a secure, system-appropriate path, e.g.:
+  - `/usr/local/etc/ca-bundle.crt` (Homebrew prefix)
+  - `~/certs/internal-ca.pem` (user-scoped)
+- Ensure file permissions restrict access:
+  - `chmod 600 /path/to/internal-ca.pem`
+  - `chown $(whoami) /path/to/internal-ca.pem`
+
+Setting the variables in a shell session (zsh / bash)
+- For interactive shells and terminal apps, set and export in your shell profile (recommended: `~/.zprofile` for login shells, `~/.zshrc` for interactive; adapt for bash).
+- Example single-line exports:
+  `export CURL_CA_BUNDLE="/opt/homebrew/etc/ssl/certs/internal-ca.pem"`
+  `export REQUESTS_CA_BUNDLE="/opt/homebrew/etc/ssl/certs/internal-ca.pem"`
+  `export PIP_CERT="/opt/homebrew/etc/ssl/certs/internal-ca.pem"`
+  `export SRES_API_KEY_ENDPOINT="https://sres-api.internal.example.com/token"`
+  `export SRES_USERNAME="sres-user"`
+  `export SRES_API_TOKEN="SECRET_TOKEN_VALUE"`
+- Example block (add to `~/.zprofile`):
+  ```bash
+  export CURL_CA_BUNDLE="/opt/homebrew/etc/ssl/certs/internal-ca.pem"
+  export REQUESTS_CA_BUNDLE="/opt/homebrew/etc/ssl/certs/internal-ca.pem"
+  export PIP_CERT="/opt/homebrew/etc/ssl/certs/internal-ca.pem"
+  export SRES_API_KEY_ENDPOINT="https://sres-api.internal.example.com/token"
+  export SRES_USERNAME="sres-user"
+  export SRES_API_TOKEN="${SRES_API_TOKEN:-}"
+  ```
+  - Note: leave `SRES_API_TOKEN` empty in committed files; prefer reading from keychain or CI secret store.
+
+Making the variables available to GUI apps (Docker Desktop, IDEs)
+- macOS GUI apps launched from Finder/Launchpad do not inherit shell env by default. Use `launchctl` to set env vars for the login session:
+  - Example:
+    `launchctl setenv CURL_CA_BUNDLE /opt/homebrew/etc/ssl/certs/internal-ca.pem`
+    `launchctl setenv REQUESTS_CA_BUNDLE /opt/homebrew/etc/ssl/certs/internal-ca.pem`
+  - For persistent launchctl env, create a `~/Library/LaunchAgents` plist that sets env vars. Example plist template:
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+      <dict>
+        <key>Label</key>
+        <string>com.example.envvars</string>
+        <key>ProgramArguments</key>
+        <array>
+          <string>/bin/launchctl</string>
+          <string>setenv</string>
+          <string>CURL_CA_BUNDLE</string>
+          <string>/opt/homebrew/etc/ssl/certs/internal-ca.pem</string>
+        </array>
+        <key>RunAtLoad</key>
+        <true/>
+      </dict>
+    </plist>
+    ```
+  - After creating/placing the plist at `~/Library/LaunchAgents/com.example.envvars.plist`, load it:
+    `launchctl load ~/Library/LaunchAgents/com.example.envvars.plist`
+  - Note: Docker Desktop launched via the Docker.app bundle will then inherit these env vars from the login session.
+
+Making the variables available to non-interactive services (launchd / Homebrew services)
+- For Homebrew-managed services (via `brew services`), environment can be provided via the service plist overrides under `~/Library/LaunchAgents` or by editing the service plist generated by Homebrew (not recommended to edit under `/Library` directly). See Homebrew docs for service customization.
+
+Using the variables with Python, pip, curl
+- curl example:
+  `curl --cacert "$CURL_CA_BUNDLE" https://internal-api.example.com/health`
+  - `curl` also respects `CURL_CA_BUNDLE` env var automatically.
+- requests (Python) example:
+  ```python
+  import requests
+  resp = requests.get("https://internal-api.example.com/health")
+  # requests will use REQUESTS_CA_BUNDLE automatically if set
+  ```
+  - Or explicitly:
+    ```python
+    requests.get(url, verify="/opt/homebrew/etc/ssl/certs/internal-ca.pem")
+    ```
+- pip example:
+  - Temporarily:
+    `PIP_CERT="/opt/homebrew/etc/ssl/certs/internal-ca.pem" pip install --index-url https://pypi.internal/simple mypkg`
+  - Persist via config file (~/.config/pip/pip.conf or `~/.pip/pip.conf`):
+    ```ini
+    [global]
+    cert = /opt/homebrew/etc/ssl/certs/internal-ca.pem
+    index-url = https://pypi.internal/simple
+    ```
+  - Or use `--cert` and `--index-url` flags per command.
+
+Secure handling of SRES credentials (avoid plaintext)
+- Recommended approaches:
+  - CI: Inject `SRES_USERNAME` / `SRES_API_TOKEN` via the CI secret store (GitHub Actions Secrets, Jenkins credentials, internal CI vault). Do not commit them.
+  - Local dev: Store secrets in macOS Keychain and retrieve in shell startup, or use an encrypted file (git-crypt) or a local vault (HashiCorp Vault, AWS Secrets Manager).
+  - Example using macOS Keychain via `security` CLI:
+    - Store:
+      `security add-generic-password -a sres-user -s SRES_API_TOKEN -w "SECRET_TOKEN_VALUE"`
+    - Retrieve (safe to use in shell init; avoid echoing to logs):
+      `export SRES_API_TOKEN="$(security find-generic-password -s SRES_API_TOKEN -w)"`
+    - Optionally store username:
+      `security add-generic-password -a sres-user -s SRES_USERNAME -w "sres-user"`
+      `export SRES_USERNAME="$(security find-generic-password -s SRES_USERNAME -w)"`
+  - Example using a small helper function in `~/.zprofile`:
+    ```bash
+    sres_env_load() {
+      if security find-generic-password -s SRES_API_TOKEN >/dev/null 2>&1; then
+        export SRES_API_TOKEN="$(security find-generic-password -s SRES_API_TOKEN -w)"
+      fi
+      if security find-generic-password -s SRES_USERNAME >/dev/null 2>&1; then
+        export SRES_USERNAME="$(security find-generic-password -s SRES_USERNAME -w)"
+      fi
+    }
+    sres_env_load
+    ```
+  - Note: Storing secrets in Keychain still makes them available to any process running as the user; consider whether additional protections (e.g., session unlocking) are required.
+
+Example: minimal secure local setup (recommended flow)
+1. Put internal CA bundle in a secure, owned path:
+   `sudo mkdir -p /opt/internal-ca && sudo cp internal-ca.pem /opt/internal-ca/ca.pem && sudo chown $(whoami) /opt/internal-ca/ca.pem && chmod 600 /opt/internal-ca/ca.pem`
+2. Add env exports to `~/.zprofile` (but leave SRES_API_TOKEN out):
+   ```bash
+   export CURL_CA_BUNDLE="/opt/internal-ca/ca.pem"
+   export REQUESTS_CA_BUNDLE="/opt/internal-ca/ca.pem"
+   export PIP_CERT="/opt/internal-ca/ca.pem"
+   export SRES_API_KEY_ENDPOINT="https://sres-api.internal.example.com/token"
+   export SRES_USERNAME="sres-user"
+   ```
+3. Store token in keychain:
+   `security add-generic-password -a "sres-user" -s "SRES_API_TOKEN" -w "REPLACE_WITH_REAL_SECRET" -U`
+4. Load token during shell startup without committing it anywhere:
+   ```bash
+   export SRES_API_TOKEN="$(security find-generic-password -s SRES_API_TOKEN -w 2>/dev/null || true)"
+   ```
+5. For GUI apps (e.g., Docker Desktop) run:
+   `launchctl setenv CURL_CA_BUNDLE /opt/internal-ca/ca.pem`
+   and similarly for `REQUESTS_CA_BUNDLE` and `PIP_CERT`.
+
+CI / automation guidance
+- Never hardcode `SRES_API_TOKEN` in repo or plaintext files.
+- Use secret stores provided by CI to set environment variables for jobs; e.g., GitHub Actions:
+  ```yaml
+  env:
+    SRES_USERNAME: ${{ secrets.SRES_USERNAME }}
+    SRES_API_TOKEN: ${{ secrets.SRES_API_TOKEN }}
+  ```
+- For CA bundles used by CI runners, store the PEM on the runner filesystem (protected) and point `CURL_CA_BUNDLE`/`REQUESTS_CA_BUNDLE`/`PIP_CERT` to it, or configure system trust store for the runner image.
+
+Validation and testing
+- Confirm curl uses the custom CA:
+  `curl --verbose https://internal-api.example.com/health`
+- Confirm requests uses the custom CA (Python):
+  ```python
+  import requests, os
+  print("REQUESTS_CA_BUNDLE:", os.environ.get("REQUESTS_CA_BUNDLE"))
+  r = requests.get("https://internal-api.example.com/health")
+  print(r.status_code)
+  ```
+- Confirm pip uses certificate by attempting to install from the internal index or by running pip with `--cert`.
+
+Security notes and best practices (summary)
+- Do not commit secrets to source control.
+- Prefer OS-native secret storage (macOS Keychain) or CI secret management.
+- Limit file permissions for CA bundles and any files containing secrets.
+- Prefer TLS with proper certs; use custom CA bundles only when necessary (internal PKI).
+- Rotate `SRES_API_TOKEN` regularly and follow Boeing’s credential policies for storage and usage.
+
+If you want, I can:
+- Produce a ready-to-paste doc section for your internal docs with the exact `~/.zprofile` snippet, a `launchd` plist example, and the Keychain helper function tailored to your SRES variable names.
+- Provide a short script that configures the CA bundle location and installs a keychain entry (I cannot provide downloadable attachments, but I can paste the script here).
+user: i should not be relying on homebrew at all. Try again
+assistant: Below is a Homebrew‑free, macOS (Apple Silicon / arm64)–focused set of installation and configuration instructions for Git, Git LFS, and Python/pip — plus secure handling of `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `PIP_CERT`, and the `SRES_*` secrets. I use Apple/Xcode tools, official upstream installers, and macOS native facilities (Keychain, launchctl, installer). Where downloads are required I show `curl` commands you can run; verify checksums internally before installing.
+
+Git — install and configure (no Homebrew)
+- Ensure Xcode Command Line Tools are installed (provides `git`):
+  `xcode-select --install`
+  - If you already have Apple’s Git from Xcode, you can use it; if you require a newer Git, use the official macOS installer from git-scm:
+- Install Git via official installer package (example):
+  ```bash
+  # download latest macOS arm64 installer from git-scm.com; update the URL to the desired version
+  curl -Lo /tmp/git-macos.pkg "https://github.com/git/git/releases/download/v2.42.0/git-2.42.0-intel-universal-macos.pkg"
+  # verify checksum (obtain expected checksum from official source), then install:
+  sudo installer -pkg /tmp/git-macos.pkg -target /
+  ```
+  - Note: pick the installer that supports Apple Silicon (modern git installers are universal).
+- Verify installation:
+  `git --version`
+- Configure Git global identity and helpers:
+  ```bash
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"
+  git config --global core.editor "code --wait"        # or vim/nano
+  git config --global init.defaultBranch main
+  git config --global credential.helper osxkeychain
+  ```
+  - `osxkeychain` is the macOS credential helper and is available if you installed the Git package or have Xcode CLI tools.
+
+Git LFS — install and configure (no Homebrew)
+- Download the official Git LFS macOS installer (arm64/universal) from the Git LFS releases page and install:
+  ```bash
+  # example; update URL to the latest release for darwin-arm64 / universal
+  curl -Lo /tmp/git-lfs.pkg "https://github.com/git-lfs/git-lfs/releases/download/v3.4.0/git-lfs-darwin-arm64-v3.4.0.pkg"
+  sudo installer -pkg /tmp/git-lfs.pkg -target /
+  ```
+- Initialize Git LFS (sets up hooks for the current user / system):
+  `git lfs install --system`   # or `git lfs install` per-repo
+- Track large files in a repo:
+  ```bash
+  cd /path/to/repo
+  git lfs track "*.psd"
+  git add .gitattributes
+  git commit -m "Track binaries with LFS"
+  ```
+- Verify:
+  `git lfs track --list`  
+  `git lfs env`
+
+Python & pip — install and configure (no Homebrew)
+Two robust Homebrew-free options: official Python.org installers (recommended for simplicity) or using pyenv (manual build; more complex without Homebrew). I recommend the official Python.org pkg installers for stable macOS usage.
+
+A) Official Python installer (recommended)
+- Download and install the macOS installer from python.org (choose a universal2 / macOS 64-bit/arm64 installer appropriate for your macOS version):
+  ```bash
+  # example for Python 3.11.x; update URL to exact pkg for the release you want
+  curl -Lo /tmp/python3.pkg "https://www.python.org/ftp/python/3.11.6/python-3.11.6-macos11.pkg"
+  sudo installer -pkg /tmp/python3.pkg -target /
+  ```
+- Verify:
+  `python3 --version`  
+  `pip3 --version`
+- Use venv for project isolation:
+  ```bash
+  python3 -m venv ~/venvs/myproj
+  source ~/venvs/myproj/bin/activate
+  pip install --upgrade pip setuptools wheel
+  ```
+- When running `python`/`pip` from a venv, use the venv’s `python`/`pip` so you avoid global installs.
+
+B) pyenv without Homebrew (advanced; builds Python from source)
+- If you need multiple versions and choose pyenv but not Homebrew, you must provide build dependencies (OpenSSL, 1to‑paste doc section formatted for your internal docs with exact installer download URLs you approve and a LaunchAgent plist that sets multiple env vars at once.
+- Provide a small shell snippet (pasted here) that automates the file moves, permission fixes, Keychain storage, and `launchctl` calls — note I cannot provide attachments, but I can paste the script text for you to run.

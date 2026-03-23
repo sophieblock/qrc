@@ -1,0 +1,1609 @@
+user: Please review the following snippet from my zsh terminal where I am investigating the conda base environment. There should be absolutely no packages installed that didn't pull through the boeing vpn proxy (it has the alias "Conda-Forge"). Please check and digest each line of output after I first tested updating the conda base environment including a few conda plugins, since the base env should not really contain tools outside of plugins and "infrastructure" -like tooling. I then print the list of packages installed in base. I need to ensure that my configuration did get messed up: `(base) so714f@sophie ~ % conda update -n base conda mamba conda-build conda-index conda-libmamba-solver
+Retrieving notices: \ INFO conda.notices.fetch:get_channel_notice_response(79): Received 404 when trying to GET https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/notices.json
+done
+INFO conda.conda_libmamba_solver.solver:_log_info(857): conda version: 25.7.0
+INFO conda.conda_libmamba_solver.solver:_log_info(858): conda-libmamba-solver version: 25.3.0
+INFO conda.conda_libmamba_solver.solver:_log_info(859): libmambapy version: 2.1.1
+INFO conda.conda_libmamba_solver.solver:_log_info(860): Target prefix: '/Users/so714f/miniforge3'
+INFO conda.conda_libmamba_solver.solver:_log_info(861): Command: ['/Users/so714f/miniforge3/bin/conda', 'update', '-n', 'base', 'conda', 'mamba', 'conda-build', 'conda-index', 'conda-libmamba-solver']
+Channels:
+ - Conda-Forge
+Platform: osx-arm64
+Collecting package metadata (repodata.json): ...working... INFO conda.gateways.repodata.jlap.fetch:download_and_hash(264): Download 24258451 bytes {'User-Agent': 'conda/25.7.0 requests/2.32.3 CPython/3.12.10 Darwin/25.2.0 OSX/26.2 solver/libmamba conda-libmamba-solver/25.3.0 libmambapy/2.1.1', 'Accept-Encoding': 'gzip, deflate, br, zstd', 'Accept': '*/*', 'Connection': 'keep-alive', 'Authorization': 'Basic MzY2MjI3NDpjbVZtZEd0dU9qQXhPakUzTnprek1qWTVOakU2VEdsSlRqaFRSVWN4V1hSa2VsQk9hRmRzZDFjM1QyVkJUbmhE'}
+INFO conda.gateways.repodata.jlap.fetch:request_url_jlap_state(431): Apply 0 patches ebc0822da7d245c1… → ebc0822da7d245c1…
+INFO conda.gateways.repodata.jlap.fetch:download_and_hash(264): Download 19918693 bytes {'User-Agent': 'conda/25.7.0 requests/2.32.3 CPython/3.12.10 Darwin/25.2.0 OSX/26.2 solver/libmamba conda-libmamba-solver/25.3.0 libmambapy/2.1.1', 'Accept-Encoding': 'gzip, deflate, br, zstd', 'Accept': '*/*', 'Connection': 'keep-alive', 'Authorization': 'Basic MzY2MjI3NDpjbVZtZEd0dU9qQXhPakUzTnprek1qWTVOakU2VEdsSlRqaFRSVWN4V1hSa2VsQk9hRmRzZDFjM1QyVkJUbmhE'}
+INFO conda.gateways.repodata.jlap.fetch:request_url_jlap_state(431): Apply 0 patches 538bd2578961dcc7… → 538bd2578961dcc7…
+info     libmamba Attempting to read libsolv solv file "/Users/so714f/miniforge3/pkgs/cache/ee6dd6ad.solv" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+info     libmamba Reading repodata.json file "/Users/so714f/miniforge3/pkgs/cache/ee6dd6ad.json" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64 using mamba
+info     libmamba Writing libsolv solv file "/Users/so714f/miniforge3/pkgs/cache/ee6dd6ad.solv" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+info     libmamba Attempting to read libsolv solv file "/Users/so714f/miniforge3/pkgs/cache/b9f3efd6.solv" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+info     libmamba Reading repodata.json file "/Users/so714f/miniforge3/pkgs/cache/b9f3efd6.json" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch using mamba
+info     libmamba Writing libsolv solv file "/Users/so714f/miniforge3/pkgs/cache/b9f3efd6.solv" for repo https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+done
+Solving environment: ...working... INFO conda.conda_libmamba_solver.solver:_solve_attempt(353): Solver attempt: #1
+INFO conda.conda_libmamba_solver.solver:_specs_to_request_jobs(418): The solver will handle these requests:
+{
+  "Pin": [
+    "python 3.12.*"
+  ],
+  "Install": [
+    "pybind11",
+    "pip",
+    "ninja",
+    "llvmdev",
+    "lld",
+    "cmake"
+  ],
+  "Update": [
+    "mamba",
+    "conda-libmamba-solver",
+    "conda-index",
+    "conda-build",
+    "conda",
+    "openssl",
+    "certifi",
+    "ca-certificates"
+  ],
+  "Keep": [
+    "conda-forge/osx-arm64::mamba==2.1.1=h105ca85_0",
+    "conda-libmamba-solver",
+    "conda-index",
+    "Conda-Forge/osx-arm64::conda-build==25.7.0=py312h81bd7bf_0",
+    "Conda-Forge/osx-arm64::conda==25.7.0=py312h81bd7bf_0",
+    "conda-forge/osx-arm64::python==3.12.10=hc22306f_0_cpython",
+    "Conda-Forge/noarch::pybind11==2.13.6=pyhc790b64_3",
+    "conda-forge/noarch::pip==25.1.1=pyh8b19718_0",
+    "Conda-Forge/osx-arm64::ninja==1.13.0=ha024513_0",
+    "Conda-Forge/osx-arm64::llvmdev==20.1.7=h87a4c7e_0",
+    "Conda-Forge/osx-arm64::lld==20.1.7=h0669332_0",
+    "Conda-Forge/osx-arm64::cmake==4.0.3=ha25475f_0",
+    "Conda-Forge/osx-arm64::openssl==3.5.3=h5503f6c_1",
+    "Conda-Forge/noarch::certifi==2025.8.3=pyhd8ed1ab_0",
+    "Conda-Forge/noarch::ca-certificates==2025.8.3=hbd8a1cb_0"
+  ]
+}
+done
+
+
+==> WARNING: A newer version of conda exists. <==
+    current version: 25.7.0
+    latest version: 25.11.1
+
+Please update conda by running
+
+    $ conda update -n base -c Conda-Forge conda
+
+
+INFO conda.core.link:__init__(256): initializing UnlinkLinkTransaction with
+  target_prefix: /Users/so714f/miniforge3
+  unlink_precs:
+    https://conda.anaconda.org/conda-forge/noarch::conda-libmamba-solver-25.3.0-pyhd8ed1ab_0
+    Conda-Forge/osx-arm64::conda-build-25.7.0-py312h81bd7bf_0
+    Conda-Forge/osx-arm64::conda-25.7.0-py312h81bd7bf_0
+    Conda-Forge/noarch::conda-index-0.6.1-pyhd8ed1ab_0
+    https://conda.anaconda.org/conda-forge/osx-arm64::mamba-2.1.1-h105ca85_0
+    https://conda.anaconda.org/conda-forge/osx-arm64::libmambapy-2.1.1-py312h9b24f82_0
+    https://conda.anaconda.org/conda-forge/osx-arm64::libmamba-2.1.1-h7c3736b_0
+    Conda-Forge/noarch::certifi-2025.8.3-pyhd8ed1ab_0
+    https://conda.anaconda.org/conda-forge/osx-arm64::libarchive-3.7.7-h3c2f2b0_4
+    https://conda.anaconda.org/conda-forge/osx-arm64::simdjson-3.12.3-ha393de7_0
+    Conda-Forge/osx-arm64::openssl-3.5.3-h5503f6c_1
+    https://conda.anaconda.org/conda-forge/osx-arm64::nlohmann_json-3.11.3-h00cdb27_1
+    https://conda.anaconda.org/conda-forge/osx-arm64::libsolv-0.7.32-h13dfb9a_2
+    https://conda.anaconda.org/conda-forge/osx-arm64::fmt-11.1.4-h440487c_1
+    https://conda.anaconda.org/conda-forge/osx-arm64::cpp-expected-1.1.0-h177bc72_1
+    Conda-Forge/noarch::ca-certificates-2025.8.3-hbd8a1cb_0
+  link_precs:
+    Conda-Forge/noarch::ca-certificates-2026.1.4-hbd8a1cb_0
+    Conda-Forge/noarch::nlohmann_json-abi-3.12.0-h0f90c79_1
+    Conda-Forge/osx-arm64::cpp-expected-1.3.1-h4f10f1e_0
+    Conda-Forge/osx-arm64::fmt-11.2.0-h440487c_0
+    Conda-Forge/osx-arm64::libsolv-0.7.35-h5f525b2_0
+    Conda-Forge/osx-arm64::openssl-3.6.0-h5503f6c_0
+    Conda-Forge/osx-arm64::simdjson-4.0.7-ha7d2532_0
+    Conda-Forge/osx-arm64::libarchive-3.8.1-gpl_h46e8061_100
+    Conda-Forge/noarch::certifi-2026.1.4-pyhd8ed1ab_0
+    Conda-Forge/osx-arm64::libmamba-2.3.2-hbdbd6ab_2
+    Conda-Forge/osx-arm64::libmambapy-2.3.2-py312hf551e50_2
+    Conda-Forge/osx-arm64::mamba-2.3.2-h4b78589_2
+    Conda-Forge/noarch::conda-index-0.7.0-pyhd8ed1ab_0
+    Conda-Forge/noarch::conda-libmamba-solver-25.11.0-pyhd8ed1ab_0
+    Conda-Forge/osx-arm64::conda-25.11.1-py312h81bd7bf_0
+    Conda-Forge/osx-arm64::conda-build-25.11.1-py312h749be4d_0
+
+
+## Package Plan ##
+
+  environment location: /Users/so714f/miniforge3
+
+  added / updated specs:
+    - conda
+    - conda-build
+    - conda-index
+    - conda-libmamba-solver
+    - mamba
+
+
+The following packages will be downloaded:
+
+    package                    |            build
+    ---------------------------|-----------------
+    ca-certificates-2026.1.4   |       hbd8a1cb_0         143 KB  Conda-Forge
+    certifi-2026.1.4           |     pyhd8ed1ab_0         147 KB  Conda-Forge
+    conda-25.11.1              |  py312h81bd7bf_0         1.2 MB  Conda-Forge
+    conda-build-25.11.1        |  py312h749be4d_0         748 KB  Conda-Forge
+    conda-index-0.7.0          |     pyhd8ed1ab_0         194 KB  Conda-Forge
+    conda-libmamba-solver-25.11.0|     pyhd8ed1ab_0          55 KB  Conda-Forge
+    cpp-expected-1.3.1         |       h4f10f1e_0          24 KB  Conda-Forge
+    fmt-11.2.0                 |       h440487c_0         173 KB  Conda-Forge
+    libarchive-3.8.1           | gpl_h46e8061_100         770 KB  Conda-Forge
+    libmamba-2.3.2             |       hbdbd6ab_2         1.6 MB  Conda-Forge
+    libmambapy-2.3.2           |  py312hf551e50_2         639 KB  Conda-Forge
+    libsolv-0.7.35             |       h5f525b2_0         418 KB  Conda-Forge
+    mamba-2.3.2                |       h4b78589_2         404 KB  Conda-Forge
+    nlohmann_json-abi-3.12.0   |       h0f90c79_1           4 KB  Conda-Forge
+    openssl-3.6.0              |       h5503f6c_0         3.0 MB  Conda-Forge
+    simdjson-4.0.7             |       ha7d2532_0         220 KB  Conda-Forge
+    ------------------------------------------------------------
+                                           Total:         9.5 MB
+
+The following NEW packages will be INSTALLED:
+
+  nlohmann_json-abi  Conda-Forge/noarch::nlohmann_json-abi-3.12.0-h0f90c79_1 
+
+The following packages will be REMOVED:
+
+  nlohmann_json-3.11.3-h00cdb27_1
+
+The following packages will be UPDATED:
+
+  ca-certificates                       2025.8.3-hbd8a1cb_0 --> 2026.1.4-hbd8a1cb_0 
+  certifi                             2025.8.3-pyhd8ed1ab_0 --> 2026.1.4-pyhd8ed1ab_0 
+  conda                              25.7.0-py312h81bd7bf_0 --> 25.11.1-py312h81bd7bf_0 
+  conda-build                        25.7.0-py312h81bd7bf_0 --> 25.11.1-py312h749be4d_0 
+  conda-index                            0.6.1-pyhd8ed1ab_0 --> 0.7.0-pyhd8ed1ab_0 
+  conda-libmamba-so~ conda-forge::conda-libmamba-solver-25~ --> Conda-Forge::conda-libmamba-solver-25.11.0-pyhd8ed1ab_0 
+  cpp-expected       conda-forge::cpp-expected-1.1.0-h177b~ --> Conda-Forge::cpp-expected-1.3.1-h4f10f1e_0 
+  fmt                    conda-forge::fmt-11.1.4-h440487c_1 --> Conda-Forge::fmt-11.2.0-h440487c_0 
+  libarchive         conda-forge::libarchive-3.7.7-h3c2f2b~ --> Conda-Forge::libarchive-3.8.1-gpl_h46e8061_100 
+  libmamba           conda-forge::libmamba-2.1.1-h7c3736b_0 --> Conda-Forge::libmamba-2.3.2-hbdbd6ab_2 
+  libmambapy         conda-forge::libmambapy-2.1.1-py312h9~ --> Conda-Forge::libmambapy-2.3.2-py312hf551e50_2 
+  libsolv            conda-forge::libsolv-0.7.32-h13dfb9a_2 --> Conda-Forge::libsolv-0.7.35-h5f525b2_0 
+  mamba                 conda-forge::mamba-2.1.1-h105ca85_0 --> Conda-Forge::mamba-2.3.2-h4b78589_2 
+  openssl                                  3.5.3-h5503f6c_1 --> 3.6.0-h5503f6c_0 
+  simdjson           conda-forge::simdjson-3.12.3-ha393de7~ --> Conda-Forge::simdjson-4.0.7-ha7d2532_0 
+
+
+Proceed ([y]/n)? y
+
+                                                                                                                                                                                                                          Preparing transaction: done                                                                                                                                                                                                 
+Verifying transaction: done                                                                                                                                                                                                
+Executing transaction: / INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/noarch::conda-libmamba-solver-25.3.0-pyhd8ed1ab_0 <===                                
+  prefix=/Users/so714f/miniforge3                                                                                                                                                                                          
+                                                                                                                                                                                                                           
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/osx-arm64::conda-build-25.7.0-py312h81bd7bf_0 <===                                                                                        
+  prefix=/Users/so714f/miniforge3                                                                                                                                                                                          
+                                                                                                                                                                                                                           
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/osx-arm64::conda-25.7.0-py312h81bd7bf_0 <===                                                                                              
+  prefix=/Users/so714f/miniforge3                                                                                                                                                                                          
+                                                                                                                                                                                                                           
+\ INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/noarch::conda-index-0.6.1-pyhd8ed1ab_0 <===                                                                                             
+  prefix=/Users/so714f/miniforge3                                                                                                                                                                                          
+                                                                                                                                                                                                                           
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::mamba-2.1.1-h105ca85_0 <===                                                                         
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::libmambapy-2.1.1-py312h9b24f82_0 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::libmamba-2.1.1-h7c3736b_0 <===
+  prefix=/Users/so714f/miniforge3
+
+| INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/noarch::certifi-2025.8.3-pyhd8ed1ab_0 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::libarchive-3.7.7-h3c2f2b0_4 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::simdjson-3.12.3-ha393de7_0 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/osx-arm64::openssl-3.5.3-h5503f6c_1 <===
+  prefix=/Users/so714f/miniforge3
+
+/ INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::nlohmann_json-3.11.3-h00cdb27_1 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::libsolv-0.7.32-h13dfb9a_2 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::fmt-11.1.4-h440487c_1 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: https://conda.anaconda.org/conda-forge/osx-arm64::cpp-expected-1.1.0-h177bc72_1 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1068): ===> UNLINKING PACKAGE: Conda-Forge/noarch::ca-certificates-2025.8.3-hbd8a1cb_0 <===
+  prefix=/Users/so714f/miniforge3
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::ca-certificates-2026.1.4-hbd8a1cb_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/ca-certificates-2026.1.4-hbd8a1cb_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::nlohmann_json-abi-3.12.0-h0f90c79_1 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/nlohmann_json-abi-3.12.0-h0f90c79_1
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::cpp-expected-1.3.1-h4f10f1e_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/cpp-expected-1.3.1-h4f10f1e_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::fmt-11.2.0-h440487c_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/fmt-11.2.0-h440487c_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::libsolv-0.7.35-h5f525b2_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/libsolv-0.7.35-h5f525b2_0
+
+- INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::openssl-3.6.0-h5503f6c_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/openssl-3.6.0-h5503f6c_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::simdjson-4.0.7-ha7d2532_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/simdjson-4.0.7-ha7d2532_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::libarchive-3.8.1-gpl_h46e8061_100 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/libarchive-3.8.1-gpl_h46e8061_100
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::certifi-2026.1.4-pyhd8ed1ab_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/certifi-2026.1.4-pyhd8ed1ab_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::libmamba-2.3.2-hbdbd6ab_2 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/libmamba-2.3.2-hbdbd6ab_2
+
+\ INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::libmambapy-2.3.2-py312hf551e50_2 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/libmambapy-2.3.2-py312hf551e50_2
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::mamba-2.3.2-h4b78589_2 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/mamba-2.3.2-h4b78589_2
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::conda-index-0.7.0-pyhd8ed1ab_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/conda-index-0.7.0-pyhd8ed1ab_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::conda-libmamba-solver-25.11.0-pyhd8ed1ab_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/conda-libmamba-solver-25.11.0-pyhd8ed1ab_0
+
+INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::conda-25.11.1-py312h81bd7bf_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/conda-25.11.1-py312h81bd7bf_0
+
+/ INFO conda.core.link:_execute_actions(1075): ===> LINKING PACKAGE: Conda-Forge::conda-build-25.11.1-py312h749be4d_0 <===
+  prefix=/Users/so714f/miniforge3
+  source=/Users/so714f/miniforge3/pkgs/conda-build-25.11.1-py312h749be4d_0
+
+done
+(base) so714f@sophie ~ % conda list -n base --full-name --show-channel-urls --no-pip --fields name,version,build,channel_name,channel,package_type
+# packages in environment at /Users/so714f/miniforge3:
+#
+# Name                       Version       Build               Channel                                 Channel URL                                                              Package type
+annotated-types              0.7.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+appnope                      0.1.4         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+archspec                     0.2.5         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+asttokens                    3.0.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+attrs                        25.3.0        pyh71513ae_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+bcai-util                    0.3.5         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+beautifulsoup4               4.14.2        pyha770c72_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+boltons                      24.0.0        pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+brotli-python                1.1.0         py312hde4cb15_2     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+bzip2                        1.0.8         h99b78c6_7          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+c-ares                       1.34.5        h5505292_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+ca-certificates              2026.1.4      hbd8a1cb_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_GENERIC
+cctools                      1010.6        h617d6d1_6          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+cctools_osx-arm64            1010.6        h729f01a_6          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+certifi                      2026.1.4      pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_PYTHON
+cffi                         1.17.1        py312h0fad829_0     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+chardet                      5.2.0         pyhd8ed1ab_3        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+charset-normalizer           3.4.2         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+click                        8.3.0         pyh707e725_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+cmake                        3.31.6        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+colorama                     0.4.6         pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+comm                         0.2.2         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+conda                        25.11.1       py312h81bd7bf_0     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+conda-build                  25.11.1       py312h749be4d_0     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+conda-index                  0.7.0         pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_PYTHON
+conda-libmamba-solver        25.11.0       pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_PYTHON
+conda-package-handling       2.4.0         pyh7900ff3_2        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+conda-package-streaming      0.11.0        pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+cpp-expected                 1.3.1         h4f10f1e_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+debugpy                      1.8.14        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+decorator                    5.2.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+distro                       1.9.0         pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+evalidate                    2.0.5         pyhe01879c_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+executing                    2.2.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+filelock                     3.19.1        pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+fmt                          11.2.0        h440487c_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+frozendict                   2.4.6         py312h0bf5046_0     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+h2                           4.2.0         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+hpack                        4.1.0         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+hyperframe                   6.1.0         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+icu                          75.1          hfee45f7_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+idna                         3.10          pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+ipykernel                    6.29.5        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+ipython                      9.3.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+ipython-pygments-lexers      1.1.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+jedi                         0.19.2        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+jinja2                       3.1.6         pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+jsonpatch                    1.33          pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+jsonpointer                  3.0.0         py312h81bd7bf_1     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+jsonschema                   4.25.1        pyhe01879c_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+jsonschema-specifications    2025.9.1      pyhcf101f3_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+jupyter-client               8.6.3         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+jupyter-core                 5.8.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+krb5                         1.21.3        h237132a_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+ld64                         951.9         hb625feb_6          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+ld64_osx-arm64               951.9         hcfee506_6          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+libarchive                   3.8.1         gpl_h46e8061_100    Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+libcurl                      8.14.1        h73640d1_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+libcxx                       20.1.4        ha82da77_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libedit                      3.1.20250104  pl5321hafb1f1b_0    https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libev                        4.33          h93a5062_2          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libexpat                     2.7.0         h286801f_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libffi                       3.4.6         h1da3d7d_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libiconv                     1.18          hfe07756_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+liblief                      0.16.6        h286801f_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+libllvm20                    20.1.7        h598bca7_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+liblzma                      5.8.1         h39f12f2_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libmamba                     2.3.2         hbdbd6ab_2          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+libmambapy                   2.3.2         py312hf551e50_2     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+libnghttp2                   1.64.0        h6d7220d_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libsolv                      0.7.35        h5f525b2_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+libsqlite                    3.49.2        h3f77e49_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libssh2                      1.11.1        h1590b86_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+libuv                        1.51.0        h5505292_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+libxml2                      2.13.8        h52572c6_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+libzlib                      1.3.1         h8359307_2          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+lld                          20.1.7        h0669332_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+llvm-tools                   20.1.7        hd2aecb6_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+llvm-tools-20                20.1.7        h87a4c7e_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+llvmdev                      20.1.7        h87a4c7e_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+lz4-c                        1.10.0        h286801f_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+lzo                          2.10          h93a5062_1001       https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+mamba                        2.3.2         h4b78589_2          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+markupsafe                   3.0.3         py312h5748b74_0     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+matplotlib-inline            0.1.7         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+mbedtls                      3.6.3.1       h286801f_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+menuinst                     2.2.0         py312h81bd7bf_0     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+msgpack-python               1.1.1         py312ha0dd364_1     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+mwparserfromhell             0.7.2         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+ncurses                      6.5           h5e97a16_3          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+nest-asyncio                 1.6.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+ninja                        1.11.1.4      pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+nlohmann_json-abi            3.12.0        h0f90c79_1          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_GENERIC
+numpy                        2.3.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+openssl                      3.6.0         h5503f6c_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+packaging                    25.0          pyh29332c3_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+panzi-json-logic             1.0.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+parso                        0.8.4         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+patch                        2.8           hc919400_1002       Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+pexpect                      4.9.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pip                          25.1.1        pyh8b19718_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+pkgconf                      2.5.1.post0   pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pkginfo                      1.12.1.2      pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+platformdirs                 4.3.8         pyhe01879c_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+pluggy                       1.5.0         pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+prompt-toolkit               3.0.51        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+psutil                       7.0.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+ptyprocess                   0.7.0         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pure-eval                    0.2.3         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+py-lief                      0.16.6        py312hd8f9ff3_0     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+pybind11                     2.13.6        pyhc790b64_3        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_PYTHON
+pybind11-abi                 4             hd8ed1ab_3          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_GENERIC
+pybind11-global              2.13.6        pyh217bc35_3        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch     PackageType.NOARCH_PYTHON
+pycosat                      0.6.6         py312hea69d52_2     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+pycparser                    2.22          pyh29332c3_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+pydantic                     2.12.5        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pydantic-core                2.41.5        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pygments                     2.19.2        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+pysocks                      1.7.1         pyha55dd90_7        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+python                       3.12.10       hc22306f_0_cpython  https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+python-dateutil              2.9.0.post0   pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+python-dotenv                1.2.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+python-libarchive-c          5.3           pyhe01879c_1        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+python_abi                   3.12          7_cp312             https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_GENERIC
+pytz                         2025.2        pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+pyyaml                       6.0.3         py312h5748b74_0     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+pyzmq                        27.0.0        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+readline                     8.2           h1d1bf99_2          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+referencing                  0.36.2        pyh29332c3_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+reproc                       14.2.5.post0  h5505292_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+reproc-cpp                   14.2.5.post0  h286801f_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+requests                     2.32.3        pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+rhash                        1.4.6         h5505292_1          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+ripgrep                      14.1.1        h0ef69ab_1          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+rpds-py                      0.27.1        py312h6f58b40_1     Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+ruamel.yaml                  0.18.10       py312hea69d52_0     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+ruamel.yaml.clib             0.2.8         py312h0bf5046_1     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+setuptools                   80.1.0        pyhff2d567_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+sigtool                      0.1.3         h44b9a77_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+simdjson                     4.0.7         ha7d2532_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch
+six                          1.17.0        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+soupsieve                    2.8           pyhd8ed1ab_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+stack-data                   0.6.3         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+tapi                         1300.6.5      h03f4b80_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+tk                           8.6.13        h5083fa2_1          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+tornado                      6.5.1         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+tqdm                         4.67.1        pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+traitlets                    5.14.3        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+truststore                   0.10.1        pyh29332c3_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+typing-extensions            4.15.0        h396c80c_0          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_GENERIC
+typing-inspection            0.4.2         pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+typing_extensions            4.15.0        pyhcf101f3_0        Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64  PackageType.NOARCH_PYTHON
+tzdata                       2025b         h78e105d_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_GENERIC
+urllib3                      2.4.0         pyhd8ed1ab_0        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+wcwidth                      0.2.13        pypi_0              pypi                                    https://sres.web.boeing.com/artifactory/api/conda/pypi                   PackageType.VIRTUAL_PYTHON_WHEEL
+wheel                        0.45.1        pyhd8ed1ab_1        https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge                                   PackageType.NOARCH_PYTHON
+yaml                         0.2.5         h925e9cb_3          Conda-Forge                             https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/osx-arm64
+yaml-cpp                     0.8.0         ha1acc90_0          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+zstandard                    0.23.0        py312hea69d52_2     https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+zstd                         1.5.7         h6491c7d_2          https://conda.anaconda.org/conda-forge  https://conda.anaconda.org/conda-forge
+(base) so714f@sophie ~ % 
+`
+assistant: Short answer
+- Yes — the conda output shows evidence that some packages (and metadata) are associated with the direct conda-forge host (conda.anaconda.org) instead of the Boeing artifactory proxy (sres.web.boeing.com). That indicates at least some traffic/metadata was not recorded as coming through your "Conda-Forge" proxy.
+- You also have many pypi-backed “virtual wheel” packages whose channel URL is the Boeing pypi proxy (https://sres.web.boeing.com/artifactory/api/conda/pypi) — those did go through the Boeing proxy.
+
+What in the output shows this
+- The repodata/download logs at the top of the update show requests to the Boeing artifactory proxy:
+  - e.g. requests and repodata reads referencing https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge — those downloads were proxied.
+- But your conda list shows many rows where the "Channel" (or Channel URL) is the upstream conda-forge host:
+  - Example entries that show the direct upstream channel URL: archspec, cffi, libcxx, many lib*/llvm* packages show channel URL https://conda.anaconda.org/conda-forge (not the sres artifactory URL).
+  - Other entries explicitly show the sres artifactory URL (good): many packages list Channel URL https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/... and all pypi-backed packages list https://sres.web.boeing.com/artifactory/api/conda/pypi.
+- Because conda stores channel metadata from package records, seeing conda.anaconda.org in conda list output strongly suggests those packages were obtained (or at least tracked) from the upstream host rather than via your internal artifactory URL.
+
+Notes / caveats
+- Conda package records can retain the channel URL metadata from when the package was first installed; seeing conda.anaconda.org in conda list means the metadata points there, but doesn’t prove whether the bytes were fetched directly or were proxied at the time. However your repodata/logs during this update show both proxied activity and the existence of entries that reference conda.anaconda.org, so there’s a realistic risk some installs/metadata bypassed the Boeing proxy.
+- The update transaction you ran did download and link packages where the Package source in the plan lists "Conda-Forge" with the sres artifactory URL (so the update itself used the proxy for those downloads). The inconsistency is what suggests prior installs or some channel configuration may be mixed.
+
+Immediate checks I recommend
+1. Show your conda channels and .condarc:
+   - conda config --show channels
+   - cat ~/.condarc
+   Confirm that the channel mapping for conda-forge points to your sres artifactory endpoint (for example: https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge). If you find conda-forge listed as https://conda.anaconda.org/conda-forge, that explains the direct-channel records.
+2. Inspect conda remote config and channel priorities:
+   - conda config --show
+3. Check whether any envs were created/updated while off-VPN which could have installed packages directly from conda-forge.
+4. Consider forcing reindexing/refresh and redownloading through the proxy:
+   - conda clean --all
+   - conda update -n base -c <your-proxy-URL-or-named-channel> conda mamba ... (explicitly specify the proxy channel URL or a channel name that maps to sres)
+5. If you want a clean, guaranteed state, recreate the base installation from your Miniforge installer while VPN/proxy is active, or create and use new envs for tooling instead of installing many packages into base.
+
+Recommended fixes
+- Ensure ~/.condarc maps the channel name you use (e.g. Conda-Forge) to the artifactory proxy URL. Example pattern (adapt paths to your environment):
+  - channels:
+    - Conda-Forge
+    - defaults
+  - channel_alias: https://sres.web.boeing.com/artifactory/api/conda
+  - custom_urls: (if your environment requires)
+- Re-run updates with the proxy channel explicitly, e.g.:
+  - conda update -n base -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge conda mamba ...
+- Avoid installing non-infrastructure packages into base — create envs for development work so you can be certain where packages are coming from.
+
+If you want, I can:
+- Help examine your ~/.condarc (paste it here, remove any credentials).
+- Provide the exact conda config snippets you should add to force use of the sres artifactory as the conda-forge source.
+- Walk through recreating a minimal base or creating a new environment and ensuring all installs go through the proxy.
+
+If you need confirmation or help from the internal platform team, please ask in the UDAL Mattermost channel.
+
+References
+- [deprecated-local-development-setup](https://udal.web.boeing.com/udaldocs/getting-started/deprecated-local-development-setup)
+- [openresty](https://udal.web.boeing.com/udaldocs/subjects/security/patterns/openresty)
+- [pyudal-tutorial](https://udal.web.boeing.com/udaldocs/getting-started/tutorials/pyudal-tutorial)
+- [getting-started](https://udal.web.boeing.com/udaldocs/getting-started/)
+- [service-registry](https://udal.web.boeing.com/udaldocs/subjects/routing/service-registry)
+- [authentication-modes](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/authentication-modes)
+- [certificate-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/certificate-authentication)
+- [vanity-host-names](https://udal.web.boeing.com/udaldocs/subjects/routing/vanity-host-names)
+user: Current output for checks 1 and 2: "so714f@sophie ~ % conda config --show channels
+channels:
+  - Conda-Forge
+so714f@sophie ~ % conda config --show
+add_anaconda_token: True
+add_pip_as_python_dependency: True
+aggressive_update_packages:
+  - ca-certificates
+  - certifi
+  - openssl
+allow_conda_downgrades: False
+allow_cycles: True
+allow_non_channel_urls: False
+allow_softlinks: False
+allowlist_channels: []
+always_copy: False
+always_softlink: False
+always_yes: None
+anaconda_upload: None
+auto_activate: False
+auto_stack: 0
+auto_update_conda: True
+bld_path: 
+changeps1: True
+channel_alias: https://sres.web.boeing.com/artifactory/api/conda
+channel_priority: strict
+channel_settings: []
+channels:
+  - Conda-Forge
+client_ssl_cert: None
+client_ssl_cert_key: None
+clobber: False
+conda_build: {}
+console: classic
+create_default_packages: []
+croot: /Users/so714f/miniforge3/conda-bld
+custom_channels:
+  pkgs/main: https://repo.anaconda.com
+  pkgs/r: https://repo.anaconda.com
+  pkgs/pro: https://repo.anaconda.com
+custom_multichannels:
+  defaults: 
+    - https://repo.anaconda.com/pkgs/main
+    - https://repo.anaconda.com/pkgs/r
+  local: 
+debug: False
+default_activation_env: base
+default_channels:
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+default_python: 3.12
+default_threads: None
+denylist_channels: []
+deps_modifier: not_set
+dev: False
+disallowed_packages: []
+download_only: False
+dry_run: False
+enable_private_envs: False
+env_prompt: ({default_env}) 
+environment_specifier: None
+envs_dirs:
+  - /Users/so714f/miniforge3/envs
+  - /Users/so714f/.conda/envs
+envvars_force_uppercase: True
+error_upload_url: https://conda.io/conda-post/unexpected-error
+execute_threads: 1
+experimental: []
+export_platforms:
+  - osx-arm64
+extra_safety_checks: False
+fetch_threads: 5
+force: False
+force_32bit: False
+force_reinstall: False
+force_remove: False
+ignore_pinned: False
+json: False
+list_fields:
+  - name
+  - version
+  - build
+  - channel_name
+local_repodata_ttl: 1
+migrated_channel_aliases: []
+migrated_custom_channels: {}
+no_lock: False
+no_plugins: False
+non_admin_enabled: True
+notify_outdated_conda: True
+number_channel_notices: 5
+offline: False
+override_channels_enabled: True
+override_virtual_packages: {}
+path_conflict: clobber
+pinned_packages: []
+pkgs_dirs:
+  - /Users/so714f/miniforge3/pkgs
+  - /Users/so714f/.conda/pkgs
+plugins:
+  use_sharded_repodata: False
+prefix_data_interoperability: False
+protect_frozen_envs: True
+proxy_servers: {}
+quiet: False
+register_envs: True
+remote_backoff_factor: 1
+remote_connect_timeout_secs: 20.0
+remote_max_retries: 3
+remote_read_timeout_secs: 60.0
+repodata_fns:
+  - current_repodata.json
+  - repodata.json
+repodata_threads: None
+repodata_use_zst: True
+report_errors: None
+rollback_enabled: True
+root_prefix: /Users/so714f/miniforge3
+safety_checks: warn
+sat_solver: pycosat
+separate_format_cache: False
+shortcuts: True
+shortcuts_only: []
+show_channel_urls: True
+signing_metadata_url_base: None
+solver: libmamba
+solver_ignore_timestamps: False
+ssl_verify: True
+subdir: osx-arm64
+subdirs:
+  - osx-arm64
+  - noarch
+target_prefix_override: 
+trace: False
+track_features: []
+unsatisfiable_hints: True
+unsatisfiable_hints_check_depth: 2
+update_modifier: update_specs
+use_index_cache: False
+use_local: False
+use_only_tar_bz2: None
+verbosity: 2
+verify_threads: 1
+". How do I check whether  any envs were created/updated while off-VPN which could have installed packages directly from conda-forge? How can I verify my VPN/proxy is active and configured correctly via my terminal?
+assistant: You already have channel_alias set to the Boeing artifactory (channel_alias: https://sres.web.boeing.com/artifactory/api/conda) and your channels list contains the named channel Conda-Forge — that’s good. To answer your two questions, here are concrete, copy-pasteable checks and how to interpret them.
+
+1) How to check whether any envs were created/updated while off‑VPN (and possibly pulled directly from conda-forge)
+- List all environments and their locations / modification times:
+  - conda info --envs
+  - ls -l ~/miniforge3/envs
+  Interpretation: an env directory with a recent timestamp that matches when you were off‑VPN is suspicious.
+
+- Inspect the channel metadata for packages in each environment:
+  - For base: conda list -n base --show-channel-urls
+  - For each other env: conda list -n <env-name> --show-channel-urls
+  Interpretation: any package whose Channel URL is https://conda.anaconda.org/conda-forge (or other non-sres hosts) indicates the package metadata points to the upstream host rather than the Boeing artifactory proxy. That often means it was installed/recorded from upstream.
+
+- Check revision history for an environment (shows install/rollback operations):
+  - conda list --revisions -n <env-name>
+  Interpretation: revisions show timestamps and operations (install/remove/update). Match timestamps to times you were off‑VPN to find suspect events.
+
+- Inspect package install timestamps in the package cache:
+  - ls -lt ~/miniforge3/pkgs | head
+  - For a particular pkg: stat ~/miniforge3/pkgs/<pkg-folder>
+  Interpretation: recent package files created while you were off‑VPN could indicate direct downloads.
+
+- Grep conda logs (if you have a log location) or re-run a verbose query to see actual remote host used:
+  - conda update -n base conda -v
+  or
+  - CONDA_VERBOSITY=3 conda update -n base conda
+  Interpretation: verbose output will show URLs that conda attempted to contact when resolving/downloading. If you see conda.anaconda.org URLs in that run (while VPN active), it indicates either channel config allowed upstream or cached metadata with that URL.
+
+2) How to verify your VPN/proxy is active and configured correctly from the terminal
+- Check environment proxy variables:
+  - echo "$HTTP_PROXY" ; echo "$HTTPS_PROXY" ; echo "$http_proxy" ; echo "$https_proxy"
+  Interpretation: If your VPN/proxy requires these be set, they should be present. (Your conda config currently has proxy_servers: {} — that means conda itself has no proxy config set there.)
+
+- Verify that the channel alias resolves to the artifactory and is reachable:
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+  Interpretation: a successful HTTP response (200 or 401 depending on auth) confirms your client can reach the artifactory. If you get network errors, you may not be on VPN or proxy is not routing.
+
+- Confirm DNS / route via traceroute (helps show whether traffic goes via corporate network) :
+  - traceroute sres.web.boeing.com
+  Interpretation: hops should go into Boeing network when VPN is active.
+
+- Do an authenticated test that would prove the artifactory proxy is used by conda:
+  - Run a conda command with verbose logging and watch the URLs it downloads from:
+    - conda update -n base -c Conda-Forge conda -v
+  Interpretation: if downloads show URLs under https://sres.web.boeing.com/... then conda is using the proxy. If they show https://conda.anaconda.org/... then conda is contacting upstream directly (or metadata references upstream).
+
+- Test with curl to the upstream host vs artifactory from your terminal:
+  - curl -I https://conda.anaconda.org/conda-forge/noarch/repodata.json
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+  Interpretation: If you can reach conda.anaconda.org while on VPN but you expect all traffic to go via sres, that indicates a routing or config problem (or conda is resolving/using the upstream). If conda.anaconda.org is blocked/unreachable while sres is reachable, the proxy is working as intended.
+
+3) If you find packages that list conda.anaconda.org in conda list
+- This is metadata telling you where the package record says it came from. If you want to ensure everything is recorded as coming from the Boeing proxy:
+  - Consider re-downloading packages through the proxy (clean cache and force reinstall):
+    - conda clean --all
+    - conda install -n base -c Conda-Forge --override-channels --copy <pkg>=<version> (or re-run updates using -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge)
+  - Or recreate the env while on VPN (or reinstall Miniforge while on VPN) to ensure all metadata originates via sres.
+
+4) Quick workflow to triage now
+- Ensure you are on VPN (connect via your regular VPN client).
+- Run:
+  - conda info --envs
+  - conda list -n base --show-channel-urls
+  - conda list --revisions -n base
+  - ls -lt ~/miniforge3/envs
+  - ls -lt ~/miniforge3/pkgs | head
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+  - CONDA_VERBOSITY=3 conda update -n base conda -v
+- Capture any lines in the verbose conda output that show the host names used for repodata and package downloads.
+
+If you want, paste the output of:
+- conda list --revisions -n base
+- ls -lt ~/miniforge3/pkgs | head
+- the verbose conda update attempt (CONDA_VERBOSITY=3 conda update -n base conda -v)
+and I can help interpret whether any operations happened off‑VPN or against the upstream conda-forge.
+
+If you need internal help confirming VPN state or artifactory access, please ask in the UDAL Mattermost channel: https://mattermost.web.boeing.com/analytxplatform/channels/udal
+
+References
+- [pyudal-tutorial](https://udal.web.boeing.com/udaldocs/getting-started/tutorials/pyudal-tutorial)
+- [starter-projects](https://udal.web.boeing.com/udaldocs/getting-started/starter-projects)
+- [certificate-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/certificate-authentication)
+- [csrf](https://udal.web.boeing.com/udaldocs/subjects/security/csrf)
+- [dynamic-authorization-roles](https://udal.web.boeing.com/udaldocs/subjects/security/authorization/dynamic-authorization-roles)
+- [digest-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/digest-authentication)
+user: Can you create a markdown file that walks through your last response as a tutorial? Such that I can download the file?
+assistant: # Verify Conda Env Traffic Through Corporate Proxy — Tutorial
+
+This tutorial walks through the checks and commands from the previous response so you can determine whether any conda environments or packages were installed/updated while off‑VPN (and therefore may have pulled directly from upstream conda-forge), and how to verify that your VPN/proxy and conda configuration are active and correct.
+
+Save this file as verify-conda-proxy.md and run the commands on your macOS terminal. Remove any sensitive output (tokens, credentials) before sharing.
+
+---
+
+## Quick overview
+
+Goal: Confirm that all conda package downloads for your base (and other) environments used your corporate artifactory proxy (channel alias `https://sres.web.boeing.com/artifactory/api/conda`) rather than upstream `conda.anaconda.org`.
+
+Two parts:
+1. Detect envs/packages that may have been created/updated while off‑VPN (inspect timestamps, revisions, and per-package channel URLs).
+2. Verify VPN/proxy connectivity and that conda is actually contacting the artifactory proxy.
+
+Run these commands while connected to your VPN where possible. When asked to paste output for troubleshooting, do not paste sensitive credentials.
+
+---
+
+## 1 — Inspect environments and timestamps
+
+1. List conda environments and their locations
+- Command:
+  - conda info --envs
+- Why: shows envs and paths so you can inspect their directory timestamps.
+
+2. List env directories and modification timestamps
+- Command:
+  - ls -l ~/miniforge3/envs
+- Why: a recent timestamp matching when you were off‑VPN is suspicious.
+
+3. Show package installs and channel metadata for base (and other envs)
+- Commands:
+  - conda list -n base --show-channel-urls
+  - conda list -n <env-name> --show-channel-urls
+- Why: check the Channel URL. If a package shows a Channel URL like `https://conda.anaconda.org/conda-forge/...` that package's metadata points to upstream rather than your artifactory proxy (`https://sres.web.boeing.com/artifactory/api/conda/...`).
+
+4. Show environment revision history
+- Command:
+  - conda list --revisions -n base
+- Why: revisions show install/update/remove operations with timestamps. Compare revision timestamps to times you may have been off‑VPN.
+
+5. Inspect package cache timestamps (to find recent direct downloads)
+- Commands:
+  - ls -lt ~/miniforge3/pkgs | head
+  - stat ~/miniforge3/pkgs/<package-folder>   (replace with a found folder)
+- Why: package files created while you were off‑VPN suggest those downloads happened at that time.
+
+---
+
+## 2 — Verbose conda run to see hostnames used
+
+1. Run an update (or other conda command) verbosely so you can see the URLs conda queries and downloads
+- Command:
+  - CONDA_VERBOSITY=3 conda update -n base conda -v
+- What to look for:
+  - Lines showing repodata or download URLs. If the hostnames shown are under `https://sres.web.boeing.com/...` your proxy is being contacted. If you see `https://conda.anaconda.org/...` (or other non‑sres hosts) being contacted, that indicates upstream traffic.
+
+Note: conda may use cached metadata; you can clear cache before re-running to force fresh downloads:
+- conda clean --all
+
+---
+
+## 3 — Verify VPN/proxy reachability and routing from terminal
+
+1. Check common proxy environment variables
+- Command:
+  - echo "$HTTP_PROXY" ; echo "$HTTPS_PROXY" ; echo "$http_proxy" ; echo "$https_proxy"
+- Why: some network configurations require these variables to be present for tools; your conda config also has a `proxy_servers` section (empty in your output).
+
+2. Test HTTP(S) reachability of your artifactory proxy
+- Commands:
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+- Expected:
+  - A successful HTTP response (200) or a 401/403 depending on auth. Network errors indicate routing / VPN issues.
+
+3. Compare upstream host reachability vs artifactory
+- Commands:
+  - curl -I https://conda.anaconda.org/conda-forge/noarch/repodata.json
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+- Interpretation:
+  - If you can reach `conda.anaconda.org` while you expect all traffic to go through `sres.web.boeing.com`, investigate routing or conda channel configuration. Ideally `sres` should be reachable and used by conda.
+
+4. Use traceroute to inspect routing
+- Command:
+  - traceroute sres.web.boeing.com
+- Why: verify packet path goes into corporate network when VPN is active.
+
+5. Check DNS resolution for the artifactory (sanity check)
+- Command:
+  - nslookup sres.web.boeing.com
+- Why: confirms DNS resolution while on VPN.
+
+---
+
+## 4 — Interpret findings & next steps
+
+- If conda list shows the Channel URL as `https://conda.anaconda.org/conda-forge` for some packages:
+  - That metadata indicates those packages were recorded as coming from upstream. It may have happened when you were off‑VPN or when conda’s configuration pointed to upstream.
+  - Metadata alone does not strictly prove bytes were downloaded directly (some packages could have been mirrored), but it is a strong indicator.
+
+- If verbose conda runs show repodata/downloads from `https://sres.web.boeing.com/...`:
+  - conda is using your artifactory proxy for that operation.
+
+- If you find suspicious installs:
+  - Option A — Re-download/reinstall packages via the proxy:
+    - conda clean --all
+    - conda update -n base -c Conda-Forge --override-channels conda mamba conda-build conda-index conda-libmamba-solver
+    - Or explicitly use the full proxy URL: -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+  - Option B — Recreate the base installation while on VPN or reinstall Miniforge through the VPN to ensure all package metadata points to your artifactory.
+  - Option C — Create fresh environments for your tooling (preferred) and keep base minimal.
+
+---
+
+## 5 — Useful command checklist (copy-paste)
+
+- Inspect envs and timestamps:
+  - conda info --envs
+  - ls -l ~/miniforge3/envs
+- List packages & channels:
+  - conda list -n base --show-channel-urls
+  - conda list -n <env-name> --show-channel-urls
+- Revisions:
+  - conda list --revisions -n base
+- Package cache timestamps:
+  - ls -lt ~/miniforge3/pkgs | head
+  - stat ~/miniforge3/pkgs/<pkg-folder>
+- Verbose conda operation:
+  - conda clean --all
+  - CONDA_VERBOSITY=3 conda update -n base conda -v
+- Proxy & reachability:
+  - echo "$HTTP_PROXY" ; echo "$HTTPS_PROXY" ; echo "$http_proxy" ; echo "$https_proxy"
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+  - curl -I https://conda.anaconda.org/conda-forge/noarch/repodata.json
+  - traceroute sres.web.boeing.com
+  - nslookup sres.web.boeing.com
+
+---
+
+## 6 — If you want me to help interpret output
+
+Paste (redacting any sensitive tokens / credentials):
+- conda list --revisions -n base
+- ls -lt ~/miniforge3/pkgs | head
+- Output lines from CONDA_VERBOSITY=3 conda update -n base conda -v that show repodata or download URLs
+
+If you prefer internal help, ask in the UDAL Mattermost channel:
+https://mattermost.web.boeing.com/analytxplatform/channels/udal
+
+---
+
+References
+
+- [tutorials](https://udal.web.boeing.com/udaldocs/getting-started/tutorials/)
+- [openresty](https://udal.web.boeing.com/udaldocs/subjects/security/patterns/openresty)
+- [about](
+user: You cant make the file internally and then send me a file to download?
+assistant: I can’t create and transmit a downloadable file directly from here, but I can generate the exact Markdown content for you and give a one-line command you can run in your terminal to create the file locally.
+
+Would you like me to:
+- paste the Markdown here so you can copy/paste it into a file, or
+- print a shell-safe here-doc you can paste into your terminal to write the file automatically?
+
+If you want the automatic method, run this in your terminal (creates verify-conda-proxy.md in your current directory). After I paste the content, wrap it in a here-doc like below.
+
+Command to write a file named verify-conda-proxy.md:
+cat > verify-conda-proxy.md <<'EOF'
+(paste the markdown content I provide here)
+EOF
+
+Tell me which option you prefer and I’ll produce the full Markdown content now.
+
+References
+- [openresty](https://udal.web.boeing.com/udaldocs/subjects/security/patterns/openresty)
+- [the-udal-jwt](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/the-udal-jwt)
+- [getting-started](https://udal.web.boeing.com/udaldocs/getting-started/)
+- [csrf](https://udal.web.boeing.com/udaldocs/subjects/security/csrf)
+- [about](https://udal.web.boeing.com/udaldocs/about/)
+- [certificate-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/certificate-authentication)
+- [pyudal-tutorial](https://udal.web.boeing.com/udaldocs/getting-started/tutorials/pyudal-tutorial)
+- [choosing-authentication-mode](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/choosing-authentication-mode)
+user: shell safe doc (option 2) because when you try and send me the markdown here, it renders and I am not able to copy it in the correct form
+assistant: Run this in your terminal to write the file verify-conda-proxy.md in your current directory (it uses a shell-safe here-doc):
+
+cat > verify-conda-proxy.md <<'EOF'
+# Verify Conda Env Traffic Through Corporate Proxy — Tutorial
+
+This tutorial walks through checks and commands to determine whether any conda environments or packages were installed/updated while off‑VPN (and therefore may have pulled directly from upstream conda-forge), and how to verify that your VPN/proxy and conda configuration are active and correct.
+
+Save this file and run the commands on your macOS terminal. Remove any sensitive output (tokens, credentials) before sharing.
+
+---
+
+## Quick overview
+
+Goal: Confirm that all conda package downloads for your base (and other) environments used your corporate artifactory proxy (channel alias `https://sres.web.boeing.com/artifactory/api/conda`) rather than upstream `conda.anaconda.org`.
+
+Two parts:
+1. Detect envs/packages that may have been created/updated while off‑VPN (inspect timestamps, revisions, and per-package channel URLs).
+2. Verify VPN/proxy connectivity and that conda is actually contacting the artifactory proxy.
+
+Run these commands while connected to your VPN where possible. When asked to paste output for troubleshooting, do not paste sensitive credentials.
+
+---
+
+## 1 — Inspect environments and timestamps
+
+1. List conda environments and their locations
+- Command:
+  - conda info --envs
+- Why: shows envs and paths so you can inspect their directory timestamps.
+
+2. List env directories and modification timestamps
+- Command:
+  - ls -l ~/miniforge3/envs
+- Why: a recent timestamp matching when you were off‑VPN is suspicious.
+
+3. Show package installs and channel metadata for base (and other envs)
+- Commands:
+  - conda list -n base --show-channel-urls
+  - conda list -n <env-name> --show-channel-urls
+- Why: check the Channel URL. If a package shows a Channel URL like `https://conda.anaconda.org/conda-forge/...` that package's metadata points to upstream rather than your artifactory proxy (`https://sres.web.boeing.com/artifactory/api/conda/...`).
+
+4. Show environment revision history
+- Command:
+  - conda list --revisions -n base
+- Why: revisions show install/update/remove operations with timestamps. Compare revision timestamps to times you may have been off‑VPN.
+
+5. Inspect package cache timestamps (to find recent direct downloads)
+- Commands:
+  - ls -lt ~/miniforge3/pkgs | head
+  - stat ~/miniforge3/pkgs/<package-folder>   (replace with a found folder)
+- Why: package files created while you were off‑VPN suggest those downloads happened at that time.
+
+---
+
+## 2 — Verbose conda run to see hostnames used
+
+1. Run an update (or other conda command) verbosely so you can see the URLs conda queries and downloads
+- Command:
+  - CONDA_VERBOSITY=3 conda update -n base conda -v
+- What to look for:
+  - Lines showing repodata or download URLs. If the hostnames shown are under `https://sres.web.boeing.com/...` your proxy is being contacted. If you see `https://conda.anaconda.org/...` (or other non‑sres hosts) being contacted, that indicates upstream traffic.
+
+Note: conda may use cached metadata; you can clear cache before re-running to force fresh downloads:
+- conda clean --all
+
+---
+
+## 3 — Verify VPN/proxy reachability and routing from terminal
+
+1. Check common proxy environment variables
+- Command:
+  - echo "$HTTP_PROXY" ; echo "$HTTPS_PROXY" ; echo "$http_proxy" ; echo "$https_proxy"
+- Why: some network configurations require these variables to be present for tools; your conda config also has a `proxy_servers` section.
+
+2. Test HTTP(S) reachability of your artifactory proxy
+- Commands:
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+- Expected:
+  - A successful HTTP response (200) or a 401/403 depending on auth. Network errors indicate routing / VPN issues.
+
+3. Compare upstream host reachability vs artifactory
+- Commands:
+  - curl -I https://conda.anaconda.org/conda-forge/noarch/repodata.json
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+- Interpretation:
+  - If you can reach `conda.anaconda.org` while you expect all traffic to go through `sres.web.boeing.com`, investigate routing or conda channel configuration. Ideally `sres` should be reachable and used by conda.
+
+4. Use traceroute to inspect routing
+- Command:
+  - traceroute sres.web.boeing.com
+- Why: verify packet path goes into corporate network when VPN is active.
+
+5. Check DNS resolution for the artifactory (sanity check)
+- Command:
+  - nslookup sres.web.boeing.com
+- Why: confirms DNS resolution while on VPN.
+
+---
+
+## 4 — Interpret findings & next steps
+
+- If conda list shows the Channel URL as `https://conda.anaconda.org/conda-forge` for some packages:
+  - That metadata indicates those packages were recorded as coming from upstream. It may have happened when you were off‑VPN or when conda’s configuration pointed to upstream.
+  - Metadata alone does not strictly prove bytes were downloaded directly (some packages could have been mirrored), but it is a strong indicator.
+
+- If verbose conda runs show repodata/downloads from `https://sres.web.boeing.com/...`:
+  - conda is using your artifactory proxy for that operation.
+
+- If you find suspicious installs:
+  - Option A — Re-download/reinstall packages via the proxy:
+    - conda clean --all
+    - conda update -n base -c Conda-Forge --override-channels conda mamba conda-build conda-index conda-libmamba-solver
+    - Or explicitly use the full proxy URL: -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+  - Option B — Recreate the base installation while on VPN or reinstall Miniforge through the VPN to ensure all package metadata points to your artifactory.
+  - Option C — Create fresh environments for your tooling (preferred) and keep base minimal.
+
+---
+
+## 5 — Useful command checklist (copy-paste)
+
+- Inspect envs and timestamps:
+  - conda info --envs
+  - ls -l ~/miniforge3/envs
+- List packages & channels:
+  - conda list -n base --show-channel-urls
+  - conda list -n <env-name> --show-channel-urls
+- Revisions:
+  - conda list --revisions -n base
+- Package cache timestamps:
+  - ls -lt ~/miniforge3/pkgs | head
+  - stat ~/miniforge3/pkgs/<pkg-folder>
+- Verbose conda operation:
+  - conda clean --all
+  - CONDA_VERBOSITY=3 conda update -n base conda -v
+- Proxy & reachability:
+  - echo "$HTTP_PROXY" ; echo "$HTTPS_PROXY" ; echo "$http_proxy" ; echo "$https_proxy"
+  - curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+  - curl -I https://conda.anaconda.org/conda-forge/noarch/repodata.json
+  - traceroute sres.web.boeing.com
+  - nslookup sres.web.boeing.com
+
+---
+
+## 6 — If you want me to help interpret output
+
+Paste (redacting any sensitive tokens / credentials):
+- conda list --revisions -n base
+- ls -lt ~/miniforge3/pkgs | head
+- Output lines from CONDA_VERBOSITY=3 conda update -n base conda -v that show repodata or download URLs
+
+If you prefer internal help, ask in the UDAL Mattermost channel:
+https://mattermost.web.boeing.com/analytxplatform/channels/udal
+
+---
+
+## References
+
+- [openresty](https://udal.web.boeing.com/udaldocs/subjects/security/patterns/openresty)
+- [authentication-modes](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/authentication-modes)
+- [vanity-host-names](https://udal.web.boeing.com/udaldocs/subjects/routing/vanity-host-names)
+- [certificate-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/certificate-authentication)
+- [the-udal-jwt](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/the-udal-jwt)
+- [permission-request-management](https://udal.web.boeing.com/udaldocs/subjects/security/authorization/permission-request-management)
+EOF
+
+After the command finishes, open verify-conda-proxy.md in your editor.
+user: <Screenshot 2026-01-23 at 9.10.20 PM.png>
+i do not know when I was "off-VPN". So that is not a helpful instruction in asessing what happened. Take a look at the revision history (note, I just reset conda base using the plugin conda-self command and it uninstalled Conda-Forge/* (correct) packages only): "(base) so714f@Mac boeing-docs % conda list --revisions -n base
+2025-05-10 20:20:27  (rev 0)
+    +archspec-0.2.5 (conda-forge)
+    +boltons-24.0.0 (conda-forge)
+    +brotli-python-1.1.0 (conda-forge)
+    +bzip2-1.0.8 (conda-forge)
+    +c-ares-1.34.5 (conda-forge)
+    +ca-certificates-2025.4.26 (conda-forge)
+    +certifi-2025.4.26 (conda-forge)
+    +cffi-1.17.1 (conda-forge)
+    +charset-normalizer-3.4.2 (conda-forge)
+    +colorama-0.4.6 (conda-forge)
+    +conda-25.3.0 (conda-forge)
+    +conda-libmamba-solver-25.3.0 (conda-forge)
+    +conda-package-handling-2.4.0 (conda-forge)
+    +conda-package-streaming-0.11.0 (conda-forge)
+    +cpp-expected-1.1.0 (conda-forge)
+    +distro-1.9.0 (conda-forge)
+    +fmt-11.1.4 (conda-forge)
+    +frozendict-2.4.6 (conda-forge)
+    +h2-4.2.0 (conda-forge)
+    +hpack-4.1.0 (conda-forge)
+    +hyperframe-6.1.0 (conda-forge)
+    +idna-3.10 (conda-forge)
+    +jsonpatch-1.33 (conda-forge)
+    +jsonpointer-3.0.0 (conda-forge)
+    +krb5-1.21.3 (conda-forge)
+    +libarchive-3.7.7 (conda-forge)
+    +libcurl-8.13.0 (conda-forge)
+    +libcxx-20.1.4 (conda-forge)
+    +libedit-3.1.20250104 (conda-forge)
+    +libev-4.33 (conda-forge)
+    +libexpat-2.7.0 (conda-forge)
+    +libffi-3.4.6 (conda-forge)
+    +libiconv-1.18 (conda-forge)
+    +liblzma-5.8.1 (conda-forge)
+    +libmamba-2.1.1 (conda-forge)
+    +libmambapy-2.1.1 (conda-forge)
+    +libnghttp2-1.64.0 (conda-forge)
+    +libsolv-0.7.32 (conda-forge)
+    +libsqlite-3.49.2 (conda-forge)
+    +libssh2-1.11.1 (conda-forge)
+    +libxml2-2.13.8 (conda-forge)
+    +libzlib-1.3.1 (conda-forge)
+    +lz4-c-1.10.0 (conda-forge)
+    +lzo-2.10 (conda-forge)
+    +mamba-2.1.1 (conda-forge)
+    +menuinst-2.2.0 (conda-forge)
+    +ncurses-6.5 (conda-forge)
+    +nlohmann_json-3.11.3 (conda-forge)
+    +openssl-3.5.0 (conda-forge)
+    +packaging-25.0 (conda-forge)
+    +pip-25.1.1 (conda-forge)
+    +platformdirs-4.3.8 (conda-forge)
+    +pluggy-1.5.0 (conda-forge)
+    +pybind11-abi-4 (conda-forge)
+    +pycosat-0.6.6 (conda-forge)
+    +pycparser-2.22 (conda-forge)
+    +pysocks-1.7.1 (conda-forge)
+    +python-3.12.10 (conda-forge)
+    +python_abi-3.12 (conda-forge)
+    +readline-8.2 (conda-forge)
+    +reproc-14.2.5.post0 (conda-forge)
+    +reproc-cpp-14.2.5.post0 (conda-forge)
+    +requests-2.32.3 (conda-forge)
+    +ruamel.yaml-0.18.10 (conda-forge)
+    +ruamel.yaml.clib-0.2.8 (conda-forge)
+    +setuptools-80.1.0 (conda-forge)
+    +simdjson-3.12.3 (conda-forge)
+    +tk-8.6.13 (conda-forge)
+    +tqdm-4.67.1 (conda-forge)
+    +truststore-0.10.1 (conda-forge)
+    +tzdata-2025b (conda-forge)
+    +urllib3-2.4.0 (conda-forge)
+    +wheel-0.45.1 (conda-forge)
+    +yaml-cpp-0.8.0 (conda-forge)
+    +zstandard-0.23.0 (conda-forge)
+    +zstd-1.5.7 (conda-forge)
+
+2025-06-26 22:17:40  (rev 1)
+     archspec  {0.2.5 (conda-forge) -> 0.2.5 (https://conda.anaconda.org/conda-forge/noarch)}
+     boltons  {24.0.0 (conda-forge) -> 24.0.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     brotli-python  {1.1.0 (conda-forge) -> 1.1.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     bzip2  {1.0.8 (conda-forge) -> 1.0.8 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     c-ares  {1.34.5 (conda-forge) -> 1.34.5 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     ca-certificates  {2025.4.26 (conda-forge) -> 2025.6.15 (defaults/noarch)}
+     certifi  {2025.4.26 (conda-forge) -> 2025.6.15 (defaults/noarch)}
+     cffi  {1.17.1 (conda-forge) -> 1.17.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     charset-normalizer  {3.4.2 (conda-forge) -> 3.4.2 (https://conda.anaconda.org/conda-forge/noarch)}
+     colorama  {0.4.6 (conda-forge) -> 0.4.6 (https://conda.anaconda.org/conda-forge/noarch)}
+     conda  {25.3.0 (conda-forge) -> 25.5.1 (defaults/osx-arm64)}
+     conda-libmamba-solver  {25.3.0 (conda-forge) -> 25.3.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     conda-package-handling  {2.4.0 (conda-forge) -> 2.4.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     conda-package-streaming  {0.11.0 (conda-forge) -> 0.11.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     cpp-expected  {1.1.0 (conda-forge) -> 1.1.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     distro  {1.9.0 (conda-forge) -> 1.9.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     fmt  {11.1.4 (conda-forge) -> 11.1.4 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     frozendict  {2.4.6 (conda-forge) -> 2.4.6 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     h2  {4.2.0 (conda-forge) -> 4.2.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     hpack  {4.1.0 (conda-forge) -> 4.1.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     hyperframe  {6.1.0 (conda-forge) -> 6.1.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     idna  {3.10 (conda-forge) -> 3.10 (https://conda.anaconda.org/conda-forge/noarch)}
+     jsonpatch  {1.33 (conda-forge) -> 1.33 (https://conda.anaconda.org/conda-forge/noarch)}
+     jsonpointer  {3.0.0 (conda-forge) -> 3.0.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     krb5  {1.21.3 (conda-forge) -> 1.21.3 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libarchive  {3.7.7 (conda-forge) -> 3.7.7 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libcurl  {8.13.0 (conda-forge) -> 8.14.1 (defaults/osx-arm64)}
+     libcxx  {20.1.4 (conda-forge) -> 20.1.4 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libedit  {3.1.20250104 (conda-forge) -> 3.1.20250104 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libev  {4.33 (conda-forge) -> 4.33 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libexpat  {2.7.0 (conda-forge) -> 2.7.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libffi  {3.4.6 (conda-forge) -> 3.4.6 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libiconv  {1.18 (conda-forge) -> 1.18 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     liblzma  {5.8.1 (conda-forge) -> 5.8.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libmamba  {2.1.1 (conda-forge) -> 2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libmambapy  {2.1.1 (conda-forge) -> 2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libnghttp2  {1.64.0 (conda-forge) -> 1.64.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libsolv  {0.7.32 (conda-forge) -> 0.7.32 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libsqlite  {3.49.2 (conda-forge) -> 3.49.2 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libssh2  {1.11.1 (conda-forge) -> 1.11.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libxml2  {2.13.8 (conda-forge) -> 2.13.8 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     libzlib  {1.3.1 (conda-forge) -> 1.3.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     lz4-c  {1.10.0 (conda-forge) -> 1.10.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     lzo  {2.10 (conda-forge) -> 2.10 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     mamba  {2.1.1 (conda-forge) -> 2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     menuinst  {2.2.0 (conda-forge) -> 2.2.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     ncurses  {6.5 (conda-forge) -> 6.5 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     nlohmann_json  {3.11.3 (conda-forge) -> 3.11.3 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     openssl  {3.5.0 (conda-forge) -> 3.5.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     packaging  {25.0 (conda-forge) -> 25.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     pip  {25.1.1 (conda-forge) -> 25.1.1 (https://conda.anaconda.org/conda-forge/noarch)}
+     platformdirs  {4.3.8 (conda-forge) -> 4.3.8 (https://conda.anaconda.org/conda-forge/noarch)}
+     pluggy  {1.5.0 (conda-forge) -> 1.5.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     pybind11-abi  {4 (conda-forge) -> 4 (https://conda.anaconda.org/conda-forge/noarch)}
+     pycosat  {0.6.6 (conda-forge) -> 0.6.6 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     pycparser  {2.22 (conda-forge) -> 2.22 (https://conda.anaconda.org/conda-forge/noarch)}
+     pysocks  {1.7.1 (conda-forge) -> 1.7.1 (https://conda.anaconda.org/conda-forge/noarch)}
+     python  {3.12.10 (conda-forge) -> 3.12.10 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     python_abi  {3.12 (conda-forge) -> 3.12 (https://conda.anaconda.org/conda-forge/noarch)}
+     readline  {8.2 (conda-forge) -> 8.2 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     reproc  {14.2.5.post0 (conda-forge) -> 14.2.5.post0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     reproc-cpp  {14.2.5.post0 (conda-forge) -> 14.2.5.post0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     requests  {2.32.3 (conda-forge) -> 2.32.3 (https://conda.anaconda.org/conda-forge/noarch)}
+     ruamel.yaml  {0.18.10 (conda-forge) -> 0.18.10 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     ruamel.yaml.clib  {0.2.8 (conda-forge) -> 0.2.8 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     setuptools  {80.1.0 (conda-forge) -> 80.1.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     simdjson  {3.12.3 (conda-forge) -> 3.12.3 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     tk  {8.6.13 (conda-forge) -> 8.6.13 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     tqdm  {4.67.1 (conda-forge) -> 4.67.1 (https://conda.anaconda.org/conda-forge/noarch)}
+     truststore  {0.10.1 (conda-forge) -> 0.10.1 (https://conda.anaconda.org/conda-forge/noarch)}
+     tzdata  {2025b (conda-forge) -> 2025b (https://conda.anaconda.org/conda-forge/noarch)}
+     urllib3  {2.4.0 (conda-forge) -> 2.4.0 (https://conda.anaconda.org/conda-forge/noarch)}
+     wheel  {0.45.1 (conda-forge) -> 0.45.1 (https://conda.anaconda.org/conda-forge/noarch)}
+     yaml-cpp  {0.8.0 (conda-forge) -> 0.8.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     zstandard  {0.23.0 (conda-forge) -> 0.23.0 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+     zstd  {1.5.7 (conda-forge) -> 1.5.7 (https://conda.anaconda.org/conda-forge/osx-arm64)}
+    +cmake-4.0.3 (defaults/osx-arm64)
+    +libuv-1.51.0 (defaults/osx-arm64)
+    +ninja-1.13.0 (defaults/osx-arm64)
+    +rhash-1.4.6 (defaults/osx-arm64)
+
+2025-06-26 22:18:40  (rev 2)
+    +libllvm20-20.1.7 (defaults/osx-arm64)
+    +lld-20.1.7 (defaults/osx-arm64)
+    +llvm-tools-20.1.7 (defaults/osx-arm64)
+    +llvm-tools-20-20.1.7 (defaults/osx-arm64)
+    +llvmdev-20.1.7 (defaults/osx-arm64)
+    +pybind11-2.13.6 (defaults/noarch)
+    +pybind11-global-2.13.6 (defaults/noarch)
+
+2025-07-09 23:44:28  (rev 3)
+     ca-certificates  {2025.6.15 (defaults/noarch) -> 2025.7.9 (defaults/noarch)}
+     certifi  {2025.6.15 (defaults/noarch) -> 2025.7.9 (defaults/noarch)}
+     libxml2  {2.13.8 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 2.13.8 (defaults/osx-arm64)}
+     openssl  {3.5.0 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 3.5.1 (defaults/osx-arm64)}
+    +cairo-1.18.4 (defaults/osx-arm64)
+    +font-ttf-dejavu-sans-mono-2.37 (defaults/noarch)
+    +font-ttf-inconsolata-3.000 (defaults/noarch)
+    +font-ttf-source-code-pro-2.038 (defaults/noarch)
+    +font-ttf-ubuntu-0.83 (defaults/noarch)
+    +fontconfig-2.15.0 (defaults/osx-arm64)
+    +fonts-conda-ecosystem-1 (defaults/noarch)
+    +fonts-conda-forge-1 (defaults/noarch)
+    +freetype-2.13.3 (defaults/osx-arm64)
+    +graphite2-1.3.14 (defaults/osx-arm64)
+    +harfbuzz-11.2.1 (defaults/osx-arm64)
+    +icu-75.1 (defaults/osx-arm64)
+    +libfreetype-2.13.3 (defaults/osx-arm64)
+    +libfreetype6-2.13.3 (defaults/osx-arm64)
+    +libglib-2.84.2 (defaults/osx-arm64)
+    +libintl-0.25.1 (defaults/osx-arm64)
+    +libpng-1.6.50 (defaults/osx-arm64)
+    +pcre2-10.45 (defaults/osx-arm64)
+    +pixman-0.46.2 (defaults/osx-arm64)
+    +tectonic-0.15.0 (defaults/osx-arm64)
+    +zlib-1.3.1 (defaults/osx-arm64)
+
+2025-07-09 23:51:38  (rev 4)
+    -cairo-1.18.4 (defaults/osx-arm64)
+    -font-ttf-dejavu-sans-mono-2.37 (defaults/noarch)
+    -font-ttf-inconsolata-3.000 (defaults/noarch)
+    -font-ttf-source-code-pro-2.038 (defaults/noarch)
+    -font-ttf-ubuntu-0.83 (defaults/noarch)
+    -fontconfig-2.15.0 (defaults/osx-arm64)
+    -fonts-conda-ecosystem-1 (defaults/noarch)
+    -fonts-conda-forge-1 (defaults/noarch)
+    -freetype-2.13.3 (defaults/osx-arm64)
+    -graphite2-1.3.14 (defaults/osx-arm64)
+    -harfbuzz-11.2.1 (defaults/osx-arm64)
+    -libfreetype-2.13.3 (defaults/osx-arm64)
+    -libfreetype6-2.13.3 (defaults/osx-arm64)
+    -libglib-2.84.2 (defaults/osx-arm64)
+    -libintl-0.25.1 (defaults/osx-arm64)
+    -libpng-1.6.50 (defaults/osx-arm64)
+    -pcre2-10.45 (defaults/osx-arm64)
+    -pixman-0.46.2 (defaults/osx-arm64)
+    -tectonic-0.15.0 (defaults/osx-arm64)
+    -zlib-1.3.1 (defaults/osx-arm64)
+
+2025-08-26 04:35:40  (rev 5)
+     ca-certificates  {2025.7.9 (defaults/noarch) -> 2025.8.3 (defaults/noarch)}
+     certifi  {2025.7.9 (defaults/noarch) -> 2025.8.3 (defaults/noarch)}
+     conda  {25.5.1 (defaults/osx-arm64) -> 25.7.0 (defaults/osx-arm64)}
+     openssl  {3.5.1 (defaults/osx-arm64) -> 3.5.2 (defaults/osx-arm64)}
+
+2025-09-30 21:16:27  (rev 6)
+     openssl  {3.5.2 (defaults/osx-arm64) -> 3.5.3 (defaults/osx-arm64)}
+
+2025-10-01 01:45:20  (rev 7)
+    +attrs-25.3.0 (defaults/noarch)
+    +beautifulsoup4-4.14.2 (defaults/noarch)
+    +cctools-1010.6 (defaults/osx-arm64)
+    +cctools_osx-arm64-1010.6 (defaults/osx-arm64)
+    +chardet-5.2.0 (defaults/noarch)
+    +click-8.3.0 (defaults/noarch)
+    +conda-build-25.7.0 (defaults/osx-arm64)
+    +conda-index-0.6.1 (defaults/noarch)
+    +evalidate-2.0.5 (defaults/noarch)
+    +filelock-3.19.1 (defaults/noarch)
+    +jinja2-3.1.6 (defaults/noarch)
+    +jsonschema-4.25.1 (defaults/noarch)
+    +jsonschema-specifications-2025.9.1 (defaults/noarch)
+    +ld64-951.9 (defaults/osx-arm64)
+    +ld64_osx-arm64-951.9 (defaults/osx-arm64)
+    +liblief-0.16.6 (defaults/osx-arm64)
+    +markupsafe-3.0.3 (defaults/osx-arm64)
+    +mbedtls-3.6.3.1 (defaults/osx-arm64)
+    +msgpack-python-1.1.1 (defaults/osx-arm64)
+    +patch-2.8 (defaults/osx-arm64)
+    +pkginfo-1.12.1.2 (defaults/noarch)
+    +psutil-7.1.0 (defaults/osx-arm64)
+    +py-lief-0.16.6 (defaults/osx-arm64)
+    +python-libarchive-c-5.3 (defaults/noarch)
+    +pytz-2025.2 (defaults/noarch)
+    +pyyaml-6.0.3 (defaults/osx-arm64)
+    +referencing-0.36.2 (defaults/noarch)
+    +ripgrep-14.1.1 (defaults/osx-arm64)
+    +rpds-py-0.27.1 (defaults/osx-arm64)
+    +sigtool-0.1.3 (defaults/osx-arm64)
+    +soupsieve-2.8 (defaults/noarch)
+    +tapi-1300.6.5 (defaults/osx-arm64)
+    +typing-extensions-4.15.0 (defaults/noarch)
+    +typing_extensions-4.15.0 (defaults/noarch)
+    +yaml-0.2.5 (defaults/osx-arm64)
+
+2026-01-20 09:54:58  (rev 8)
+     attrs  {25.3.0 (defaults/noarch) -> 25.3.0 (Conda-Forge/noarch)}
+     beautifulsoup4  {4.14.2 (defaults/noarch) -> 4.14.2 (Conda-Forge/noarch)}
+     ca-certificates  {2025.8.3 (defaults/noarch) -> 2026.1.4 (Conda-Forge/noarch)}
+     cctools  {1010.6 (defaults/osx-arm64) -> 1010.6 (Conda-Forge/osx-arm64)}
+     cctools_osx-arm64  {1010.6 (defaults/osx-arm64) -> 1010.6 (Conda-Forge/osx-arm64)}
+     certifi  {2025.8.3 (defaults/noarch) -> 2026.1.4 (Conda-Forge/noarch)}
+     chardet  {5.2.0 (defaults/noarch) -> 5.2.0 (Conda-Forge/noarch)}
+     click  {8.3.0 (defaults/noarch) -> 8.3.0 (Conda-Forge/noarch)}
+     cmake  {4.0.3 (defaults/osx-arm64) -> 4.0.3 (Conda-Forge/osx-arm64)}
+     conda  {25.7.0 (defaults/osx-arm64) -> 25.11.1 (Conda-Forge/osx-arm64)}
+     conda-build  {25.7.0 (defaults/osx-arm64) -> 25.11.1 (Conda-Forge/osx-arm64)}
+     conda-index  {0.6.1 (defaults/noarch) -> 0.7.0 (Conda-Forge/noarch)}
+     conda-libmamba-solver  {25.3.0 (https://conda.anaconda.org/conda-forge/noarch) -> 25.11.0 (Conda-Forge/noarch)}
+     cpp-expected  {1.1.0 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 1.3.1 (Conda-Forge/osx-arm64)}
+     evalidate  {2.0.5 (defaults/noarch) -> 2.0.5 (Conda-Forge/noarch)}
+     filelock  {3.19.1 (defaults/noarch) -> 3.19.1 (Conda-Forge/noarch)}
+     fmt  {11.1.4 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 11.2.0 (Conda-Forge/osx-arm64)}
+     icu  {75.1 (defaults/osx-arm64) -> 75.1 (Conda-Forge/osx-arm64)}
+     jinja2  {3.1.6 (defaults/noarch) -> 3.1.6 (Conda-Forge/noarch)}
+     jsonschema  {4.25.1 (defaults/noarch) -> 4.25.1 (Conda-Forge/noarch)}
+     jsonschema-specifications  {2025.9.1 (defaults/noarch) -> 2025.9.1 (Conda-Forge/noarch)}
+     ld64  {951.9 (defaults/osx-arm64) -> 951.9 (Conda-Forge/osx-arm64)}
+     ld64_osx-arm64  {951.9 (defaults/osx-arm64) -> 951.9 (Conda-Forge/osx-arm64)}
+     libarchive  {3.7.7 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 3.8.1 (Conda-Forge/osx-arm64)}
+     libcurl  {8.14.1 (defaults/osx-arm64) -> 8.14.1 (Conda-Forge/osx-arm64)}
+     liblief  {0.16.6 (defaults/osx-arm64) -> 0.16.6 (Conda-Forge/osx-arm64)}
+     libllvm20  {20.1.7 (defaults/osx-arm64) -> 20.1.7 (Conda-Forge/osx-arm64)}
+     libmamba  {2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 2.3.2 (Conda-Forge/osx-arm64)}
+     libmambapy  {2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 2.3.2 (Conda-Forge/osx-arm64)}
+     libsolv  {0.7.32 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 0.7.35 (Conda-Forge/osx-arm64)}
+     libuv  {1.51.0 (defaults/osx-arm64) -> 1.51.0 (Conda-Forge/osx-arm64)}
+     libxml2  {2.13.8 (defaults/osx-arm64) -> 2.13.8 (Conda-Forge/osx-arm64)}
+     lld  {20.1.7 (defaults/osx-arm64) -> 20.1.7 (Conda-Forge/osx-arm64)}
+     llvm-tools  {20.1.7 (defaults/osx-arm64) -> 20.1.7 (Conda-Forge/osx-arm64)}
+     llvm-tools-20  {20.1.7 (defaults/osx-arm64) -> 20.1.7 (Conda-Forge/osx-arm64)}
+     llvmdev  {20.1.7 (defaults/osx-arm64) -> 20.1.7 (Conda-Forge/osx-arm64)}
+     mamba  {2.1.1 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 2.3.2 (Conda-Forge/osx-arm64)}
+     markupsafe  {3.0.3 (defaults/osx-arm64) -> 3.0.3 (Conda-Forge/osx-arm64)}
+     mbedtls  {3.6.3.1 (defaults/osx-arm64) -> 3.6.3.1 (Conda-Forge/osx-arm64)}
+     msgpack-python  {1.1.1 (defaults/osx-arm64) -> 1.1.1 (Conda-Forge/osx-arm64)}
+     ninja  {1.13.0 (defaults/osx-arm64) -> 1.13.0 (Conda-Forge/osx-arm64)}
+     openssl  {3.5.3 (defaults/osx-arm64) -> 3.6.0 (Conda-Forge/osx-arm64)}
+     patch  {2.8 (defaults/osx-arm64) -> 2.8 (Conda-Forge/osx-arm64)}
+     pkginfo  {1.12.1.2 (defaults/noarch) -> 1.12.1.2 (Conda-Forge/noarch)}
+     psutil  {7.1.0 (defaults/osx-arm64) -> 7.1.0 (Conda-Forge/osx-arm64)}
+     py-lief  {0.16.6 (defaults/osx-arm64) -> 0.16.6 (Conda-Forge/osx-arm64)}
+     pybind11  {2.13.6 (defaults/noarch) -> 2.13.6 (Conda-Forge/noarch)}
+     pybind11-global  {2.13.6 (defaults/noarch) -> 2.13.6 (Conda-Forge/noarch)}
+     python-libarchive-c  {5.3 (defaults/noarch) -> 5.3 (Conda-Forge/noarch)}
+     pytz  {2025.2 (defaults/noarch) -> 2025.2 (Conda-Forge/noarch)}
+     pyyaml  {6.0.3 (defaults/osx-arm64) -> 6.0.3 (Conda-Forge/osx-arm64)}
+     referencing  {0.36.2 (defaults/noarch) -> 0.36.2 (Conda-Forge/noarch)}
+     rhash  {1.4.6 (defaults/osx-arm64) -> 1.4.6 (Conda-Forge/osx-arm64)}
+     ripgrep  {14.1.1 (defaults/osx-arm64) -> 14.1.1 (Conda-Forge/osx-arm64)}
+     rpds-py  {0.27.1 (defaults/osx-arm64) -> 0.27.1 (Conda-Forge/osx-arm64)}
+     sigtool  {0.1.3 (defaults/osx-arm64) -> 0.1.3 (Conda-Forge/osx-arm64)}
+     simdjson  {3.12.3 (https://conda.anaconda.org/conda-forge/osx-arm64) -> 4.0.7 (Conda-Forge/osx-arm64)}
+     soupsieve  {2.8 (defaults/noarch) -> 2.8 (Conda-Forge/noarch)}
+     tapi  {1300.6.5 (defaults/osx-arm64) -> 1300.6.5 (Conda-Forge/osx-arm64)}
+     typing-extensions  {4.15.0 (defaults/noarch) -> 4.15.0 (Conda-Forge/noarch)}
+     typing_extensions  {4.15.0 (defaults/noarch) -> 4.15.0 (Conda-Forge/noarch)}
+     yaml  {0.2.5 (defaults/osx-arm64) -> 0.2.5 (Conda-Forge/osx-arm64)}
+    -nlohmann_json-3.11.3 (https://conda.anaconda.org/conda-forge/osx-arm64)
+    +nlohmann_json-abi-3.12.0 (Conda-Forge/noarch)
+
+2026-01-23 20:53:31  (rev 9)
+    +conda-self-0.1.1 (Conda-Forge/noarch)
+
+2026-01-23 20:55:05  (rev 10)
+    -attrs-25.3.0 (Conda-Forge/noarch)
+    -beautifulsoup4-4.14.2 (Conda-Forge/noarch)
+    -cctools-1010.6 (Conda-Forge/osx-arm64)
+    -cctools_osx-arm64-1010.6 (Conda-Forge/osx-arm64)
+    -chardet-5.2.0 (Conda-Forge/noarch)
+    -click-8.3.0 (Conda-Forge/noarch)
+    -cmake-4.0.3 (Conda-Forge/osx-arm64)
+    -conda-build-25.11.1 (Conda-Forge/osx-arm64)
+    -conda-index-0.7.0 (Conda-Forge/noarch)
+    -conda-self-0.1.1 (Conda-Forge/noarch)
+    -evalidate-2.0.5 (Conda-Forge/noarch)
+    -filelock-3.19.1 (Conda-Forge/noarch)
+    -jinja2-3.1.6 (Conda-Forge/noarch)
+    -jsonschema-4.25.1 (Conda-Forge/noarch)
+    -jsonschema-specifications-2025.9.1 (Conda-Forge/noarch)
+    -ld64-951.9 (Conda-Forge/osx-arm64)
+    -ld64_osx-arm64-951.9 (Conda-Forge/osx-arm64)
+    -liblief-0.16.6 (Conda-Forge/osx-arm64)
+    -libllvm20-20.1.7 (Conda-Forge/osx-arm64)
+    -libuv-1.51.0 (Conda-Forge/osx-arm64)
+    -lld-20.1.7 (Conda-Forge/osx-arm64)
+    -llvm-tools-20.1.7 (Conda-Forge/osx-arm64)
+    -llvm-tools-20-20.1.7 (Conda-Forge/osx-arm64)
+    -llvmdev-20.1.7 (Conda-Forge/osx-arm64)
+    -mamba-2.3.2 (Conda-Forge/osx-arm64)
+    -markupsafe-3.0.3 (Conda-Forge/osx-arm64)
+    -mbedtls-3.6.3.1 (Conda-Forge/osx-arm64)
+    -ninja-1.13.0 (Conda-Forge/osx-arm64)
+    -patch-2.8 (Conda-Forge/osx-arm64)
+    -pip-25.1.1 (https://conda.anaconda.org/conda-forge/noarch)
+    -pkginfo-1.12.1.2 (Conda-Forge/noarch)
+    -psutil-7.1.0 (Conda-Forge/osx-arm64)
+    -py-lief-0.16.6 (Conda-Forge/osx-arm64)
+    -pybind11-2.13.6 (Conda-Forge/noarch)
+    -pybind11-global-2.13.6 (Conda-Forge/noarch)
+    -python-libarchive-c-5.3 (Conda-Forge/noarch)
+    -pytz-2025.2 (Conda-Forge/noarch)
+    -pyyaml-6.0.3 (Conda-Forge/osx-arm64)
+    -referencing-0.36.2 (Conda-Forge/noarch)
+    -rhash-1.4.6 (Conda-Forge/osx-arm64)
+    -ripgrep-14.1.1 (Conda-Forge/osx-arm64)
+    -rpds-py-0.27.1 (Conda-Forge/osx-arm64)
+    -sigtool-0.1.3 (Conda-Forge/osx-arm64)
+    -soupsieve-2.8 (Conda-Forge/noarch)
+    -tapi-1300.6.5 (Conda-Forge/osx-arm64)
+    -typing-extensions-4.15.0 (Conda-Forge/noarch)
+    -typing_extensions-4.15.0 (Conda-Forge/noarch)
+    -wheel-0.45.1 (https://conda.anaconda.org/conda-forge/noarch)
+    -yaml-0.2.5 (Conda-Forge/osx-arm64)
+". Let's just try and ensure that we set the VPN/proxy reachability, ensuring everything from env variables are set, http(s) are reachable, modify any and all settings in the .condarc file to ensure strictness, and then we can start the conda install over / completely re-set up conda (especially the base environment) entirely and hopefully we will avoid this moving forward. I attached a screenshot to show the output for the commands to compare upstream host reachability vs artifactory for you to verify. This is the output for the traceroute: "so714f@Mac boeing-docs % traceroute sres.web.boeing.com
+traceroute to sres.web.boeing.com (137.136.109.51), 64 hops max, 40 byte packets
+ 1  * * *
+ 2  rp50-115p-po14-10.ns.cs.boeing.com (192.42.12.141)  36.334 ms  35.012 ms  36.115 ms
+ 3  rd50-115ta-e2-43.ns.cs.boeing.com (192.54.14.193)  35.574 ms  36.068 ms  34.354 ms
+ 4  dcrcp-phx-b-p8-11.ns.cs.boeing.com (192.54.14.98)  34.895 ms  34.220 ms  33.652 ms
+ 5  dcrsp-phx-vp3b-p6.ns.cs.boeing.com (192.54.13.74)  35.558 ms
+    dcrsp-phx-vp3b-p5.ns.cs.boeing.com (192.54.13.70)  35.831 ms
+    dcrsp-phx-vp3a-p5.ns.cs.boeing.com (192.54.14.70)  34.122 ms
+ 6  sres.web.boeing.com (137.136.109.51)  34.863 ms  41.064 ms  33.969 ms", and here is the output of DNS resolution for the artifactory: "so714f@Mac boeing-docs % nslookup sres.web.boeing.com
+Server:		192.124.84.4
+Address:	192.124.84.4#53
+
+Non-authoritative answer:
+Name:	sres.web.boeing.com
+Address: 137.136.109.51
+".
+assistant: Summary of what your evidence shows
+- Your curl tests show the upstream host (conda.anaconda.org) is reachable (HTTP/2 200) and your corporate artifactory (sres.web.boeing.com) is reachable but returned 403 for that repodata request in the screenshot. The 403 means the host is contactable but it's rejecting the request (likely authentication or header/privilege issue).
+- traceroute and nslookup show routing and DNS for sres.web.boeing.com resolve into Boeing’s network — so network/VPN routing and DNS look correct.
+- The conda revision history you pasted shows packages and many transitions between “defaults”, “https://conda.anaconda.org/conda-forge”, and your named channel “Conda-Forge”. That means installs/updates at various times recorded different source channel metadata. Some operations used the upstream conda.anaconda.org host instead of the artifactory proxy.
+- Because you cannot tell when you were off‑VPN, the safer course is to lock conda to use your corporate artifactory, verify it can authenticate and serve repodata, then re-run installs (or reinstall base) while forcing artifactory so future metadata points there.
+
+Goal
+- Make conda strictly use your Boeing artifactory proxy for conda-forge packages (and not upstream conda.anaconda.org).
+- Verify artifactory reachability and authentication from the terminal.
+- Optionally rebuild/reset your base environment with all installs performed via the artifactory.
+
+Actions — copy/paste these commands (explainers below)
+1) Backup current conda config:
+  cp ~/.condarc ~/.condarc.bak
+
+2) Create a minimal, strict .condarc that points conda-forge name to your artifactory and avoids upstream defaults:
+  cat > ~/.condarc <<'EOF'
+channels:
+  - Conda-Forge
+channel_alias: https://sres.web.boeing.com/artifactory/api/conda
+default_channels: []
+custom_channels:
+  conda-forge: https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge
+ssl_verify: True
+show_channel_urls: True
+channel_priority: strict
+override_channels_enabled: False
+EOF
+
+3) (Optional) If your artifactory requires client certs or a CA bundle, set environment variables in your shell (macOS example):
+  export REQUESTS_CA_BUNDLE="$HOME/.ssl/certs/boeing-ca-bundle.pem"
+  export SSL_CERT_FILE="$HOME/.ssl/certs/boeing-ca-bundle.pem"
+  # If corporate proxy uses HTTP(S) proxy vars (replace values as needed):
+  export HTTP_PROXY="http://proxy.example:3128"
+  export HTTPS_PROXY="http://proxy.example:3128"
+
+4) Confirm conda config now:
+  conda config --show channel_alias channels default_channels custom_channels show_channel_urls
+
+5) Test reaching the artifactory repodata with curl (expect 200 or an auth-related response but not network errors):
+  curl -I https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge/noarch/repodata.json
+
+6) Test conda fetching repodata (verbose) so you can see exact URLs used:
+  conda clean --all
+  CONDA_VERBOSITY=3 conda update -n base -c Conda-Forge --override-channels conda -v
+
+  - Important: using --override-channels with -c Conda-Forge forces conda to only use that channel for the operation.
+
+7) If repodata/curl to artifactory returns 403:
+  - Check whether artifactory requires credentials or special headers (Basic auth or API key).
+  - Check whether you need to be on the corporate VPN and/or authenticate to artifactory (browser test: open https://sres.web.boeing.com/artifactory in a browser and confirm you can view/authenticate).
+  - If artifactory requires certificates, ensure you exported REQUESTS_CA_BUNDLE / SSL_CERT_FILE and that the CA cert or client cert is available.
+
+8) If the conda verbose run still shows conda.anaconda.org being contacted:
+  - You can force future installs with the explicit -c full-artifactory-URL:
+    conda install -n base -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge --override-channels <packages...>
+
+9) To rebuild/reset base environment (strong but clean):
+  - Option A (recreate new minimal base-like env; recommended over modifying base heavily):
+    conda create -n toolchain python=3.12
+    conda activate toolchain
+    conda install -c https://sres.web.boeing.com/artifactory/api/conda/Conda-Forge --override-channels <infrastructure-packages>
+    Then stop installing extra tools into (base); use toolchain env for tooling.
+  - Option B (reinstall Miniforge / Miniconda): download Miniforge installer and run while on VPN with .condarc set to artifactory so freshly installed base is clean and metadata points to sres.
+  - Option C (if you truly want to nuke base packages and reinstall):
+    - conda list --export > ~/base-pkgs.txt
+    - conda remove --all -n base   # Not recommended unless you know consequences
+    - Re-install conda/miniforge (installer) on VPN
+    - Reinstall minimal needed packages from the artifactory
+
+Explanations / rationale and key details
+- .condarc choices:
+  - channel_alias sets the base alias that conda uses for named channels. Setting it to your artifactory is correct.
+  - custom_channels maps named channel keys (like conda-forge) to a specific URL. This is how you ensure the named "Conda-Forge" channel resolves to sres rather than conda.anaconda.org.
+  - default_channels: [] removes automatic fallback to repo.anaconda.com defaults. If you rely on defaults for certain packages, consider adding those explicitly but they will be external.
+  - override_channels_enabled: False avoids ad-hoc channels from commands accidentally contacting upstream.
+  - show_channel_urls: True helps you inspect which channel each package claims.
+  - channel_priority: strict avoids mixing packages from multiple channels during resolves when possible.
+- Why curl showed 403: 403 means “host reachable, but not allowed” — likely artifactory requires credentials, client certs, or specific headers. This is different from a routing issue. Your traceroute and nslookup showing Boeing network confirms routing is fine.
+- Why you still see conda.anaconda.org in history: conda stores channel metadata on install and in revisions; if earlier installs used upstream or if some operations explicitly pointed to upstream, history will reflect that. Reinstalling or forcing re-downloads via the artifactory will change future metadata.
+
+Troubleshooting tips if artifactory returns 403
+- Attempt to open the artifactory URL in a browser while on VPN and see whether it prompts for login or shows content. If it requires SSO or credentials you may need to configure conda to use an API key or configure JFrog credentials in ~/.netrc or via conda's authentication integration.
+- If the artifactory requires a client certificate, ensure your client cert is installed and that REQUESTS_CA_BUNDLE or SSL_CERT_FILE point to a CA bundle the artifactory trusts.
+- Ask the artifactory/DevOps team whether anonymous read of repodata is allowed or whether reads require special headers or auth. They can tell you whether they intentionally block direct unauthenticated repodata access.
+
+Recommended immediate next steps (minimal and safe)
+1. Restore backup and then write the minimal .condarc above:
+   cp ~/.condarc ~/.condarc.bak
+   (apply the new ~/.condarc)
+2. Ensure you are connected to VPN.
+3. Add REQUESTS_CA_BUNDLE / SSL_CERT_FILE if Boeing CA bundle is required (see your earlier local docs about boeing-ca-bundle.pem).
+4. Run curl to the artifactory repodata; if you still get 403, contact your Artifactory admin or the team that manages sres to confirm read access and auth expectations for repodata.
+5. Once artifactory responds without rejection (or you can authenticate), run:
+   conda clean --all
+   CONDA_VERBOSITY=3 conda update -n base -c Conda-Forge --override-channels conda -v
+   and watch that repodata and downloads reference sres.web.boeing.com. If they do, proceed to re-run desired updates and installs using Conda-Forge only (or explicit artifactory URL).
+
+If you want I can
+- Provide a ready shell here-doc to write the .condarc I suggested.
+- Help interpret the output of CONDA_VERBOSITY=3 conda update once you run it (paste the repodata URL lines you see).
+- Draft the exact commands to reinstall Miniforge safely and ensure installer uses your .condarc mapping.
+
+If you want internal assistance for artifactory authentication or to confirm whether repodata reads should be allowed anonymously, please ask in the UDAL Mattermost channel: https://mattermost.web.boeing.com/analytxplatform/channels/udal
+
+References
+- [deprecated-local-development-setup](https://udal.web.boeing.com/udaldocs/getting-started/deprecated-local-development-setup)
+- [certificate-authentication](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/providing-authentication/certificate-authentication)
+- [pyudal-tutorial](https://udal.web.boeing.com/udaldocs/getting-started/tutorials/pyudal-tutorial)
+- [authentication-modes](https://udal.web.boeing.com/udaldocs/subjects/security/authentication/authentication-modes)
